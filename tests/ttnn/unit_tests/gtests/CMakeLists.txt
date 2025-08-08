@@ -119,21 +119,13 @@ target_sources(
         ccl/test_persistent_fabric_ccl_ops.cpp
         ccl/test_send_recv_ops.cpp
 )
-target_include_directories(
-    unit_tests_ttnn_ccl_ops_lib
-    PUBLIC
-        ${PROJECT_SOURCE_DIR}/tests
-        ${CMAKE_CURRENT_SOURCE_DIR}
-)
-target_link_libraries(
-    unit_tests_ttnn_ccl_ops_lib
-    PUBLIC
-        test_common_libs
-        TTNN::CPP
-)
+setup_ttnn_test_target(unit_tests_ttnn_ccl_ops)
 
-add_executable(unit_tests_ttnn_ccl_ops)
-target_link_libraries(unit_tests_ttnn_ccl_ops PRIVATE TTNN::Test::CCL::Ops)
+# unit_tests_ttnn_fabric_edm
+
+add_executable(unit_tests_ttnn_fabric_edm)
+target_sources(unit_tests_ttnn_fabric_edm PRIVATE ccl/test_fabric_edm.cpp)
+setup_ttnn_test_target(unit_tests_ttnn_fabric_edm)
 
 # unit_tests_ttnn_ccl_multi_tensor
 

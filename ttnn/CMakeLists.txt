@@ -62,8 +62,8 @@ target_sources(
         core/device.cpp
         core/distributed/api.cpp
         core/distributed/distributed_tensor.cpp
+        core/distributed/distributed_tensor_config.cpp
         core/distributed/distributed_configs.cpp
-        core/distributed/distribution_mode.cpp
         core/distributed/host_ccl.cpp
         core/distributed/tensor_topology.cpp
         core/distributed/bidirectional_fabric_socket.cpp

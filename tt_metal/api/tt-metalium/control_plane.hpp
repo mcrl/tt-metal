@@ -112,9 +112,6 @@ public:
     MeshShape get_physical_mesh_shape(MeshId mesh_id, MeshScope scope = MeshScope::GLOBAL) const;
     MeshCoordinateRange get_coord_range(MeshId mesh_id, MeshScope scope = MeshScope::GLOBAL) const;
 
-    // Initializes distributed contexts for each mesh; for host-to-host communication.
-    void initialize_distributed_contexts();
-
     // Returns distributed context for `mesh_id`.
     // Throws if `mesh_id` is unknown.
     const std::shared_ptr<tt::tt_metal::distributed::multihost::DistributedContext>& get_distributed_context(
@@ -198,8 +195,12 @@ public:
     std::unordered_set<CoreCoord> get_active_ethernet_cores(ChipId chip_id, bool skip_reserved_cores = false) const;
     std::unordered_set<CoreCoord> get_inactive_ethernet_cores(ChipId chip_id) const;
 
-    // Collect router port directions map from all hosts via MPI and merge into local map
-    void collect_and_merge_router_port_directions_from_all_hosts();
+    // Query the local intermesh link table containing the local to remote link mapping
+    const IntermeshLinkTable& get_local_intermesh_link_table() const;
+
+    // Get the ASIC ID for a chip (the ASIC ID is unique per chip, even in multi-host systems and is programmed
+    // by SPI-ROM firmware)
+    uint64_t get_asic_id(chip_id_t chip_id) const;
 
     // Get the mesh graph from the routing table
     const MeshGraph& get_mesh_graph() const;
@@ -214,7 +215,7 @@ private:
 
     void init_control_plane(
         const std::string& mesh_graph_desc_file,
-        std::optional<std::reference_wrapper<const std::map<FabricNodeId, ChipId>>>
+        std::optional<std::reference_wrapper<const std::map<FabricNodeId, chip_id_t>>>
             logical_mesh_chip_id_to_physical_chip_id_mapping = std::nullopt);
 
     uint16_t routing_mode_ = 0;  // ROUTING_MODE_UNDEFINED
@@ -373,8 +374,6 @@ private:
         distributed_contexts_;
 
     std::shared_ptr<tt::tt_metal::distributed::multihost::DistributedContext> host_local_context_;
-    std::unique_ptr<tt::tt_metal::PhysicalSystemDescriptor> physical_system_descriptor_;
-    std::unique_ptr<tt::tt_fabric::TopologyMapper> topology_mapper_;
 };
 
 }  // namespace tt::tt_fabric

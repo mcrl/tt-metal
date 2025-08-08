@@ -91,19 +91,6 @@ public:
     tt_fabric::FabricConfig get_fabric_config() const;
 
     distributed::multihost::DistributedContext& global_distributed_context();
-    std::shared_ptr<distributed::multihost::DistributedContext> get_distributed_context_ptr();
-
-    // Fabric tensix configuration
-    void set_fabric_tensix_config(tt_fabric::FabricTensixConfig fabric_tensix_config);
-    tt_fabric::FabricTensixConfig get_fabric_tensix_config() const;
-
-    // This is used to track the current thread's command queue id stack
-    using CommandQueueIdStack = std::vector<uint8_t>;
-    CommandQueueIdStack& get_command_queue_id_stack_for_thread();
-    const CommandQueueIdStack& get_command_queue_id_stack_for_thread() const;
-
-    // Utilities
-    bool is_coord_in_range(CoreCoord coord, CoreType core_type);
 
 private:
     friend class tt::stl::Indestructible<MetalContext>;
