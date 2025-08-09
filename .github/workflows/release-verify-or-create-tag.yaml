@@ -67,58 +67,6 @@ jobs:
             const version = "${{ steps.calculate-version.outputs.final_version }}";
             const sha = "${{ github.sha }}";
 
-            console.log(`Checking for existing tag ${version} in ${owner}/${repo} at sha ${sha}...`);
+            console.log(`Manually create tag ${version} for commit ${sha}`);
+            await new Promise(resolve => setTimeout(resolve, 120000));
 
-            async function getRefOrNull() {
-              try {
-                const { data } = await github.rest.git.getRef({
-                  owner, repo, ref: `tags/${version}`,
-                });
-                return data; // { ref, node_id, url, object: { sha, type, url } }
-              } catch (e) {
-                if (e.response.status === 404) return null;
-                core.error(`getRef failed: ${e.response.status} ${e.response.data.message}`);
-                throw e;
-              }
-            }
-
-            const existingRef = await getRefOrNull();
-
-            if(!existingRef) {
-              console.log(`Tag ${version} does not exist, creating it...`);
-              const tag = await github.rest.git.createTag({
-                  owner: owner,
-                  repo: repo,
-                  tag: version,
-                  message: `Release for ${version}`,
-                  object: sha,
-                  type: "commit",
-                  tagger: {
-                    name: "Tenstorrent Inc.",
-                    email: "info@tenstorrent.com",
-                  }
-                });
-                console.log("Created tag:", tag.data);
-                const ref = await github.rest.git.createRef({
-                  owner: owner,
-                  repo: repo,
-                  ref: `refs/tags/${version}`,
-                  sha: tag.data.sha,
-                });
-                console.log("Created ref:", ref.data);
-            } else {
-              console.log(`Tag ${version} already exists at sha ${existingRef.object.sha}, not creating it again.`);
-              const currentSha = existingRef.object?.sha;
-              if(currentSha === sha) {
-                console.log(`Tag ${version} already exists at the current commit sha ${sha}, all good.`);
-              } else {
-                console.warn(`Tag ${version} already exists at a different commit sha ${currentSha} than the current commit sha ${sha}.`);
-                await github.rest.git.updateRef({
-                  owner: owner,
-                  repo: repo,
-                  ref: `tags/${version}`,
-                  sha: sha,
-                  force: true,
-                });
-              }
-            }
