@@ -110,7 +110,6 @@ from ttnn._ttnn.multi_device import (
     compute_distribution_to_mesh_mapping,
     aggregate_tensor,
     distribute_tensor,
-    using_distributed_env,
 )
 
 from ttnn._ttnn.events import (
