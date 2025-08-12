@@ -110,6 +110,7 @@ from ttnn._ttnn.multi_device import (
     compute_distribution_to_mesh_mapping,
     aggregate_tensor,
     distribute_tensor,
+    get_t3k_physical_device_ids_ring,
 )
 
 from ttnn._ttnn.events import (
