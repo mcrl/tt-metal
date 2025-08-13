@@ -12,7 +12,6 @@
 #include <tt-metalium/mesh_coord.hpp>
 #include <tt-metalium/fabric_types.hpp>
 #include <hostdevcommon/fabric_common.h>
-#include <tt-metalium/distributed_context.hpp>
 
 #include <map>
 #include <unordered_map>
@@ -112,14 +111,6 @@ public:
     MeshShape get_physical_mesh_shape(MeshId mesh_id, MeshScope scope = MeshScope::GLOBAL) const;
     MeshCoordinateRange get_coord_range(MeshId mesh_id, MeshScope scope = MeshScope::GLOBAL) const;
 
-    // Returns distributed context for `mesh_id`.
-    // Throws if `mesh_id` is unknown.
-    const std::shared_ptr<tt::tt_metal::distributed::multihost::DistributedContext>& get_distributed_context(
-        MeshId mesh_id) const;
-
-    // Returns the distributed context with only one host.
-    const std::shared_ptr<tt::tt_metal::distributed::multihost::DistributedContext>& get_host_local_context() const;
-
     // Return valid ethernet channels on the specificed routing plane
     std::vector<chan_id_t> get_valid_eth_chans_on_routing_plane(
         FabricNodeId fabric_node_id, routing_plane_id_t routing_plane_id) const;
@@ -202,6 +193,9 @@ public:
     // by SPI-ROM firmware)
     uint64_t get_asic_id(chip_id_t chip_id) const;
 
+    // Check if the provided mesh is local to this host
+    bool is_local_mesh(MeshId mesh_id) const;
+
     // Get the mesh graph from the routing table
     const MeshGraph& get_mesh_graph() const;
 
@@ -210,14 +204,6 @@ public:
     get_global_logical_bindings() const;
 
 private:
-    // Check if the provided mesh is local to this host
-    bool is_local_mesh(MeshId mesh_id) const;
-
-    void init_control_plane(
-        const std::string& mesh_graph_desc_file,
-        std::optional<std::reference_wrapper<const std::map<FabricNodeId, chip_id_t>>>
-            logical_mesh_chip_id_to_physical_chip_id_mapping = std::nullopt);
-
     uint16_t routing_mode_ = 0;  // ROUTING_MODE_UNDEFINED
     // TODO: remove this from local node control plane. Can get it from the global control plane
     std::unique_ptr<RoutingTableGenerator> routing_table_generator_;
@@ -368,12 +354,6 @@ private:
 
     std::unique_ptr<FabricContext> fabric_context_;
     LocalMeshBinding local_mesh_binding_;
-
-    // Distributed contexts for each multi-host mesh, that this host is part of - this is typically a single mesh.
-    std::unordered_map<MeshId, std::shared_ptr<tt::tt_metal::distributed::multihost::DistributedContext>>
-        distributed_contexts_;
-
-    std::shared_ptr<tt::tt_metal::distributed::multihost::DistributedContext> host_local_context_;
 };
 
 }  // namespace tt::tt_fabric

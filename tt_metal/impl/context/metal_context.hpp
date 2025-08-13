@@ -90,7 +90,7 @@ public:
     void initialize_fabric_tensix_datamover_config();
     tt_fabric::FabricConfig get_fabric_config() const;
 
-    distributed::multihost::DistributedContext& global_distributed_context();
+    distributed::multihost::DistributedContext& get_distributed_context();
 
 private:
     friend class tt::stl::Indestructible<MetalContext>;
