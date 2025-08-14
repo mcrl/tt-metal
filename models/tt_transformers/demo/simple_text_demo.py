@@ -1394,10 +1394,10 @@ def test_demo_text(
             # and observed/0.95 for TTFT (lower is better) to allow 5% buffer + 5% room for growth
             ci_target_ttft = {
                 # N150 targets (milliseconds) - lower is better
-                "N150_Llama-3.2-1B": 25,
-                "N150_Llama-3.2-3B": 62,
-                "N150_Llama-3.1-8B": 120,
-                "N150_Mistral-7B": 106,
+                "N150_Llama-3.2-1B": 26,
+                "N150_Llama-3.2-3B": 57,
+                "N150_Llama-3.1-8B": 112,
+                # "N150_Mistral-7B": 106, # https://github.com/tenstorrent/tt-metal/issues/24963
                 # N300 targets
                 "N300_Qwen2.5-7B": (95, 1.20),  # (value, high_tolerance_ratio)
                 # T3K targets
