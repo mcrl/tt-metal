@@ -7,8 +7,8 @@ import torch
 from loguru import logger
 
 import ttnn
-from models.demos.qwen3.reference.qwen3_moe.modeling_qwen3_moe import Qwen3MoeMLP
-from models.demos.qwen3.tt.mlp.mlp_1d import MLP1D
+from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeMLP
+from models.demos.qwen3.tt.mlp import MLP1D
 from models.demos.qwen3.utils.run_config import create_run_config
 from models.demos.qwen3.utils.test_utils import (
     assert_hidden_dim_pcc,

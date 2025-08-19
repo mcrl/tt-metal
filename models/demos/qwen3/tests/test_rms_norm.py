@@ -6,9 +6,8 @@ import pytest
 import torch
 
 import ttnn
-from models.demos.qwen3.reference.qwen3_moe.modeling_qwen3_moe import Qwen3MoeRMSNorm
-from models.demos.qwen3.tt.rms_norm.distributed_rms_norm import DistributedRMSNorm
-from models.demos.qwen3.tt.rms_norm.rms_norm import RMSNorm
+from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeRMSNorm
+from models.demos.qwen3.tt.rms_norm import DistributedRMSNorm, RMSNorm
 from models.demos.qwen3.utils.run_config import create_run_config
 from models.demos.qwen3.utils.test_utils import (
     assert_hidden_dim_pcc,

@@ -4,10 +4,10 @@
 from typing import Tuple
 import torch
 
-from models.demos.qwen3.reference.utils.structural_types import StructuralTypeA
+from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 
 
-def precompute_freqs_cis(config: StructuralTypeA):
+def precompute_freqs_cis(config: Qwen3MoeConfig):
     theta = config.rope_theta
     dim = config.head_dim
     max_seq_len = config.max_seq_len

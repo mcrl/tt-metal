@@ -20,7 +20,7 @@ from models.demos.qwen3.utils.test_utils import (
     pad_or_trim_seq_len,
     run_module_forward,
 )
-from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 
 
 class Qwen3LMHeadReference(nn.Module):

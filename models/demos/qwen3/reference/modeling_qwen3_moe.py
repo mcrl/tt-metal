@@ -2,9 +2,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
-from models.demos.qwen3.reference.qwen3_moe.sdpa_attention import sdpa_attention_forward
-from models.demos.qwen3.reference.qwen3_moe.rope_helpers import precompute_freqs_cis, apply_rotary_emb
+from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
+from models.demos.qwen3.reference.sdpa_attention import sdpa_attention_forward
+from models.demos.qwen3.reference.rope import precompute_freqs_cis, apply_rotary_emb
 
 
 class Qwen3MoeAttention(nn.Module):
@@ -54,8 +54,8 @@ class Qwen3MoeAttention(nn.Module):
 
         query_states, key_states = apply_rotary_emb(query_states, key_states, position_embeddings)
 
-        self.cache_k[:batch_size, start_pos : start_pos + seq_len] = key_states
-        self.cache_v[:batch_size, start_pos : start_pos + seq_len] = value_states
+        self.cache_k[:batch_size, start_pos: start_pos + seq_len] = key_states
+        self.cache_v[:batch_size, start_pos: start_pos + seq_len] = value_states
 
         key_states = self.cache_k[:batch_size, : start_pos + seq_len]
         value_states = self.cache_v[:batch_size, : start_pos + seq_len]
@@ -204,7 +204,7 @@ class Qwen3MoeModel(nn.Module):
     def forward(self, input_ids: torch.LongTensor, start_pos: int = 0) -> torch.Tensor:
         batch_size, seq_len = input_ids.shape
 
-        position_embeddings = self.position_embeddings[start_pos : start_pos + seq_len]
+        position_embeddings = self.position_embeddings[start_pos: start_pos + seq_len]
         attention_mask = (
             torch.full(size=(1, 1, seq_len, start_pos + seq_len), fill_value=True, dtype=torch.bool)
             .triu_(diagonal=start_pos + 1)

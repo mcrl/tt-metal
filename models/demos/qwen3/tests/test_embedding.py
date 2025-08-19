@@ -11,7 +11,7 @@ from loguru import logger
 from torch.nn import Embedding
 
 import ttnn
-from models.demos.qwen3.tt.embedding_1d import Embedding1D
+from models.demos.qwen3.tt.embedding import Embedding1D
 from models.demos.qwen3.utils.run_config import create_run_config
 from models.demos.qwen3.utils.test_utils import (
     assert_hidden_dim_pcc,
