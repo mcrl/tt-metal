@@ -6,9 +6,12 @@ import pytest
 import torch
 
 import ttnn
-from models.demos.qwen3.reference.qwen3_moe.rope_helpers import apply_rotary_emb as ref_apply_rotary
-from models.demos.qwen3.reference.qwen3_moe.rope_helpers import precompute_freqs_cis
-from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+# from models.demos.qwen3.reference.qwen3_moe.rope_helpers import apply_rotary_emb as ref_apply_rotary
+# from models.demos.qwen3.reference.qwen3_moe.rope_helpers import precompute_freqs_cis
+from models.demos.qwen3.reference.rope import apply_rotary_emb as ref_apply_rotary
+from models.demos.qwen3.reference.rope import precompute_freqs_cis
+# from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.rope import apply_rotary_ttnn, precompute_cossin
 from models.demos.qwen3.utils.test_utils import assert_hidden_dim_pcc
 

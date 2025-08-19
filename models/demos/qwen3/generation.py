@@ -4,10 +4,10 @@ import torch
 
 from tokenizers import Tokenizer
 
-from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
-from models.demos.qwen3.reference.qwen3_moe.modeling_qwen3_moe import Qwen3MoeModel
+from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
+from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeModel
 
-from models.demos.qwen3.reference.utils.loader import load, materialize
+from models.demos.qwen3.reference.loader import load, materialize
 
 
 def sample_top_p(probs, p):

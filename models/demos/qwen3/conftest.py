@@ -78,14 +78,14 @@ def hf_config(model_path):
         with open(config_path, "r") as f:
             config_data = json.load(f)
         print(f"Loaded config data: {config_data}")
-        from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+        from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 
         config = Qwen3MoeConfig.from_dict(config_data)
         print(f"Created config: hidden_size={config.hidden_size}, vocab_size={config.vocab_size}")
     else:
         # Fallback to default values
         print("Config file not found, using default values")
-        from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+        from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 
         config = Qwen3MoeConfig()
         print(f"Default config: hidden_size={config.hidden_size}, vocab_size={config.vocab_size}")
