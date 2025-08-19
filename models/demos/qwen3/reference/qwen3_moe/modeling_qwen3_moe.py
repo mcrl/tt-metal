@@ -29,8 +29,8 @@ class Qwen3MoeAttention(nn.Module):
         cache_shape = (config.max_batch_size, config.max_seq_len, self.num_key_value_heads, self.head_dim)
         cache_k = torch.zeros(cache_shape, dtype=torch.float16, device=torch.device("cpu"), requires_grad=False)
         cache_v = torch.zeros(cache_shape, dtype=torch.float16, device=torch.device("cpu"), requires_grad=False)
-        self.register_buffer('cache_k', cache_k, persistent=False)
-        self.register_buffer('cache_v', cache_v, persistent=False)
+        self.register_buffer("cache_k", cache_k, persistent=False)
+        self.register_buffer("cache_v", cache_v, persistent=False)
 
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
@@ -42,7 +42,7 @@ class Qwen3MoeAttention(nn.Module):
         hidden_states: torch.Tensor,
         start_pos: int,
         position_embeddings: torch.Tensor,
-        attention_mask: torch.Tensor
+        attention_mask: torch.Tensor,
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
         input_shape = hidden_states.shape[:-1]
@@ -54,11 +54,11 @@ class Qwen3MoeAttention(nn.Module):
 
         query_states, key_states = apply_rotary_emb(query_states, key_states, position_embeddings)
 
-        self.cache_k[:batch_size, start_pos:start_pos + seq_len] = key_states
-        self.cache_v[:batch_size, start_pos:start_pos + seq_len] = value_states
+        self.cache_k[:batch_size, start_pos : start_pos + seq_len] = key_states
+        self.cache_v[:batch_size, start_pos : start_pos + seq_len] = value_states
 
-        key_states = self.cache_k[:batch_size, :start_pos + seq_len]
-        value_states = self.cache_v[:batch_size, :start_pos + seq_len]
+        key_states = self.cache_k[:batch_size, : start_pos + seq_len]
+        value_states = self.cache_v[:batch_size, : start_pos + seq_len]
 
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
@@ -95,7 +95,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.norm_topk_prob = config.norm_topk_prob
 
         self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
-        self.experts = nn.ModuleList([Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)])
+        self.experts = nn.ModuleList(
+            [Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
+        )
 
         self.layer_idx = layer_idx
 
@@ -111,7 +113,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
         routing_weights = routing_weights.to(hidden_states.dtype)
 
-        final_hidden_states = torch.zeros((batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device)
+        final_hidden_states = torch.zeros(
+            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
+        )
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
         expert_hitted = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
 
@@ -167,7 +171,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             hidden_states=self.input_layernorm(hidden_states),
             start_pos=start_pos,
             position_embeddings=position_embeddings,
-            attention_mask=attention_mask
+            attention_mask=attention_mask,
         )
 
         hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
@@ -183,12 +187,14 @@ class Qwen3MoeModel(nn.Module):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.layers = nn.ModuleList([Qwen3MoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList(
+            [Qwen3MoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
         self.norm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         position_embeddings = precompute_freqs_cis(config)
-        self.register_buffer('position_embeddings', position_embeddings, persistent=False)
+        self.register_buffer("position_embeddings", position_embeddings, persistent=False)
 
         assert config.sliding_window is None
 
@@ -198,8 +204,12 @@ class Qwen3MoeModel(nn.Module):
     def forward(self, input_ids: torch.LongTensor, start_pos: int = 0) -> torch.Tensor:
         batch_size, seq_len = input_ids.shape
 
-        position_embeddings = self.position_embeddings[start_pos: start_pos + seq_len]
-        attention_mask = torch.full(size=(1, 1, seq_len, start_pos + seq_len), fill_value=True, dtype=torch.bool).triu_(diagonal=start_pos + 1).logical_not_()
+        position_embeddings = self.position_embeddings[start_pos : start_pos + seq_len]
+        attention_mask = (
+            torch.full(size=(1, 1, seq_len, start_pos + seq_len), fill_value=True, dtype=torch.bool)
+            .triu_(diagonal=start_pos + 1)
+            .logical_not_()
+        )
 
         hidden_states = self.embed_tokens(input_ids)
 

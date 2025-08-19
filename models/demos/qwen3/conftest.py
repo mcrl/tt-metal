@@ -8,6 +8,7 @@ from loguru import logger
 from transformers import AutoConfig
 
 import ttnn
+
 # from models.demos.qwen3.tt.ccl_1d import CCL1D
 from tests.scripts.common import get_updated_device_params
 
@@ -60,7 +61,7 @@ def mesh_device(request, device_params):
 
 @pytest.fixture(scope="session")
 def model_path():
-    return Path(os.getenv("QWEN3_HF_MODEL", "models/demos/qwen3/reference"))
+    return Path(os.getenv("QWEN3_HF_MODEL", "/shared/models/Qwen3-30B-A3B"))
 
 
 @pytest.fixture(scope="session")
@@ -73,16 +74,19 @@ def hf_config(model_path):
 
     if config_path.exists():
         import json
-        with open(config_path, 'r') as f:
+
+        with open(config_path, "r") as f:
             config_data = json.load(f)
         print(f"Loaded config data: {config_data}")
         from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+
         config = Qwen3MoeConfig.from_dict(config_data)
         print(f"Created config: hidden_size={config.hidden_size}, vocab_size={config.vocab_size}")
     else:
         # Fallback to default values
         print("Config file not found, using default values")
         from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+
         config = Qwen3MoeConfig()
         print(f"Default config: hidden_size={config.hidden_size}, vocab_size={config.vocab_size}")
     return config
@@ -110,4 +114,5 @@ def ccl(mesh_device):
     This is used to test distributed operations in Qwen3 modules.
     """
     from models.demos.qwen3.tt.ccl_1d import CCL1D
+
     return CCL1D(mesh_device)

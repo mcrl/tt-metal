@@ -55,15 +55,13 @@ RunDecodeConfig = (
 @overload
 def create_run_config(
     model_config: ModelPrefillConfig, weight_config: WeightConfig, *model_states: ModelState
-) -> RunPrefillConfig:
-    ...
+) -> RunPrefillConfig: ...
 
 
 @overload
 def create_run_config(  # type: ignore
     model_config: ModelDecodeConfig, weight_config: WeightConfig, *model_states: ModelState
-) -> RunDecodeConfig:
-    ...
+) -> RunDecodeConfig: ...
 
 
 def create_run_config(model_config, weight_config, *model_states):
@@ -95,8 +93,6 @@ def create_run_config(model_config, weight_config, *model_states):
         search_for_mesh_device=False,
         mb_mesh_device=None,
     )
-
-    logger.info(f"run config: {_convert_run_config_to_pretty_print(run_config)}")
 
     return run_config
 

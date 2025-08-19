@@ -12,13 +12,9 @@ import safetensors.torch
 import torch
 from loguru import logger
 
-# from models.demos.qwen3.scripts.generate_test_inputs_outputs import __file__ as REFERENCE_IO_SCRIPT_NAME
 from models.demos.qwen3.utils.abstract_module import AbstractModule
 from models.demos.qwen3.utils.config_helpers import dequantize
 from models.utility_functions import comp_pcc
-
-# Constant for testing
-MAX_START_POS = 512
 
 
 def load_state_dict(model_path: Path, module_path: str):
@@ -34,7 +30,7 @@ def load_state_dict(model_path: Path, module_path: str):
         per_safetensor_weights.setdefault(weight_paths[weight_name], []).append(weight_name)
 
     return {
-        weight_name[len(module_path):]: safetensor_state_dict[weight_name]
+        weight_name[len(module_path) :]: safetensor_state_dict[weight_name]
         for safetensor_file_path, weight_names in per_safetensor_weights.items()
         for safetensor_state_dict in [safetensors.torch.load_file(model_path / safetensor_file_path)]
         for weight_name in weight_names
@@ -140,49 +136,6 @@ def quantize_fp8_blockwise(tensor: torch.Tensor, block_shape: Sequence[int]) -> 
             quantized[slices] = block.to(torch.float8_e4m3fn)
 
     return quantized, inv_scale
-
-
-def load_reference_io_tensors_for_module(
-    mode: Literal["prefill", "decode"],
-    module: str,
-    seq_len: int,
-    num_expand_rows: int,
-    concat_dim: int = 1,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    assert mode in ["prefill", "decode"], f"Unsupported mode: {mode}"
-
-    reference_io = load_reference_io(mode, module)
-    assert all(len(logs) <= 1 for logs in reference_io), f"Expected a non-range module"
-    assert all(
-        len(logs) > 0 for logs in reference_io
-    ), f"Some logs for module {module} {mode} not generated. Please run the {REFERENCE_IO_SCRIPT_NAME} script to create it."
-    if mode == "prefill":
-        assert len(reference_io) == 1, f"Expected one log for {module} prefill, got {len(reference_io)}"
-        (((io_module_path, (torch_input,), _, reference_output),),) = reference_io
-        assert io_module_path == module
-    else:
-        io_module_paths, torch_args, _, reference_outputs = zip(*[logs[0] for logs in reference_io])
-        (torch_inputs,) = zip(*torch_args)
-        assert set(io_module_paths) == {module}
-        torch_input = torch.concat(torch_inputs, dim=concat_dim)
-        reference_output = torch.concat(reference_outputs, dim=concat_dim)
-    torch_input.unsqueeze_(0)
-    reference_output.unsqueeze_(0)
-    return pad_or_trim_seq_len(torch_input, mode, seq_len).expand(
-        num_expand_rows, *(-1 for _ in range(torch_input.ndim - 1))
-    ), reference_output.expand(num_expand_rows, *(-1 for _ in range(reference_output.ndim - 1)))
-
-
-def load_reference_io(mode: Literal["prefill", "decode"], module_range: str):
-    path = (
-        Path(os.getenv("DEEPSEEK_V3_CACHE", "/proj_sw/user_dev/deepseek-v3-cache"))
-        / f"test_io_cache/{mode}.{module_range}.pt"
-    )
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"Reference IO cache file not found at {path}. Please run the {REFERENCE_IO_SCRIPT_NAME} script to create it. Did you set the 'HF_MODEL' environment variable coorectly?"
-        )
-    return torch.load(path)
 
 
 SEQ_LEN_DIM_IDX = 2
