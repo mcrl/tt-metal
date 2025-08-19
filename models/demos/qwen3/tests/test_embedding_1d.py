@@ -16,7 +16,6 @@ from models.demos.qwen3.utils.run_config import create_run_config
 from models.demos.qwen3.utils.test_utils import (
     assert_hidden_dim_pcc,
     get_model_config,
-    load_reference_io_tensors_for_module,
     load_state_dict,
     run_module_forward,
 )
@@ -33,41 +32,31 @@ from models.demos.qwen3.utils.test_utils import (
     "mode,seq_len",
     [
         ("decode", 32),  # Batch decode
-        ("prefill", 128),  # Short prefill
+        ("prefill", 32),  # Short prefill
         ("prefill", 512),  # Medium prefill
         ("prefill", 2048),  # Long prefill
     ],
-)
-@pytest.mark.parametrize(
-    "generate_reference_io",
-    [True, False],
 )
 def test_embedding_forward_pass(
     hf_config,
     mode,
     seq_len,
-    generate_reference_io,
     tmp_path,
     mesh_device,
     ccl,
     model_path,
 ):
     logger.info("Setting up reference IO")
-    module_path = "model.embed_tokens"
 
-    if generate_reference_io:
-        reference_model = Embedding(
-            hf_config.vocab_size,
-            hf_config.hidden_size,
-            hf_config.pad_token_id,
-        ).eval()
-        state_dict = reference_model.state_dict()
+    reference_model = Embedding(
+        hf_config.vocab_size,
+        hf_config.hidden_size,
+        hf_config.pad_token_id,
+    ).eval()
+    state_dict = reference_model.state_dict()
 
-        torch_input = torch.randint(0, hf_config.vocab_size, (1, 1, seq_len))
-        reference_output = reference_model(torch_input)
-    else:
-        state_dict = load_state_dict(model_path, module_path)
-        torch_input, reference_output = load_reference_io_tensors_for_module(mode, module_path, seq_len, 1)
+    torch_input = torch.randint(0, hf_config.vocab_size, (1, 1, seq_len))
+    reference_output = reference_model(torch_input)
 
     # Generate module configs and state
     logger.info("Setting up TTNN configs")

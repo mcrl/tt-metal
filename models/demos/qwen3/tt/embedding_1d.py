@@ -3,6 +3,7 @@
 
 from pathlib import Path
 from typing import cast
+from loguru import logger
 
 import torch
 import ttnn.experimental
@@ -81,7 +82,9 @@ class Embedding1D(AbstractModule):
         return {"embedding": {"weight": save_and_get_path(output_path / "embedding.weight", ttnn_weight)}}
 
     @classmethod
-    def prefill_model_config(cls, hf_config: PretrainedConfig, mesh_device: ttnn.MeshDevice) -> ModelPrefillConfig:
+    def prefill_model_config(
+        cls, hf_config: PretrainedConfig, mesh_device: ttnn.MeshDevice, *args, **kwargs
+    ) -> ModelPrefillConfig:
         """Prefill model config for an embedding with 1D tensor parallelism.
         Same as decode. Does not specify a mode because we override forward to handle both.
 
@@ -92,7 +95,9 @@ class Embedding1D(AbstractModule):
         return cls._embedding_config(hf_config, mesh_device, ttnn.DRAM_MEMORY_CONFIG)
 
     @classmethod
-    def decode_model_config(cls, hf_config: PretrainedConfig, mesh_device: ttnn.MeshDevice) -> ModelDecodeConfig:
+    def decode_model_config(
+        cls, hf_config: PretrainedConfig, mesh_device: ttnn.MeshDevice, *args, **kwargs
+    ) -> ModelDecodeConfig:
         """Generate decode operator configuration for this embedding layer.
         Same as prefill. Does not specify a mode because we override forward to handle both.
 

@@ -23,9 +23,9 @@ from models.demos.qwen3.utils.test_utils import (
 from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 
 
-class Qwen3LMHead(nn.Module):
+class Qwen3LMHeadReference(nn.Module):
     """
-    Language model head for Qwen3.
+    Language model head for Qwen3. Just a simple torch.nn.Linear
     """
 
     def __init__(self, config):
@@ -47,7 +47,7 @@ class Qwen3LMHead(nn.Module):
 @pytest.mark.parametrize(
     "mode,seq_len",
     [
-        # ("decode", 64),
+        ("decode", 64),
         ("prefill", 64),
         # ("prefill", 1024),
         # ("prefill", 2048),
@@ -57,7 +57,7 @@ def test_forward_pass(mode: str, seq_len: int, hf_config: Any, tmp_path: Path, m
     assert mesh_device.get_num_devices() == 8, "Mesh device must have 8 devices for this test."
     torch.manual_seed(0)
 
-    reference_model = Qwen3LMHead(hf_config).eval()
+    reference_model = Qwen3LMHeadReference(hf_config).eval()
     state_dict = reference_model.state_dict()
     torch_input = torch.randn(1, 1, seq_len, hf_config.hidden_size)
     reference_output = reference_model(torch_input)

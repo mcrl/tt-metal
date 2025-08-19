@@ -161,8 +161,6 @@ class LMHead:
         ), "output_num_cores must be less than or equal to the maximum number of cores"
         assert hidden_dim % input_num_cores == 0, "input_num_cores must divide the input tensor width evenly"
 
-        print(f"@@@@ hidden_dim: {hidden_dim} vocab_size: {vocab_size} num_devices: {num_devices} max_num_cores: {max_num_cores} input_num_cores: {input_num_cores} output_num_cores: {output_num_cores}")
-
         assert (
             even_int_div(hidden_dim, num_devices) % output_num_cores == 0
         ), "output_num_cores must divide the output tensor width evenly"
@@ -306,9 +304,9 @@ class LMHead:
                 hidden_dim=pc_gen.hidden_dim,
                 vocab_size=pc_gen.vocab_size,
                 num_devices=pc_gen.num_devices,
-                core_grid_size=pc_gen.core_grid_size
+                core_grid_size=pc_gen.core_grid_size,
             ),
-            **cfg["linear"]
+            **cfg["linear"],
         )
         ttnn.deallocate(x)
 
