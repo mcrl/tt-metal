@@ -11,7 +11,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, seq_len, head_dim)
 
 
-def sdpa_attention_forward(
+def sdpa_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
