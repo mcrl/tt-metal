@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
-from models.demos.qwen3.reference.sdpa_attention import sdpa_attention_forward
+from models.demos.qwen3.reference.sdpa import sdpa_forward
 from models.demos.qwen3.reference.rope import precompute_freqs_cis, apply_rotary_emb
 
 
@@ -64,7 +64,7 @@ class Qwen3MoeAttention(nn.Module):
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
-        attn_output = sdpa_attention_forward(query_states, key_states, value_states, attention_mask)
+        attn_output = sdpa_forward(query_states, key_states, value_states, attention_mask)
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)

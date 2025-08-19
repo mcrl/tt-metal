@@ -30,7 +30,7 @@ def load_state_dict(model_path: Path, module_path: str):
         per_safetensor_weights.setdefault(weight_paths[weight_name], []).append(weight_name)
 
     return {
-        weight_name[len(module_path) :]: safetensor_state_dict[weight_name]
+        weight_name[len(module_path):]: safetensor_state_dict[weight_name]
         for safetensor_file_path, weight_names in per_safetensor_weights.items()
         for safetensor_state_dict in [safetensors.torch.load_file(model_path / safetensor_file_path)]
         for weight_name in weight_names
@@ -134,12 +134,15 @@ def assert_hidden_dim_pcc(
         tt_output_torch.shape[1] == reference_output.shape[1]
     ), f"Model and reference output shape mismatch on dim 1 ({tt_output_torch.shape[1]} != {reference_output.shape[1]})"
     assert (
+        tt_output_torch.shape[2] == reference_output.shape[2]
+    ), f"Model and reference output shape mismatch on dim 2 ({tt_output_torch.shape[2]} != {reference_output.shape[2]})"
+    assert (
         tt_output_torch.shape[3] == reference_output.shape[3]
     ), f"Model and reference output shape mismatch on dim 3 ({tt_output_torch.shape[3]} != {reference_output.shape[3]})"
 
-    seq_len = min(tt_output_torch.shape[2], reference_output.shape[2])
-    tt_output_torch = tt_output_torch[:, :, :seq_len, :]
-    reference_output = reference_output[:, :, :seq_len, :]
+    # seq_len = min(tt_output_torch.shape[2], reference_output.shape[2])
+    # tt_output_torch = tt_output_torch[:, :, :seq_len, :]
+    # reference_output = reference_output[:, :, :seq_len, :]
 
     passing, pcc = comp_pcc(tt_output_torch, reference_output, pcc_required)
     logger.info(f"PCC: {pcc}")
