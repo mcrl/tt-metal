@@ -26,6 +26,9 @@ from models.demos.qwen3.utils.test_utils import assert_tensor_pcc
     [
         (1, 8, 16, 64),
         (4, 8, 6, 128),
+        (4, 8, 4, 128),
+        (4, 8, 1, 128),
+        (4, 8, 69, 128),
         (4, 64, 64, 64),
         (1, 88, 77, 43),
     ],
