@@ -38,13 +38,6 @@ class Qwen3LMHeadReference(nn.Module):
 
 
 @pytest.mark.parametrize(
-    "device_params",
-    [
-        {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
-    ],
-    indirect=True,
-)
-@pytest.mark.parametrize(
     "mode,seq_len",
     [
         ("decode", 64),

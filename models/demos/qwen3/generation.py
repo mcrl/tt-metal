@@ -106,7 +106,6 @@ class Qwen3MoETT:
         materialize(self.model)
         load(ckpt_dir, self.model)
         self.model.eval()
-        self.model.to_tt()
 
     def generate(self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9) -> List[List[str]]:
         prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
