@@ -14,13 +14,6 @@ from models.demos.qwen3.utils.test_utils import assert_tensor_pcc, get_model_con
 
 
 @pytest.mark.parametrize(
-    "device_params",
-    [
-        {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
-    ],
-    indirect=True,
-)
-@pytest.mark.parametrize(
     "mode,seq_len",
     [
         ("prefill", 1),  # minimal case without rotary mismatch

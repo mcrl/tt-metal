@@ -15,13 +15,6 @@ from models.demos.qwen3.utils.test_utils import assert_tensor_pcc
 
 
 @pytest.mark.parametrize(
-    "device_params",
-    [
-        {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
-    ],
-    indirect=True,
-)
-@pytest.mark.parametrize(
     "batch_size,num_heads,seq_len,head_dim",
     [
         (1, 8, 16, 64),

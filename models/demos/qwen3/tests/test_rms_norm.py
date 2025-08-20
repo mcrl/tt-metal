@@ -18,11 +18,6 @@ from models.demos.qwen3.utils.test_utils import (
 
 
 @pytest.mark.parametrize(
-    "device_params",
-    [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}],
-    indirect=True,
-)
-@pytest.mark.parametrize(
     "mode, seq_len",
     [
         ("decode", 32),

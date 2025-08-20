@@ -25,7 +25,7 @@ class Qwen3MoeAttention(nn.Module):
         self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
         self.q_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device)  # unlike olmo, only on the head dim!
-        self.k_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)  # thus post q_norm does not need reshape
+        self.k_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device)  # thus post q_norm does not need reshape
         self.sliding_window = None
 
         cache_shape = (config.max_batch_size, config.max_seq_len, self.num_key_value_heads, self.head_dim)
@@ -74,8 +74,9 @@ class Qwen3MoeAttention(nn.Module):
 
 
 class Qwen3MoeMLP(nn.Module):
-    def __init__(self, config: Qwen3MoeConfig, intermediate_size: int):
+    def __init__(self, config: Qwen3MoeConfig, intermediate_size: int, mesh_device: ttnn.Device):
         super().__init__()
+        self.mesh_device = mesh_device
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = intermediate_size
@@ -90,15 +91,16 @@ class Qwen3MoeMLP(nn.Module):
 
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
-    def __init__(self, config: Qwen3MoeConfig, layer_idx: int):
+    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
         super().__init__()
+        self.mesh_device = mesh_device
         self.num_experts = config.num_experts
         self.top_k = config.num_experts_per_tok
         self.norm_topk_prob = config.norm_topk_prob
 
         self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
         self.experts = nn.ModuleList(
-            [Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
+            [Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size, mesh_device=mesh_device) for _ in range(self.num_experts)]
         )
 
         self.layer_idx = layer_idx
@@ -134,8 +136,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
 
 class Qwen3MoeRMSNorm(nn.Module):
-    def __init__(self, hidden_size: int, eps: float = 1e-6):
+    def __init__(self, hidden_size: int, eps: float = 1e-6, mesh_device: ttnn.Device = None):
         super().__init__()
+        self.mesh_device = mesh_device
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
 
