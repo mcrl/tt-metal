@@ -15,7 +15,7 @@ from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.demos.qwen3.tt.lm_head import LMHead
 from models.demos.qwen3.utils.run_config import create_run_config
 from models.demos.qwen3.utils.test_utils import (
-    assert_hidden_dim_pcc,
+    assert_tensor_pcc,
     get_model_config,
     pad_or_trim_seq_len,
     run_module_forward,
@@ -93,20 +93,14 @@ def test_forward_pass(mode: str, seq_len: int, hf_config: Any, tmp_path: Path, m
         actual_output_memory_config == expected_output_memory_config
     ), f"Output memory config mismatch: expected {expected_output_memory_config}, got {actual_output_memory_config}"
 
-    logger.info("running ttnn.to_torch")
     tt_output_torch = ttnn.to_torch(tt_output, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=3))
-    logger.info("finished ttnn.to_torch")
-
-    # Debug: print shapes
-    logger.info(f"TT output shape: {tt_output_torch.shape}")
-    logger.info(f"Reference output shape: {reference_output.shape}")
 
     # Cleanup
     ttnn.deallocate(tt_input)
     ttnn.deallocate(tt_output)
 
     # Check PCC
-    assert_hidden_dim_pcc(tt_output_torch, reference_output, pcc_required=0.98)
+    assert_tensor_pcc(tt_output_torch, reference_output, pcc_required=0.98)
 
 
 if __name__ == "__main__":

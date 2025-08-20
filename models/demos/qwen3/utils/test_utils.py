@@ -121,28 +121,16 @@ def run_module_forward(ModuleClass: type[AbstractModule], mode: Literal["prefill
         raise ValueError(f"Unsupported mode: {mode}. Supported modes are 'prefill' and 'decode'.")
 
 
-def assert_hidden_dim_pcc(
+def assert_tensor_pcc(
     tt_output_torch: torch.Tensor, reference_output: torch.Tensor, pcc_required: float = 0.98
 ) -> float:
     assert (
-        tt_output_torch.ndim == reference_output.ndim == 4
-    ), f"Both model and reference outputs must be 4D tensors; got {tt_output_torch.ndim}D and {reference_output.ndim}D instead"
-    assert (
-        tt_output_torch.shape[0] == reference_output.shape[0]
-    ), f"Model and reference output shape mismatch on dim 0 ({tt_output_torch.shape[0]} != {reference_output.shape[0]})"
-    assert (
-        tt_output_torch.shape[1] == reference_output.shape[1]
-    ), f"Model and reference output shape mismatch on dim 1 ({tt_output_torch.shape[1]} != {reference_output.shape[1]})"
-    assert (
-        tt_output_torch.shape[2] == reference_output.shape[2]
-    ), f"Model and reference output shape mismatch on dim 2 ({tt_output_torch.shape[2]} != {reference_output.shape[2]})"
-    assert (
-        tt_output_torch.shape[3] == reference_output.shape[3]
-    ), f"Model and reference output shape mismatch on dim 3 ({tt_output_torch.shape[3]} != {reference_output.shape[3]})"
-
-    # seq_len = min(tt_output_torch.shape[2], reference_output.shape[2])
-    # tt_output_torch = tt_output_torch[:, :, :seq_len, :]
-    # reference_output = reference_output[:, :, :seq_len, :]
+        tt_output_torch.ndim == reference_output.ndim
+    ), f"Both model and reference outputs must have the same number of dimensions; got {tt_output_torch.ndim}D and {reference_output.ndim}D instead"
+    for dim in range(tt_output_torch.ndim):
+        assert (
+            tt_output_torch.shape[dim] == reference_output.shape[dim]
+        ), f"Model and reference output shape mismatch on dim {dim} ({tt_output_torch.shape[dim]} != {reference_output.shape[dim]})"
 
     passing, pcc = comp_pcc(tt_output_torch, reference_output, pcc_required)
     logger.info(f"PCC: {pcc}")

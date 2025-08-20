@@ -14,7 +14,7 @@ import ttnn
 from models.demos.qwen3.tt.embedding import Embedding1D
 from models.demos.qwen3.utils.run_config import create_run_config
 from models.demos.qwen3.utils.test_utils import (
-    assert_hidden_dim_pcc,
+    assert_tensor_pcc,
     get_model_config,
     load_state_dict,
     run_module_forward,
@@ -96,7 +96,7 @@ def test_embedding_forward_pass(
     ttnn.deallocate(tt_output)
 
     # Check PCC
-    assert_hidden_dim_pcc(tt_output_torch, reference_output, pcc_required=0.98)
+    assert_tensor_pcc(tt_output_torch, reference_output, pcc_required=0.98)
 
 
 if __name__ == "__main__":
