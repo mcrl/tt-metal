@@ -1,6 +1,7 @@
 import json
 from typing import Optional, List
 import torch
+import ttnn
 
 from tokenizers import Tokenizer
 
@@ -85,10 +86,12 @@ class Qwen3MoEReference:
 
 
 class Qwen3MoETT:
-    def __init__(self, ckpt_dir: str, tokenizer_path: str, config_path: Optional[str] = None) -> None:
+    def __init__(self, mesh_device: ttnn.Device, ckpt_dir: str, tokenizer_path: str, config_path: Optional[str] = None) -> None:
         torch.manual_seed(42)
         torch.set_default_device(torch.device("cpu"))
         torch.set_default_dtype(torch.float16)
+
+        self.mesh_device = mesh_device
 
         data = None
         if config_path is not None:
@@ -97,12 +100,13 @@ class Qwen3MoETT:
 
         self.config = Qwen3MoeConfig.from_dict(data)
         with torch.device("meta"):
-            self.model = Qwen3MoeModelTT(self.config)
+            self.model = Qwen3MoeModelTT(self.config, self.mesh_device)
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
 
         materialize(self.model)
         load(ckpt_dir, self.model)
         self.model.eval()
+        self.model.to_tt()
 
     def generate(self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9) -> List[List[str]]:
         prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
