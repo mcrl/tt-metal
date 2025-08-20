@@ -297,8 +297,39 @@ jobs:
             tt-metalium.tar.gz
             debian-packages/*.deb
           fail_on_unmatched_files: true
-
-  check-stable-for-new-commits:
+  create-docker-release-image:
+    needs: [
+      build-artifact,
+      create-tag,
+      create-and-upload-draft-release
+    ]
+    uses: ./.github/workflows/publish-release-image.yaml
+    secrets: inherit
+    if: github.ref != 'refs/heads/main'
+    with:
+      base-image: ${{ needs.build-artifact.outputs.dev-docker-image }}
+      version: ${{ needs.create-tag.outputs.version }}
+      is_major_version:  ${{ needs.get-params.outputs.is-release-candidate !='true' }}
+  release-docs:
+    needs: [
+      build-artifact,
+      get-params,
+      create-tag,
+      create-and-upload-draft-release
+    ]
+    if: ${{ needs.get-params.outputs.is-release-candidate !='true' }}
+    uses: ./.github/workflows/docs-latest-public.yaml
+    with:
+      version: ${{ needs.create-tag.outputs.version }}
+      docker-image: ${{ needs.build-artifact.outputs.dev-docker-image }}
+      build-artifact-name: ${{ needs.build-artifact.outputs.build-artifact-name }}
+      wheel-artifact-name: ${{ needs.build-artifact.outputs.wheel-artifact-name }}
+    secrets: inherit
+  #Do we need to publish every release candidate?
+  publish-to-pypi:
+    name: >-
+      Publish Python 🐍 distribution 📦 to PyPI
+    needs: [build-artifact]
     runs-on: ubuntu-latest
     #Only run on schedule or main branch pushes
     if: ${{ github.event_name == 'schedule' || github.ref == 'refs/heads/main' }}
