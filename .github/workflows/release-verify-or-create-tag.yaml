@@ -50,12 +50,28 @@ jobs:
         id: calculate-version
         uses: tenstorrent/tt-metal/.github/actions/calculate-version@main
         with:
-          tag-type: ${{ inputs.tag-type }}
-          force-bump-type: ${{ inputs.force-bump-type }}
-          ignore-commits: ${{ inputs.ignore-commits }}
-
-
-
+          tag_prefix: "v"
+          branch: ${{ github.ref_name }}
+          version_format: "v${major}.${minor}.${patch}"
+          bump_each_commit: ${{ inputs.bump_each_commit }}
+          bump_each_commit_patch_pattern: "(PATCH)"
+      - name: Get release candidate version
+        id: get-release-candidate-version
+        run: |
+          baseVersion=${{ steps.get-next-semantic-base-version.outputs.version }}
+          currentNumberRCs=$(git tag | grep "$baseVersion"-rc | wc -l)
+          newNumber=$(($currentNumberRCs+1))
+          releaseCandidateVersion=$baseVersion-rc$newNumber
+          echo $releaseCandidateVersion
+          echo "release-candidate-version=$releaseCandidateVersion" >> "$GITHUB_OUTPUT"
+      - name: Get full version number
+        id: get-version-number
+        run: |
+          versionNumber=${{ inputs.release_candidate_suffix &&
+          steps.get-release-candidate-version.outputs.release-candidate-version ||
+          steps.get-next-semantic-base-version.outputs.version }}
+          echo "version=$versionNumber" >> "$GITHUB_OUTPUT"
+          echo "$versionNumber"
       - name: Create tag
         if: ${{ !inputs.dry-run }}
         uses: actions/github-script@v7.0.1
