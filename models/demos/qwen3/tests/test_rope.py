@@ -13,7 +13,7 @@ from models.demos.qwen3.reference.rope import precompute_freqs_cis
 # from models.demos.qwen3.reference.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.rope import apply_rotary_ttnn, precompute_cossin
-from models.demos.qwen3.utils.test_utils import assert_hidden_dim_pcc
+from models.demos.qwen3.utils.test_utils import assert_tensor_pcc
 
 
 @pytest.mark.parametrize(
@@ -130,14 +130,14 @@ def test_rope_forward(seq_len, heads, head_dim, hf_config, mesh_device):
     ttnn.deallocate(sin_tt)
 
     # Compare PCC over hidden dim for both q and k
-    # Wrap to 4D [1,1,S,H*D] to reuse assert_hidden_dim_pcc helper
+    # Wrap to 4D [1,1,S,H*D] to reuse assert_tensor_pcc helper
     ref_cmp_q = q_rot_ref.reshape(1, 1, seq_len, heads * head_dim)
     tt_cmp_q = q_rot_torch.reshape(1, 1, seq_len, heads * head_dim)
-    assert_hidden_dim_pcc(tt_cmp_q, ref_cmp_q, pcc_required=0.98)
+    assert_tensor_pcc(tt_cmp_q, ref_cmp_q, pcc_required=0.98)
 
     ref_cmp_k = k_rot_ref.reshape(1, 1, seq_len, heads * head_dim)
     tt_cmp_k = k_rot_torch.reshape(1, 1, seq_len, heads * head_dim)
-    assert_hidden_dim_pcc(tt_cmp_k, ref_cmp_k, pcc_required=0.98)
+    assert_tensor_pcc(tt_cmp_k, ref_cmp_k, pcc_required=0.98)
 
 
 if __name__ == "__main__":
