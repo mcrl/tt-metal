@@ -1,7 +1,7 @@
 import fire
 from typing import Optional
 
-from models.demos.qwen3.generation import Qwen3MoE
+from models.demos.qwen3.generation import Qwen3MoEReference, Qwen3MoETT
 
 
 def main(
@@ -9,7 +9,7 @@ def main(
         tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
         config_path: Optional[str] = None,
 ):
-    qwen3_moe = Qwen3MoE(ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path)
+    qwen3_moe = Qwen3MoETT(ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path)
     prompts = [
         "Four score and seven years ago our fathers brought",
         "We hold these truths to be",
