@@ -23,8 +23,16 @@ from models.demos.qwen3.utils.test_utils import assert_tensor_pcc
     ],
     indirect=True,
 )
-@pytest.mark.parametrize("seq_len,heads,head_dim", [(32, 4, 128), (64, 8, 128)])
-def test_rope_forward(seq_len, heads, head_dim, hf_config, mesh_device):
+@pytest.mark.parametrize(
+    "batch_size,seq_len,heads,head_dim",
+    [
+        (1, 32, 4, 128),
+        (1, 64, 8, 128),
+        (4, 64, 8, 128),
+        (8, 64, 8, 128),
+    ],
+)
+def test_rope_forward(batch_size, seq_len, heads, head_dim, hf_config, mesh_device):
     torch.manual_seed(0)
 
     # Prepare reference config for cis computation
@@ -40,7 +48,7 @@ def test_rope_forward(seq_len, heads, head_dim, hf_config, mesh_device):
     freqs_cis = precompute_freqs_cis(ref_cfg)  # [max_seq_len, head_dim//2]
 
     # Create random q,k in reference shape [B, S, H, D]
-    B = 1
+    B = batch_size
     q_ref = torch.randn(B, seq_len, heads, head_dim, dtype=torch.float32)
     k_ref = torch.randn(B, seq_len, heads, head_dim, dtype=torch.float32)
     q_rot_ref, k_rot_ref = ref_apply_rotary(q_ref, k_ref, freqs_cis[:seq_len])
@@ -104,11 +112,11 @@ def test_rope_forward(seq_len, heads, head_dim, hf_config, mesh_device):
     q_rot_torch = q_rot_torch.permute(0, 2, 1, 3).contiguous()
     k_rot_torch = k_rot_torch.permute(0, 2, 1, 3).contiguous()
 
-    # Replicated tensors may concatenate device axis in dim 0; select first batch
-    if q_rot_torch.shape[0] != 1:
-        q_rot_torch = q_rot_torch[:1]
-    if k_rot_torch.shape[0] != 1:
-        k_rot_torch = k_rot_torch[:1]
+    # Replicated tensors may concatenate device axis in dim 0; keep original batch size
+    if q_rot_torch.shape[0] != B:
+        q_rot_torch = q_rot_torch[:B]
+    if k_rot_torch.shape[0] != B:
+        k_rot_torch = k_rot_torch[:B]
 
     # If device concat changed head or dim sizes, slice back
     if q_rot_torch.shape[2] != heads:
@@ -130,13 +138,13 @@ def test_rope_forward(seq_len, heads, head_dim, hf_config, mesh_device):
     ttnn.deallocate(sin_tt)
 
     # Compare PCC over hidden dim for both q and k
-    # Wrap to 4D [1,1,S,H*D] to reuse assert_tensor_pcc helper
-    ref_cmp_q = q_rot_ref.reshape(1, 1, seq_len, heads * head_dim)
-    tt_cmp_q = q_rot_torch.reshape(1, 1, seq_len, heads * head_dim)
+    # Wrap to 4D [B,1,S,H*D] to reuse assert_tensor_pcc helper
+    ref_cmp_q = q_rot_ref.reshape(B, 1, seq_len, heads * head_dim)
+    tt_cmp_q = q_rot_torch.reshape(B, 1, seq_len, heads * head_dim)
     assert_tensor_pcc(tt_cmp_q, ref_cmp_q, pcc_required=0.98)
 
-    ref_cmp_k = k_rot_ref.reshape(1, 1, seq_len, heads * head_dim)
-    tt_cmp_k = k_rot_torch.reshape(1, 1, seq_len, heads * head_dim)
+    ref_cmp_k = k_rot_ref.reshape(B, 1, seq_len, heads * head_dim)
+    tt_cmp_k = k_rot_torch.reshape(B, 1, seq_len, heads * head_dim)
     assert_tensor_pcc(tt_cmp_k, ref_cmp_k, pcc_required=0.98)
 
 
