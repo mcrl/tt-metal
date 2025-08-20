@@ -5,10 +5,12 @@ from torch import nn
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.reference.sdpa import sdpa_forward
 from models.demos.qwen3.reference.rope import precompute_freqs_cis, apply_rotary_emb
+import ttnn
+from models.demos.qwen3.tt.lm_head import LMHead as LMHeadTT
 
 
 class Qwen3MoeAttention(nn.Module):
-    def __init__(self, config: Qwen3MoeConfig, layer_idx: int):
+    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -22,7 +24,7 @@ class Qwen3MoeAttention(nn.Module):
         self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
-        self.q_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)  # unlike olmo, only on the head dim!
+        self.q_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device)  # unlike olmo, only on the head dim!
         self.k_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)  # thus post q_norm does not need reshape
         self.sliding_window = None
 
@@ -146,19 +148,20 @@ class Qwen3MoeRMSNorm(nn.Module):
 
 
 class Qwen3MoeDecoderLayer(nn.Module):
-    def __init__(self, config: Qwen3MoeConfig, layer_idx: int):
+    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
         super().__init__()
         self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
+        self.mesh_device = mesh_device
 
-        self.self_attn = Qwen3MoeAttention(config, layer_idx)
+        self.self_attn = Qwen3MoeAttention(config, layer_idx, mesh_device)
 
         assert (config.mlp_only_layers is None) or (layer_idx not in config.mlp_only_layers)
         assert config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
-        self.mlp = Qwen3MoeSparseMoeBlock(config, layer_idx)
+        self.mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device)
 
-        self.input_layernorm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
+        self.post_attention_layernorm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
 
     def forward(
         self,
@@ -179,18 +182,19 @@ class Qwen3MoeDecoderLayer(nn.Module):
 
 
 class Qwen3MoeModel(nn.Module):
-    def __init__(self, config: Qwen3MoeConfig):
+    def __init__(self, config: Qwen3MoeConfig, mesh_device: ttnn.Device):
         super().__init__()
         self.config = config
+        self.mesh_device = mesh_device
 
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [Qwen3MoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [Qwen3MoeDecoderLayer(config, layer_idx, mesh_device) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         position_embeddings = precompute_freqs_cis(config)
