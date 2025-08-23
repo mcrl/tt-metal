@@ -5,6 +5,7 @@ from models.demos.qwen3.generation import Qwen3MoETT
 import ttnn
 from loguru import logger
 from tests.scripts.common import get_updated_device_params
+import tt_lock
 
 
 def create_mesh_device(device_params: Optional[Dict] = None):
