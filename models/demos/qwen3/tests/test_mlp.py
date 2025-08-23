@@ -11,7 +11,7 @@ from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeMLP
 from models.demos.qwen3.tt.mlp import MLP1D
 from models.demos.qwen3.utils.run_config import create_run_config
 from models.demos.qwen3.utils.test_utils import (
-    assert_tensor_pcc,
+    compare_tensor_pcc,
     get_model_config,
     run_module_forward,
 )
@@ -75,7 +75,7 @@ def test_forward_pass(
     ttnn.deallocate(tt_input)
     ttnn.deallocate(tt_output)
 
-    assert_tensor_pcc(tt_output_torch, reference_output, pcc_required=0.98)
+    compare_tensor_pcc(tt_output_torch, reference_output, pcc_required=0.98)
 
 
 if __name__ == "__main__":

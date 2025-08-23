@@ -10,7 +10,7 @@ from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeAttention
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.attention import Qwen3MoeAttentionTT
 from models.demos.qwen3.utils.run_config import create_run_config
-from models.demos.qwen3.utils.test_utils import assert_tensor_pcc, get_model_config, run_module_forward
+from models.demos.qwen3.utils.test_utils import compare_tensor_pcc, get_model_config, run_module_forward
 
 
 @pytest.mark.parametrize(
@@ -65,7 +65,7 @@ def test_attention_prefill_forward(mode, seq_len, hf_config, tmp_path, mesh_devi
     ttnn.deallocate(tt_in)
     ttnn.deallocate(tt_out)
 
-    assert_tensor_pcc(tt_out_torch, ref_out, pcc_required=0.98)
+    compare_tensor_pcc(tt_out_torch, ref_out, pcc_required=0.98)
 
 
 if __name__ == "__main__":

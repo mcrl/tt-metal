@@ -1,5 +1,6 @@
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional
+import torch
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class Qwen3MoeConfig:
     bos_token_id: int = 151643
     pad_token_id: int = 151643
     eos_token_id: int = 151645
+    dtype: torch.dtype = torch.bfloat16
 
     @classmethod
     def get_config(cls, name: str):
