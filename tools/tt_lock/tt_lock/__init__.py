@@ -46,7 +46,7 @@ def acquire_lock():
             print("Successfully acquired lock.")
             atexit.register(_cleanup_lock)
             return
-        except BlockingIOError:
+        except (BlockingIOError, PermissionError):
             # Close the file descriptor before waiting
             if _lock_fd is not None:
                 os.close(_lock_fd)
