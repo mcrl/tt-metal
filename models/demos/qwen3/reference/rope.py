@@ -33,9 +33,15 @@ def apply_rotary_emb(
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    dtype = xq.dtype
+
+    if dtype == torch.bfloat16:
+        xq = xq.to(dtype=torch.float16)
+        xk = xk.to(dtype=torch.float16)
+
     xq_ = torch.view_as_complex(xq.reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.reshape(*xk.shape[:-1], -1, 2))
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
     xq_out = torch.view_as_real(torch.mul(xq_, freqs_cis)).flatten(3)
     xk_out = torch.view_as_real(torch.mul(xk_, freqs_cis)).flatten(3)
-    return xq_out.to(dtype=torch.float16), xk_out.to(dtype=torch.float16)
+    return xq_out.to(dtype=dtype), xk_out.to(dtype=dtype)

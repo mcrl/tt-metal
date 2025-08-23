@@ -121,8 +121,9 @@ def run_module_forward(ModuleClass: type[AbstractModule], mode: Literal["prefill
         raise ValueError(f"Unsupported mode: {mode}. Supported modes are 'prefill' and 'decode'.")
 
 
-def assert_tensor_pcc(
-    tt_output_torch: torch.Tensor, reference_output: torch.Tensor, pcc_required: float = 0.98
+def compare_tensor_pcc(
+    tt_output_torch: torch.Tensor, reference_output: torch.Tensor, pcc_required: float = 0.98,
+    msg="", assert_mode=False
 ) -> float:
     assert (
         tt_output_torch.ndim == reference_output.ndim
@@ -133,6 +134,7 @@ def assert_tensor_pcc(
         ), f"Model and reference output shape mismatch on dim {dim} ({tt_output_torch.shape[dim]} != {reference_output.shape[dim]})"
 
     passing, pcc = comp_pcc(tt_output_torch, reference_output, pcc_required)
-    logger.info(f"PCC: {pcc}")
-    assert passing, f"Pearson Correlation Coefficient {pcc} is below required {pcc_required}."
+    logger.info(f"[{msg}] Tensor shape: {tt_output_torch.shape}, PCC: {pcc}")
+    if assert_mode:
+        assert passing, f"Pearson Correlation Coefficient {pcc} is below required {pcc_required}."
     return pcc

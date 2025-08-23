@@ -10,7 +10,7 @@ from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.rms_norm import DistributedRMSNorm, RMSNorm
 from models.demos.qwen3.utils.run_config import create_run_config
 from models.demos.qwen3.utils.test_utils import (
-    assert_tensor_pcc,
+    compare_tensor_pcc,
     get_model_config,
     load_state_dict,
     run_module_forward,
@@ -101,7 +101,7 @@ def test_forward_pass(
     ttnn.deallocate(tt_input)
     ttnn.deallocate(tt_output)
 
-    assert_tensor_pcc(tt_output_torch, reference_output, pcc_required=0.98)
+    compare_tensor_pcc(tt_output_torch, reference_output, pcc_required=0.98)
 
 
 if __name__ == "__main__":

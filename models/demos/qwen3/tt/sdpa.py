@@ -20,7 +20,10 @@ def sdpa_forward(
     dropout: float = 0.0,
     scaling: Optional[float] = None,
     mesh_device: ttnn.Device = None,
+    mode="prefill"
 ) -> torch.Tensor:
+
+    assert mode in ["prefill", "decode"], f"Unsupported mode: {mode}"
 
     query_shape = query.shape
     key_shape = key.shape
@@ -43,10 +46,16 @@ def sdpa_forward(
         key,
         value,
         attn_mask=attention_mask,
-        is_causal=False,
-        scale=scaling
+        is_causal=True,
+        scale=scaling,
+        compute_kernel_config=ttnn.WormholeComputeKernelConfig(
+            math_fidelity=ttnn.MathFidelity.HiFi4,
+            math_approx_mode=False,
+        )
     )
+
     attn_output = ttnn.to_layout(ttnn.permute(attn_output, dims=(0, 2, 1, 3)), layout=ttnn.ROW_MAJOR_LAYOUT)
+
     attn_output = ttnn.slice(attn_output, [0, 0, 0, 0], [query_shape[0], query_shape[2], query_shape[1], value_shape[3]])
 
     return attn_output

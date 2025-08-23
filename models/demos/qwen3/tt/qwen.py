@@ -1,9 +1,11 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
+from typing import Literal
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
-from models.demos.qwen3.reference.sdpa import sdpa_forward
+from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward, repeat_kv
+from models.demos.qwen3.reference.sdpa import sdpa_forward as cpu_sdpa_forward
 from models.demos.qwen3.reference.rope import precompute_freqs_cis, apply_rotary_emb
 import ttnn
 from models.demos.qwen3.tt.lm_head import LMHead as LMHeadTT
@@ -14,6 +16,7 @@ class Qwen3MoeAttention(nn.Module):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
+        self.mesh_device = mesh_device
         self.head_dim = config.head_dim
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
@@ -29,8 +32,8 @@ class Qwen3MoeAttention(nn.Module):
         self.sliding_window = None
 
         cache_shape = (config.max_batch_size, config.max_seq_len, self.num_key_value_heads, self.head_dim)
-        cache_k = torch.zeros(cache_shape, dtype=torch.float16, device=torch.device("cpu"), requires_grad=False)
-        cache_v = torch.zeros(cache_shape, dtype=torch.float16, device=torch.device("cpu"), requires_grad=False)
+        cache_k = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
+        cache_v = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
         self.register_buffer("cache_k", cache_k, persistent=False)
         self.register_buffer("cache_v", cache_v, persistent=False)
 
@@ -45,6 +48,7 @@ class Qwen3MoeAttention(nn.Module):
         start_pos: int,
         position_embeddings: torch.Tensor,
         attention_mask: torch.Tensor,
+        mode: Literal["prefill", "decode"] = "prefill"
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
         input_shape = hidden_states.shape[:-1]
@@ -62,11 +66,64 @@ class Qwen3MoeAttention(nn.Module):
         key_states = self.cache_k[:batch_size, : start_pos + seq_len]
         value_states = self.cache_v[:batch_size, : start_pos + seq_len]
 
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
+        query_states = query_states.transpose(1, 2)  # [B n S H]
+        key_states = key_states.transpose(1, 2)  # [B n_key S H]
+        value_states = value_states.transpose(1, 2)  # [B n_key S H]
 
-        attn_output = sdpa_forward(query_states, key_states, value_states, attention_mask)
+        if self.num_key_value_heads != self.config.num_attention_heads:
+            key_states = repeat_kv(key_states, self.num_key_value_groups)
+            value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        if mode == "prefill":
+            mapper = ttnn.ShardTensorToMesh(self.mesh_device, dim=1)
+            tt_q = ttnn.from_torch(
+                query_states,
+                device=self.mesh_device,
+                mesh_mapper=mapper,
+                dtype=ttnn.bfloat16,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.TILE_LAYOUT,
+            )
+            tt_k = ttnn.from_torch(
+                key_states,
+                device=self.mesh_device,
+                mesh_mapper=mapper,
+                dtype=ttnn.bfloat16,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.TILE_LAYOUT,
+            )
+            tt_v = ttnn.from_torch(
+                value_states,
+                device=self.mesh_device,
+                mesh_mapper=mapper,
+                dtype=ttnn.bfloat16,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.TILE_LAYOUT,
+            )
+
+            tt_out = tt_sdpa_forward(
+                tt_q,
+                tt_k,
+                tt_v,
+                attention_mask=None,
+                dropout=0.0,
+                scaling=self.scaling,
+                mesh_device=self.mesh_device,
+                mode=mode,
+            )
+            attn_output = ttnn.to_torch(tt_out, dtype=self.config.dtype,
+                                        mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
+
+            # from utils.test_utils import compare_tensor_pcc
+            # compare_tensor_pcc(attn_output, attn_output_cpu, msg="sdpa", assert_mode=True)
+
+            # Cleanup device tensors
+            ttnn.deallocate(tt_q)
+            ttnn.deallocate(tt_k)
+            ttnn.deallocate(tt_v)
+            ttnn.deallocate(tt_out)
+        else:
+            attn_output = cpu_sdpa_forward(query_states, key_states, value_states, attention_mask)
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -172,12 +229,14 @@ class Qwen3MoeDecoderLayer(nn.Module):
         start_pos: int,
         position_embeddings: torch.Tensor,
         attention_mask: torch.Tensor,
+        mode: Literal["prefill", "decode"] = "prefill"
     ) -> torch.Tensor:
         hidden_states = hidden_states + self.self_attn(
             hidden_states=self.input_layernorm(hidden_states),
             start_pos=start_pos,
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
+            mode=mode,
         )
 
         hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
@@ -208,7 +267,7 @@ class Qwen3MoeModel(nn.Module):
         # Initialize weights and apply final processing
         # self.post_init()
 
-    def forward(self, input_ids: torch.LongTensor, start_pos: int = 0) -> torch.Tensor:
+    def forward(self, input_ids: torch.LongTensor, start_pos: int = 0, mode: Literal["prefill", "decode"] = "prefill") -> torch.Tensor:
         batch_size, seq_len = input_ids.shape
 
         position_embeddings = self.position_embeddings[start_pos: start_pos + seq_len]
@@ -220,13 +279,15 @@ class Qwen3MoeModel(nn.Module):
 
         hidden_states = self.embed_tokens(input_ids)
 
-        for decoder_layer in self.layers:
+        for layer_idx, decoder_layer in enumerate(self.layers):
             hidden_states = decoder_layer(
                 hidden_states=hidden_states,
                 start_pos=start_pos,
                 position_embeddings=position_embeddings,
                 attention_mask=attention_mask,
+                mode=mode,
             )
+            print(f"layer {layer_idx} forward done")
 
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)

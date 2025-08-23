@@ -64,7 +64,7 @@ class Qwen3MoEReference:
         input_text_mask = torch.ne(tokens, pad_id)
         for curr_pos in range(min_prompt_len, total_len):
             with torch.inference_mode():
-                logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos)
+                logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode="decode")
 
             if temperature > 0:
                 probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
@@ -89,7 +89,7 @@ class Qwen3MoETT:
     def __init__(self, mesh_device: ttnn.Device, ckpt_dir: str, tokenizer_path: str, config_path: Optional[str] = None) -> None:
         torch.manual_seed(42)
         torch.set_default_device(torch.device("cpu"))
-        torch.set_default_dtype(torch.float16)
+        torch.set_default_dtype(torch.bfloat16)
 
         self.mesh_device = mesh_device
 
@@ -128,7 +128,8 @@ class Qwen3MoETT:
         input_text_mask = torch.ne(tokens, pad_id)
         for curr_pos in range(min_prompt_len, total_len):
             with torch.inference_mode():
-                logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos)
+                mode = "prefill" if prev_pos == 0 else "decode"
+                logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
 
             if temperature > 0:
                 probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
