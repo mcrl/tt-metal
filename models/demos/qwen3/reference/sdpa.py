@@ -23,6 +23,11 @@ def sdpa_forward(
     key = key.contiguous()
     value = value.contiguous()
 
+    if attention_mask is not None:
+        print(f"{query.shape=}, {key.shape=}, {value.shape=}, {attention_mask.shape=}")
+    else:
+        print(f"{query.shape=}, {key.shape=}, {value.shape=}")
+
     attn_output = torch.nn.functional.scaled_dot_product_attention(
         query,
         key,
