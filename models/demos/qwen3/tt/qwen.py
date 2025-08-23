@@ -70,64 +70,119 @@ class Qwen3MoeAttention(nn.Module):
         key_states = key_states.transpose(1, 2)  # [B n_key S H]
         value_states = value_states.transpose(1, 2)  # [B n_key S H]
 
+        """ ############## SDPA ############## """
+
+        # attn_output_cpu = cpu_sdpa_forward(query_states, key_states, value_states, attention_mask)
+        # attn_output = attn_output_cpu
         if self.num_key_value_heads != self.config.num_attention_heads:
             key_states = repeat_kv(key_states, self.num_key_value_groups)
             value_states = repeat_kv(value_states, self.num_key_value_groups)
 
+        mapper = ttnn.ShardTensorToMesh(self.mesh_device, dim=1)
+        tt_q = ttnn.from_torch(
+            query_states,
+            device=self.mesh_device,
+            mesh_mapper=mapper,
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
+        )
+        tt_k = ttnn.from_torch(
+            key_states,
+            device=self.mesh_device,
+            mesh_mapper=mapper,
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
+        )
+        tt_v = ttnn.from_torch(
+            value_states,
+            device=self.mesh_device,
+            mesh_mapper=mapper,
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
+        )
+
         if mode == "prefill":
-            mapper = ttnn.ShardTensorToMesh(self.mesh_device, dim=1)
-            tt_q = ttnn.from_torch(
-                query_states,
-                device=self.mesh_device,
-                mesh_mapper=mapper,
-                dtype=ttnn.bfloat16,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                layout=ttnn.TILE_LAYOUT,
-            )
-            tt_k = ttnn.from_torch(
-                key_states,
-                device=self.mesh_device,
-                mesh_mapper=mapper,
-                dtype=ttnn.bfloat16,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                layout=ttnn.TILE_LAYOUT,
-            )
-            tt_v = ttnn.from_torch(
-                value_states,
-                device=self.mesh_device,
-                mesh_mapper=mapper,
-                dtype=ttnn.bfloat16,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                layout=ttnn.TILE_LAYOUT,
-            )
-
-            tt_out = tt_sdpa_forward(
-                tt_q,
-                tt_k,
-                tt_v,
-                attention_mask=None,
-                dropout=0.0,
-                scaling=self.scaling,
-                mesh_device=self.mesh_device,
-                mode=mode,
-            )
-            attn_output = ttnn.to_torch(tt_out, dtype=self.config.dtype,
-                                        mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
-
-            # from utils.test_utils import compare_tensor_pcc
-            # compare_tensor_pcc(attn_output, attn_output_cpu, msg="sdpa", assert_mode=True)
-
-            # Cleanup device tensors
-            ttnn.deallocate(tt_q)
-            ttnn.deallocate(tt_k)
-            ttnn.deallocate(tt_v)
-            ttnn.deallocate(tt_out)
+            tt_attention_mask = None
         else:
-            attn_output = cpu_sdpa_forward(query_states, key_states, value_states, attention_mask)
+            tt_attention_mask = ttnn.from_torch(
+                attention_mask.repeat(query_states.shape[0], self.mesh_device.shape[1], 1, 1),
+                device=self.mesh_device,
+                mesh_mapper=mapper,
+                dtype=ttnn.bfloat16,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            )
 
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        attn_output = self.o_proj(attn_output)
-        return attn_output
+        tt_out = tt_sdpa_forward(
+            tt_q,
+            tt_k,
+            tt_v,
+            attention_mask=tt_attention_mask,
+            dropout=0.0,
+            scaling=self.scaling,
+            mesh_device=self.mesh_device,
+            mode=mode,
+        )  # [B S N H/N] split dim=2
+
+        tt_out = ttnn.reshape(tt_out, [tt_out.shape[0], tt_out.shape[1], tt_out.shape[2] * tt_out.shape[3]])
+
+        attn_output = ttnn.to_torch(tt_out, dtype=self.config.dtype,
+                                    mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
+
+        # Cleanup device tensors
+        ttnn.deallocate(tt_q)
+        ttnn.deallocate(tt_k)
+        ttnn.deallocate(tt_v)
+        if tt_attention_mask is not None:
+            ttnn.deallocate(tt_attention_mask)
+
+        """ ############## Output Linear ############## """
+        # tt_out: [B S H/8], split along dim=2. So [B S H/8](x8)
+        # tt_weight: [H H], split along dim=1. So [H H/8](x8)
+        tt_weight = ttnn.from_torch(
+            self.o_proj.weight,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
+        )
+        tt_out = ttnn.to_layout(tt_out, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        tt_weight = ttnn.to_layout(tt_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+
+        linear_output_ttnn = ttnn.linear(
+            tt_out,
+            tt_weight,
+            transpose_a=False,
+            transpose_b=True,
+            dtype=ttnn.bfloat16,
+        )
+
+        linear_output_cpu = ttnn.to_torch(linear_output_ttnn, dtype=self.config.dtype,
+                                          mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
+        B, S, H = linear_output_cpu.shape[0], linear_output_cpu.shape[1], linear_output_cpu.shape[2] // 8
+        linear_output_cpu = linear_output_cpu.view(B, S, 8, H).sum(dim=2)
+
+        if False:
+            linear_output_answer = self.o_proj(attn_output)
+            linear_output_ttnn = ttnn.reshape(linear_output_ttnn,
+                                              (1, 1, 1, -1))
+            from models.tt_transformers.tt.ccl import tt_all_reduce, TT_CCL
+            linear_output_ttnn_reduced = tt_all_reduce(
+                linear_output_ttnn,
+                self.mesh_device,
+                TT_CCL(self.mesh_device),
+                cluster_axis=2,
+                dim=3,
+                sharded=True
+            )
+            print(f"{linear_output_ttnn_reduced.shape=}")  # [B S H] x 8
+            from utils.test_utils import compare_tensor_pcc
+            compare_tensor_pcc(linear_output_ttnn_reduced, linear_output_answer, msg="linear", assert_mode=True)
+
+        return linear_output_cpu
 
 
 class Qwen3MoeMLP(nn.Module):

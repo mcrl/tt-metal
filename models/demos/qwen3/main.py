@@ -37,7 +37,7 @@ def main(
         "Four score and seven years ago our fathers brought",
         "We hold these truths to be",
     ]
-    responses = qwen3_moe.generate(prompts, max_gen_len=16, temperature=0.4, top_p=0.8)
+    responses = qwen3_moe.generate(prompts, max_gen_len=6, temperature=0.4, top_p=0.8)
 
     for prompt, completion in responses:
         print("\033[31m" + prompt + "\033[0m" + completion + "\n")

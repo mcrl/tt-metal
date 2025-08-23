@@ -201,7 +201,7 @@ class Qwen3MoeModel(nn.Module):
         # Initialize weights and apply final processing
         # self.post_init()
 
-    def forward(self, input_ids: torch.LongTensor, start_pos: int = 0) -> torch.Tensor:
+    def forward(self, input_ids: torch.LongTensor, start_pos: int = 0, mode="prefill") -> torch.Tensor:
         batch_size, seq_len = input_ids.shape
 
         position_embeddings = self.position_embeddings[start_pos: start_pos + seq_len]
