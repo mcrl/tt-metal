@@ -28,6 +28,7 @@ def _cleanup_lock():
             print("Lock released.")
     except:
         pass
+    time.sleep(2)
 
 def acquire_lock():
     """
@@ -44,6 +45,7 @@ def acquire_lock():
             _lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o666)
             fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             print("Successfully acquired lock.")
+            time.sleep(2)
             atexit.register(_cleanup_lock)
             return
         except (BlockingIOError, PermissionError):
