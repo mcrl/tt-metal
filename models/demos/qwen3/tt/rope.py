@@ -1,63 +1,62 @@
-# SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC.
-# SPDX-License-Identifier: Apache-2.0
 
 from typing import Tuple
-
 import torch
-
 import ttnn
 
+from .qwen import Qwen3MoeConfig
 
-def precompute_cossin(
-    *,
-    theta: float,
-    head_dim: int,
-    max_seq_len: int,
-    dtype: torch.dtype = torch.float32,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Precompute RoPE cos/sin caches for TT usage.
 
-    Returns tensors shaped [max_seq_len, head_dim] in torch.float32 by default.
-
-    Notes:
-    - Matches reference Qwen3 cis definition that uses angle = -freqs; to align,
-      we emit sin with a negative sign.
-    """
+def precompute_freqs_cis(config: Qwen3MoeConfig) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
+    theta = config.rope_theta
+    dim = config.head_dim
+    max_seq_len = config.max_seq_len
 
     with torch.device("cpu"), torch.no_grad():
-        half_dim = head_dim // 2
-        assert head_dim % 2 == 0, "head_dim must be even for rotary embedding"
+        indices = torch.div(torch.arange(start=0, end=dim, step=2, dtype=torch.int64).to(dtype=torch.float32)[: (dim // 2)], dim)
+        freqs = torch.reciprocal(torch.pow(theta, indices)).to(dtype=torch.float32)
+        t = torch.arange(start=0, end=max_seq_len, step=1, dtype=torch.int64).to(dtype=torch.float32)
+        freqs = torch.outer(t, freqs).to(dtype=torch.float32)
+        freqs_cis = torch.polar(abs=torch.ones_like(input=freqs, dtype=torch.float32), angle=torch.neg(freqs))
 
-        indices = torch.arange(0, half_dim, dtype=torch.float32) / head_dim
-        freqs = torch.pow(theta, -indices)  # [half_dim]
-        t = torch.arange(0, max_seq_len, dtype=torch.float32)  # [max_seq_len]
-        angles = torch.outer(t, freqs).to(dtype)  # [max_seq_len, half_dim]
-
-        # Duplicate half-dim by concatenation: [t1, .., t_half, t1, .., t_half]
-        angles_cat = torch.cat([angles, angles], dim=-1)  # [max_seq_len, head_dim]
-        cos = torch.cos(angles_cat)
-        sin = torch.sin(angles_cat)
-
-    return cos.to(dtype), sin.to(dtype)
+    return freqs_cis.real, freqs_cis.imag
 
 
-def apply_rotary_ttnn(
-    x: ttnn.Tensor,
-    cos: ttnn.Tensor,
-    sin: ttnn.Tensor,
-    *,
-    memory_config: ttnn.MemoryConfig | None = None,
-) -> ttnn.Tensor:
-    """Apply RoPE to a TTNN tensor using precomputed cos/sin caches.
+def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
+    ndim = x.ndim
+    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+    return freqs_cis.view(*shape)
 
-    Args:
-        x: Input tensor shaped [1, heads, seq_len, head_dim] (TILE layout).
-        cos, sin: Caches shaped [seq_len, head_dim // 2].
-        memory_config: Optional output memory config (defaults to x.memory_config()).
 
-    Returns:
-        Rotated tensor with the same shape as input.
-    """
+def apply_rotary_emb(
+    xq: ttnn.Tensor,
+    xk: ttnn.Tensor,
+    freqs_cis: Tuple[ttnn.Tensor, ttnn.Tensor],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    xq = ttnn.to_layout(xq, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
+    xk = ttnn.to_layout(xk, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
 
-    output_memcfg = memory_config or x.memory_config()
-    return ttnn.experimental.rotary_embedding(x, cos, sin, None, memory_config=output_memcfg)
+    def rotate(x: ttnn.Tensor):
+        batch_size, seq_len, num_heads, head_dim = x.shape
+
+        cos, sin = freqs_cis
+        cos = ttnn.reshape(ttnn.repeat(ttnn.reshape(cos, [1, seq_len, 1, head_dim // 2]),
+                                       [batch_size, 1, num_heads, 1]),
+                           [batch_size, seq_len, num_heads, head_dim // 2, 1])
+        sin = ttnn.reshape(ttnn.repeat(ttnn.reshape(sin, [1, seq_len, 1, head_dim // 2]),
+                                       [batch_size, 1, num_heads, 1]),
+                           [batch_size, seq_len, num_heads, head_dim // 2, 1])
+
+        x_ = ttnn.reshape(x, (batch_size, seq_len, num_heads, head_dim // 2, 2))
+        even = ttnn.slice(x_, (0, 0, 0, 0, 0), (batch_size, seq_len, num_heads, head_dim // 2, 1))
+        odd = ttnn.slice(x_, (0, 0, 0, 0, 1), (batch_size, seq_len, num_heads, head_dim // 2, 2))
+
+        real = ttnn.subtract(ttnn.multiply(even, cos), ttnn.multiply(odd, sin))
+        imag = ttnn.add(ttnn.multiply(odd, cos), ttnn.multiply(even, sin))
+        y = ttnn.concat([real, imag], dim=-1)
+
+        return ttnn.reshape(y, (batch_size, seq_len, num_heads, head_dim))
+
+    yq = ttnn.to_layout(rotate(xq), layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
+    yk = ttnn.to_layout(rotate(xk), layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
+    return yq, yk

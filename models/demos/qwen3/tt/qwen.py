@@ -1,14 +1,18 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-from typing import Literal
+from typing import Literal, Tuple
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
-from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward, repeat_kv
+from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward, repeat_kv, repeat_kv_dim2
 from models.demos.qwen3.reference.sdpa import sdpa_forward as cpu_sdpa_forward
 from models.demos.qwen3.reference.rope import precompute_freqs_cis, apply_rotary_emb
 import ttnn
 from models.demos.qwen3.tt.lm_head import LMHead as LMHeadTT
+from models.demos.qwen3.tt.rope import precompute_freqs_cis as precompute_freqs_cis_tt
+from models.demos.qwen3.tt.rope import apply_rotary_emb as apply_rotary_emb_tt
+
+from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 
 
 class Qwen3MoeAttention(nn.Module):
@@ -31,7 +35,8 @@ class Qwen3MoeAttention(nn.Module):
         self.k_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device)  # thus post q_norm does not need reshape
         self.sliding_window = None
 
-        cache_shape = (config.max_batch_size, config.max_seq_len, self.num_key_value_heads, self.head_dim)
+        # cache_shape = (config.max_batch_size, config.max_seq_len, self.num_key_value_heads, self.head_dim)
+        cache_shape = (config.max_batch_size, config.max_seq_len, self.num_key_value_heads * self.num_key_value_groups, self.head_dim)
         cache_k = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
         cache_v = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
         self.register_buffer("cache_k", cache_k, persistent=False)
@@ -47,36 +52,60 @@ class Qwen3MoeAttention(nn.Module):
         hidden_states: torch.Tensor,
         start_pos: int,
         position_embeddings: torch.Tensor,
+        position_embeddings_tt: Tuple[ttnn.Tensor, ttnn.Tensor],  # (cos, sin)
         attention_mask: torch.Tensor,
         mode: Literal["prefill", "decode"] = "prefill"
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
         input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)  # [batch_size, seq_len, -1, head_dim]
+        hidden_shape = (*input_shape, -1, self.head_dim)  # [batch_size, seq_len, n_head, head_dim]
+
+        """ ############## QKV Projection ############## """
 
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape))
         key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape))
         value_states = self.v_proj(hidden_states).view(hidden_shape)
 
-        query_states, key_states = apply_rotary_emb(query_states, key_states, position_embeddings)
+        if self.num_key_value_heads != self.config.num_attention_heads:
+            key_states = repeat_kv_dim2(key_states, self.num_key_value_groups)
+            value_states = repeat_kv_dim2(value_states, self.num_key_value_groups)
+
+        """ ############## Rotary Embedding ############## """
+
+        mapper = ttnn.ShardTensorToMesh(self.mesh_device, dim=2)
+        query_states_tt = ttnn.from_torch(query_states, device=self.mesh_device, mesh_mapper=mapper,
+                                          dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG, layout=ttnn.ROW_MAJOR_LAYOUT)
+        key_states_tt = ttnn.from_torch(key_states, device=self.mesh_device, mesh_mapper=mapper,
+                                        dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG, layout=ttnn.ROW_MAJOR_LAYOUT)
+        query_states_tt = ttnn.to_layout(query_states_tt, ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        key_states_tt = ttnn.to_layout(key_states_tt, ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+
+        # query_states, key_states = apply_rotary_emb(query_states, key_states, position_embeddings)
+        query_states_tt, key_states_tt = apply_rotary_emb_tt(query_states_tt, key_states_tt, position_embeddings_tt)
+
+        query_states = ttnn.to_torch(query_states_tt, dtype=torch.bfloat16,
+                                     mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
+        key_states = ttnn.to_torch(key_states_tt, dtype=torch.bfloat16,
+                                   mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
+        ttnn.deallocate(query_states_tt)
+        ttnn.deallocate(key_states_tt)
 
         self.cache_k[:batch_size, start_pos: start_pos + seq_len] = key_states
         self.cache_v[:batch_size, start_pos: start_pos + seq_len] = value_states
-
         key_states = self.cache_k[:batch_size, : start_pos + seq_len]
         value_states = self.cache_v[:batch_size, : start_pos + seq_len]
+
+        """ ############## SDPA ############## """
 
         query_states = query_states.transpose(1, 2)  # [B n S H]
         key_states = key_states.transpose(1, 2)  # [B n_key S H]
         value_states = value_states.transpose(1, 2)  # [B n_key S H]
 
-        """ ############## SDPA ############## """
-
         # attn_output_cpu = cpu_sdpa_forward(query_states, key_states, value_states, attention_mask)
         # attn_output = attn_output_cpu
-        if self.num_key_value_heads != self.config.num_attention_heads:
-            key_states = repeat_kv(key_states, self.num_key_value_groups)
-            value_states = repeat_kv(value_states, self.num_key_value_groups)
+        # if self.num_key_value_heads != self.config.num_attention_heads:
+        #     key_states = repeat_kv(key_states, self.num_key_value_groups)
+        #     value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         mapper = ttnn.ShardTensorToMesh(self.mesh_device, dim=1)
         tt_q = ttnn.from_torch(
@@ -138,7 +167,7 @@ class Qwen3MoeAttention(nn.Module):
         if tt_attention_mask is not None:
             ttnn.deallocate(tt_attention_mask)
 
-        """ ############## Output Linear ############## """
+        """ ############## Output Projection ############## """
         # tt_out: [B S H/8], split along dim=2. So [B S H/8](x8)
         # tt_weight: [H H], split along dim=1. So [H H/8](x8)
         tt_weight = ttnn.from_torch(
@@ -179,7 +208,6 @@ class Qwen3MoeAttention(nn.Module):
                 sharded=True
             )
             print(f"{linear_output_ttnn_reduced.shape=}")  # [B S H] x 8
-            from utils.test_utils import compare_tensor_pcc
             compare_tensor_pcc(linear_output_ttnn_reduced, linear_output_answer, msg="linear", assert_mode=True)
 
         return linear_output_cpu
@@ -219,27 +247,39 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
-        hidden_states = hidden_states.view(-1, hidden_dim)
+        hidden_states = hidden_states.view(-1, hidden_dim)  # [BS H], S=1 at decode phase
 
-        router_logits = self.gate(hidden_states)
+        router_logits = self.gate(hidden_states)  # [BS E]
 
-        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
-        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)  # [BS E]
+        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)  # [BS 8] [BS 8]
+
+        # print(f"{routing_weights=} {selected_experts=}")
         if self.norm_topk_prob:
             routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
-        routing_weights = routing_weights.to(hidden_states.dtype)
+        routing_weights = routing_weights.to(hidden_states.dtype)  # [BS 8]
 
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
-        )
+        )  # [BS H]
+
+        # E = num_experts = 128, top_k = 8
+        # [BS 8 E] => [E 8 BS] = [128 8 BS]
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+
+        # [E 8 BS] => [E] > 0 => [E] => [E_active, 1]
         expert_hitted = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        # print(f"{expert_hitted=}")
 
         for expert_idx in expert_hitted:
             expert_layer = self.experts[expert_idx]
+            # print(f"{expert_idx=} {expert_mask[expert_idx]=} {expert_mask[expert_idx].squeeze(0)=}")
             idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
 
-            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+            # print(f"{expert_idx=} {idx=} {top_x=}")
+
+            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)  # [N H]
             current_hidden_states = torch.mul(expert_layer(current_state), routing_weights[top_x, idx, None])
 
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
@@ -283,6 +323,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         start_pos: int,
         position_embeddings: torch.Tensor,
+        position_embeddings_tt: Tuple[ttnn.Tensor, ttnn.Tensor],
         attention_mask: torch.Tensor,
         mode: Literal["prefill", "decode"] = "prefill"
     ) -> torch.Tensor:
@@ -290,6 +331,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             hidden_states=self.input_layernorm(hidden_states),
             start_pos=start_pos,
             position_embeddings=position_embeddings,
+            position_embeddings_tt=position_embeddings_tt,
             attention_mask=attention_mask,
             mode=mode,
         )
@@ -315,6 +357,7 @@ class Qwen3MoeModel(nn.Module):
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         position_embeddings = precompute_freqs_cis(config)
+        self.position_embeddings_tt = precompute_freqs_cis_tt(config)
         self.register_buffer("position_embeddings", position_embeddings, persistent=False)
 
         assert config.sliding_window is None
@@ -326,6 +369,16 @@ class Qwen3MoeModel(nn.Module):
         batch_size, seq_len = input_ids.shape
 
         position_embeddings = self.position_embeddings[start_pos: start_pos + seq_len]
+
+        pos_embs_cos = self.position_embeddings_tt[0][start_pos: start_pos + seq_len]
+        pos_embs_sin = self.position_embeddings_tt[1][start_pos: start_pos + seq_len]
+
+        mapper = ttnn.ReplicateTensorToMesh(self.mesh_device)
+        cos_tt = ttnn.from_torch(pos_embs_cos, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT,
+                                 device=self.mesh_device, memory_config=ttnn.DRAM_MEMORY_CONFIG, mesh_mapper=mapper)
+        sin_tt = ttnn.from_torch(pos_embs_sin, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT,
+                                 device=self.mesh_device, memory_config=ttnn.DRAM_MEMORY_CONFIG, mesh_mapper=mapper)
+
         attention_mask = (
             torch.full(size=(1, 1, seq_len, start_pos + seq_len), fill_value=True, dtype=torch.bool)
             .triu_(diagonal=start_pos + 1)
@@ -335,10 +388,13 @@ class Qwen3MoeModel(nn.Module):
         hidden_states = self.embed_tokens(input_ids)
 
         for layer_idx, decoder_layer in enumerate(self.layers):
+            position_embeddings_tt = cos_tt, sin_tt
+
             hidden_states = decoder_layer(
                 hidden_states=hidden_states,
                 start_pos=start_pos,
                 position_embeddings=position_embeddings,
+                position_embeddings_tt=position_embeddings_tt,
                 attention_mask=attention_mask,
                 mode=mode,
             )

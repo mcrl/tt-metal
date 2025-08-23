@@ -12,6 +12,14 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, seq_len, head_dim)
 
 
+def repeat_kv_dim2(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    batch, seq_len, num_key_value_heads, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, :, None, :].expand(batch, seq_len, num_key_value_heads, n_rep, head_dim)  # [B, S, H, 1, D] -> [B, S, H, N, D]
+    return hidden_states.reshape(batch, seq_len, n_rep * num_key_value_heads, head_dim)
+
+
 def sdpa_forward_prefill(
     query: ttnn.Tensor,
     key: ttnn.Tensor,
