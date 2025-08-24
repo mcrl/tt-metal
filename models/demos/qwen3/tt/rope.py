@@ -57,6 +57,6 @@ def apply_rotary_emb(
 
         return ttnn.reshape(y, (batch_size, seq_len, num_heads, head_dim))
 
-    yq = ttnn.to_layout(rotate(xq), layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
-    yk = ttnn.to_layout(rotate(xk), layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
+    yq = ttnn.to_layout(rotate(xq), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
+    yk = ttnn.to_layout(rotate(xk), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
     return yq, yk

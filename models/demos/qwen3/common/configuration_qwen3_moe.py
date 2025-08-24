@@ -3,7 +3,7 @@ from typing import List, Dict, Optional
 import torch
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=False)
 class Qwen3MoeConfig:
     # Default: Qwen3-30B-A3B
     vocab_size: int = 151936
