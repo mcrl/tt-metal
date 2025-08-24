@@ -211,30 +211,43 @@ class Qwen3MoeAttention(nn.Module):
             transpose_a=False,
             transpose_b=True,
             dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
+        
+        # All-reduce across devices to sum the partial results
+        B, S, H = linear_output_ttnn.shape
+        linear_output_ttnn = linear_output_ttnn.reshape(B, S, 1, H)
 
-        linear_output_cpu = ttnn.to_torch(linear_output_ttnn, dtype=self.config.dtype,
-                                          mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
-        B, S, H = linear_output_cpu.shape[0], linear_output_cpu.shape[1], linear_output_cpu.shape[2] // 8
-        linear_output_cpu = linear_output_cpu.view(B, S, 8, H).sum(dim=2)
+        linear_output_ttnn_reduced = ttnn.reduce_scatter(
+            linear_output_ttnn,
+            dim=-1,
+            math_op=ttnn.ReduceType.Sum,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            topology=ttnn.Topology.Linear
+        )
+        ttnn.synchronize_device(self.mesh_device)
+        linear_output_ttnn_gathered = ttnn.all_gather(
+            linear_output_ttnn_reduced,
+            dim=-1,
+            cluster_axis=1,
+            topology=ttnn.Topology.Linear,
+            mesh_device=self.mesh_device
+        )
+        ttnn.synchronize_device(self.mesh_device)
+
+        linear_output_torch = ttnn.to_torch(
+            linear_output_ttnn_gathered, 
+            dtype=self.config.dtype,
+            mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2)
+        ).view(B, S, 8, H)
 
         if False:
+            from utils.test_utils import compare_tensor_pcc
             linear_output_answer = self.o_proj(attn_output)
-            linear_output_ttnn = ttnn.reshape(linear_output_ttnn,
-                                              (1, 1, 1, -1))
-            from models.tt_transformers.tt.ccl import tt_all_reduce, TT_CCL
-            linear_output_ttnn_reduced = tt_all_reduce(
-                linear_output_ttnn,
-                self.mesh_device,
-                TT_CCL(self.mesh_device),
-                cluster_axis=2,
-                dim=3,
-                sharded=True
-            )
-            print(f"{linear_output_ttnn_reduced.shape=}")  # [B S H] x 8
-            compare_tensor_pcc(linear_output_ttnn_reduced, linear_output_answer, msg="linear", assert_mode=True)
 
-        return linear_output_cpu
+            compare_tensor_pcc(linear_output_torch[:, :, 0, :], linear_output_answer, msg="linear", assert_mode=False)
+        
+        return linear_output_torch[:, :, 0, :]
 
 
 class Qwen3MoeMLP(nn.Module):
