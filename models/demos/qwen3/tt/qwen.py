@@ -111,9 +111,8 @@ class Qwen3MoeAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         start_pos: int,
-        position_embeddings: torch.Tensor,
-        position_embeddings_tt: Tuple[ttnn.Tensor, ttnn.Tensor],  # (cos, sin)
-        attention_mask: torch.Tensor,
+        position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],  # (cos, sin)
+        attention_mask: ttnn.Tensor,
         mode: Literal["prefill", "decode"] = "prefill"
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
@@ -137,8 +136,10 @@ class Qwen3MoeAttention(nn.Module):
         value_states_tt = ttnn.reshape(value_states_tt, hidden_shape)
 
         ttnn.deallocate(hidden_states_tt)
+
+
         """ ############## Rotary Embedding ############## """
-        query_states_tt, key_states_tt = apply_rotary_emb_tt(query_states_tt, key_states_tt, position_embeddings_tt)
+        query_states_tt, key_states_tt = apply_rotary_emb_tt(query_states_tt, key_states_tt, position_embeddings)
         # # [B n S H]
         query_states_tt = ttnn.permute(query_states_tt, dims=(0, 2, 1, 3))
         key_states_tt = ttnn.permute(key_states_tt, dims=(0, 2, 1, 3))
@@ -163,42 +164,28 @@ class Qwen3MoeAttention(nn.Module):
         value_states_tt = self.cache_v_tt[:batch_size, :, : start_pos + seq_len, :]
 
         """ ############## SDPA ############## """
-        tt_q = query_states_tt
-        tt_k = key_states_tt
-        tt_v = value_states_tt
-        if mode == "prefill":
-            tt_attention_mask = None
-        else:
-            tt_attention_mask = ttnn.from_torch(
-                attention_mask.repeat(batch_size, self.mesh_device.shape[1], 1, 1),
-                device=self.mesh_device,
-                mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                dtype=ttnn.bfloat16,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            )
 
         tt_out = tt_sdpa_forward(
-            tt_q,
-            tt_k,
-            tt_v,
-            attention_mask=tt_attention_mask,
+            query_states_tt,
+            key_states_tt,
+            value_states_tt
+,
+            attention_mask=attention_mask if mode=="decode" else None,
             dropout=0.0,
             scaling=self.scaling,
             mesh_device=self.mesh_device,
             mode=mode,
         )  # [B S N H/N] split dim=2
 
+        # [B S H/8](x8)
         tt_out = ttnn.reshape(tt_out, [tt_out.shape[0], tt_out.shape[1], tt_out.shape[2] * tt_out.shape[3]])
 
-        attn_output = ttnn.to_torch(tt_out, dtype=self.config.dtype,
-                                    mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
-
         # Cleanup device tensors
-        ttnn.deallocate(tt_q)
-        ttnn.deallocate(tt_k)
-        ttnn.deallocate(tt_v)
-        if tt_attention_mask is not None:
-            ttnn.deallocate(tt_attention_mask)
+        ttnn.deallocate(query_states_tt)
+        ttnn.deallocate(key_states_tt)
+        ttnn.deallocate(value_states_tt)
+        # if tt_attention_mask is not None:
+        #     ttnn.deallocate(tt_attention_mask)
 
         """ ############## Output Projection ############## """
         # tt_out: [B S H/8], split along dim=2. So [B S H/8](x8)
@@ -211,30 +198,39 @@ class Qwen3MoeAttention(nn.Module):
             transpose_a=False,
             transpose_b=True,
             dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-        linear_output_cpu = ttnn.to_torch(linear_output_ttnn, dtype=self.config.dtype,
-                                          mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
-        B, S, H = linear_output_cpu.shape[0], linear_output_cpu.shape[1], linear_output_cpu.shape[2] // 8
-        linear_output_cpu = linear_output_cpu.view(B, S, 8, H).sum(dim=2)
+        """ ############## TP All-reduce ############## """
+        B, S, H = linear_output_ttnn.shape
+        linear_output_ttnn = linear_output_ttnn.reshape(B, S, 1, H)
 
-        if False:
-            linear_output_answer = self.o_proj(attn_output)
-            linear_output_ttnn = ttnn.reshape(linear_output_ttnn,
-                                              (1, 1, 1, -1))
-            from models.tt_transformers.tt.ccl import tt_all_reduce, TT_CCL
-            linear_output_ttnn_reduced = tt_all_reduce(
-                linear_output_ttnn,
-                self.mesh_device,
-                TT_CCL(self.mesh_device),
-                cluster_axis=2,
-                dim=3,
-                sharded=True
-            )
-            print(f"{linear_output_ttnn_reduced.shape=}")  # [B S H] x 8
-            compare_tensor_pcc(linear_output_ttnn_reduced, linear_output_answer, msg="linear", assert_mode=True)
+        linear_output_ttnn_reduced = ttnn.reduce_scatter(
+            linear_output_ttnn,
+            dim=-1,
+            math_op=ttnn.ReduceType.Sum,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            topology=ttnn.Topology.Linear
+        )
+        ttnn.synchronize_device(self.mesh_device)
+        linear_output_ttnn_gathered = ttnn.all_gather(
+            linear_output_ttnn_reduced,
+            dim=-1,
+            cluster_axis=1,
+            topology=ttnn.Topology.Linear,
+            mesh_device=self.mesh_device
+        )
+        ttnn.synchronize_device(self.mesh_device)
 
-        return linear_output_cpu
+        linear_output_cpu = ttnn.to_torch(
+            linear_output_ttnn_gathered, 
+            dtype=self.config.dtype,
+            mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2)
+        ).view(B, S, 8, H)
+
+        output = linear_output_cpu[:, :, 0, :]
+
+        return output
 
 
 class Qwen3MoeMLP(nn.Module):
@@ -356,16 +352,14 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         start_pos: int,
-        position_embeddings: torch.Tensor,
-        position_embeddings_tt: Tuple[ttnn.Tensor, ttnn.Tensor],
-        attention_mask: torch.Tensor,
+        position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
+        attention_mask: ttnn.Tensor,
         mode: Literal["prefill", "decode"] = "prefill"
     ) -> torch.Tensor:
         hidden_states = hidden_states + self.self_attn(
             hidden_states=self.input_layernorm(hidden_states),
             start_pos=start_pos,
             position_embeddings=position_embeddings,
-            position_embeddings_tt=position_embeddings_tt,
             attention_mask=attention_mask,
             mode=mode,
         )
@@ -423,20 +417,29 @@ class Qwen3MoeModel(nn.Module):
             .logical_not_()
         )
 
+        attention_mask_tt = ttnn.from_torch(
+            attention_mask.repeat(batch_size, self.mesh_device.shape[1], 1, 1),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+
         hidden_states = self.embed_tokens(input_ids)
 
         for layer_idx, decoder_layer in enumerate(self.layers):
-            position_embeddings_tt = cos_tt, sin_tt
+            position_embeddings = cos_tt, sin_tt
 
             hidden_states = decoder_layer(
                 hidden_states=hidden_states,
                 start_pos=start_pos,
                 position_embeddings=position_embeddings,
-                position_embeddings_tt=position_embeddings_tt,
-                attention_mask=attention_mask,
+                attention_mask=attention_mask_tt,
                 mode=mode,
             )
             print(f"layer {layer_idx} forward done")
+
+        ttnn.deallocate(attention_mask_tt)
 
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
