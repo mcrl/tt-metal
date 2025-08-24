@@ -99,13 +99,20 @@ class Qwen3MoETT:
                 data = json.load(f)
 
         self.config = Qwen3MoeConfig.from_dict(data)
+
+        # FIXME: ad-hoc for reducing KV cache memory
+        self.config.max_batch_size = 4
+        self.config.max_seq_len = 512
+
         with torch.device("meta"):
             self.model = Qwen3MoeModelTT(self.config, self.mesh_device)
+
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
 
         materialize(self.model)
         load(ckpt_dir, self.model)
         self.model.eval()
+        self.model.setup_tt()
 
     def generate(self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9) -> List[List[str]]:
         prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
