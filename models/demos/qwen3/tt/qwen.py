@@ -137,6 +137,7 @@ class Qwen3MoeAttention(nn.Module):
         value_states_tt = ttnn.reshape(value_states_tt, hidden_shape)
 
         ttnn.deallocate(hidden_states_tt)
+
         """ ############## Rotary Embedding ############## """
         query_states_tt, key_states_tt = apply_rotary_emb_tt(query_states_tt, key_states_tt, position_embeddings_tt)
         # # [B n S H]
@@ -152,7 +153,7 @@ class Qwen3MoeAttention(nn.Module):
             for b in range(batch_size):
                 # (jinpyo) Manual batch offset to fill KV cache for B > 1
                 # Fill Cache[b, :, start_pos, :] <- key_states_tt[b, :, 0, :]
-                ttnn.kv_cache.update_cache_for_token_(self.cache_k_tt, 
+                ttnn.kv_cache.update_cache_for_token_(self.cache_k_tt,
                                                       key_states_tt[b:b+1],
                                                       start_pos + b * self.kv_heads_per_device * self.config.max_seq_len)
                 ttnn.kv_cache.update_cache_for_token_(self.cache_v_tt,
@@ -178,10 +179,10 @@ class Qwen3MoeAttention(nn.Module):
             )
 
         tt_out = tt_sdpa_forward(
-            tt_q,
-            tt_k,
-            tt_v,
-            attention_mask=tt_attention_mask,
+            query_states_tt,
+            key_states_tt,
+            value_states_tt,
+            attention_mask=attention_mask if mode == "decode" else None,
             dropout=0.0,
             scaling=self.scaling,
             mesh_device=self.mesh_device,
@@ -235,8 +236,8 @@ class Qwen3MoeAttention(nn.Module):
         )
         ttnn.synchronize_device(self.mesh_device)
 
-        linear_output_torch = ttnn.to_torch(
-            linear_output_ttnn_gathered, 
+        linear_output_cpu = ttnn.to_torch(
+            linear_output_ttnn_gathered,
             dtype=self.config.dtype,
             mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2)
         ).view(B, S, 8, H)
@@ -273,6 +274,7 @@ class Qwen3MoeMLP(nn.Module):
 class Qwen3MoeSparseMoeBlock(nn.Module):
     def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
         super().__init__()
+        self.config = config
         self.mesh_device = mesh_device
         self.num_experts = config.num_experts
         self.top_k = config.num_experts_per_tok
@@ -286,25 +288,59 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.layer_idx = layer_idx
 
     def setup_tt(self):
-        pass
+        self.gate_weight_tt = ttnn.from_torch(
+            self.gate.weight.transpose(0, 1),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        self.gate_weight_tt = ttnn.to_layout(self.gate_weight_tt,
+                                             ttnn.TILE_LAYOUT,
+                                             dtype=ttnn.bfloat16,
+                                             memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)  # [BS H], S=1 at decode phase
 
-        router_logits = self.gate(hidden_states)  # [BS E]
+        hidden_states_tt = ttnn.from_torch(hidden_states,
+                                           device=self.mesh_device,
+                                           mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                                           dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        hidden_states_tt = ttnn.to_layout(hidden_states_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
-        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)  # [BS E]
-        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)  # [BS 8] [BS 8]
+        router_logits = self.gate(hidden_states)  # [BS N]
+        router_logits_tt = ttnn.linear(hidden_states_tt, self.gate_weight_tt, dtype=ttnn.bfloat16)
 
-        # print(f"{routing_weights=} {selected_experts=}")
+        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)  # [BS N]
+
+        routing_weights_tt = ttnn.softmax(router_logits_tt, dim=1)  # [BS N]
+
+        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)  # [BS K] [BS K]
+        routing_weights_tt, selected_experts_tt = ttnn.topk(routing_weights_tt, self.top_k, dim=1, largest=True)  # [BS K] [BS K]
+
         if self.norm_topk_prob:
             routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
-        routing_weights = routing_weights.to(hidden_states.dtype)  # [BS 8]
+            routing_weights_tt = ttnn.div(routing_weights_tt,
+                                          ttnn.sum(routing_weights_tt, dim=1, keepdim=True))
+
+        # compare_tensor_pcc(routing_weights, routing_weights_tt_cpu)
+
+        routing_weights = routing_weights.to(hidden_states.dtype)  # [BS K]
 
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )  # [BS H]
+        final_hidden_states_tt = ttnn.zeros(
+            (batch_size * sequence_length, hidden_dim), dtype=ttnn.bfloat16, device=self.mesh_device,
+        )  # [BS H]
+
+        for expert_idx in range(self.num_experts):
+            expert_layer = self.experts[expert_idx]
+            expert_layer_tt = ttnn.from_torch(
+                expert_layer.state_dict()["down_proj.weight"],
+                device=self.mesh_device, mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            expert_layer_tt = ttnn.to_layout(expert_layer_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
         # E = num_experts = 128, top_k = 8
         # [BS 8 E] => [E 8 BS] = [128 8 BS]
