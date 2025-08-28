@@ -13,6 +13,7 @@ from models.demos.qwen3.tt.rope import precompute_freqs_cis as precompute_freqs_
 from models.demos.qwen3.tt.rope import apply_rotary_emb as apply_rotary_emb_tt
 
 from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
+from models.demos.qwen3.tt.ccl_1d import CCL1D
 
 
 class Qwen3MoeAttention(nn.Module):
@@ -277,18 +278,81 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.layer_idx = layer_idx
 
     def setup_tt(self):
+        self.ccl = CCL1D(self.mesh_device)
         self.gate_weight_tt = ttnn.from_torch(
             self.gate.weight.transpose(0, 1),
             device=self.mesh_device,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.gate_weight_tt = ttnn.to_layout(self.gate_weight_tt,
-                                             ttnn.TILE_LAYOUT,
-                                             dtype=ttnn.bfloat16,
-                                             memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        self.gate_weight_tt = ttnn.to_layout(self.gate_weight_tt, ttnn.TILE_LAYOUT)
+
+        self.num_devices = self.mesh_device.get_num_devices()
+        self.num_experts_per_device = self.num_experts // self.num_devices
+        self.expert_mapping_tensors_tt = ttnn.from_torch(
+            torch.eye(self.num_devices, dtype=torch.int32)
+            .repeat_interleave(self.num_experts_per_device, dim=0)
+            .unsqueeze(0)
+            .unsqueeze(0),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.uint16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+
+        gate_proj = [] 
+        up_proj = []
+        down_proj = []
+
+        for expert_idx in range(self.num_experts):
+            gate_proj.append(self.experts[expert_idx].gate_proj.weight)
+            up_proj.append(self.experts[expert_idx].up_proj.weight)
+            down_proj.append(self.experts[expert_idx].down_proj.weight)
+
+        gate_proj = torch.stack(gate_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
+        up_proj = torch.stack(up_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
+        down_proj = torch.stack(down_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
+
+        self.gate_proj_tt = ttnn.from_torch(gate_proj,
+                                            device=self.mesh_device,
+                                            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+                                            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        self.gate_proj_tt = ttnn.to_layout(self.gate_proj_tt, ttnn.TILE_LAYOUT)
+
+        self.up_proj_tt = ttnn.from_torch(up_proj,
+                                          device=self.mesh_device,
+                                          mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+                                          dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        self.up_proj_tt = ttnn.to_layout(self.up_proj_tt, ttnn.TILE_LAYOUT)
+
+        self.down_proj_tt = ttnn.from_torch(down_proj,
+                                            device=self.mesh_device,
+                                            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+                                            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        self.down_proj_tt = ttnn.to_layout(self.down_proj_tt, ttnn.TILE_LAYOUT)
+
+        """
+        input_mask = torch.full((1, 1, 1, self.num_experts), -float("inf"))
+        ones_src = torch.ones((1, 1, 1, self.top_k))
+        self.input_mask_tt = ttnn.from_torch(
+            input_mask,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+        self.ones_src_tt = ttnn.from_torch(
+            ones_src,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+        """
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-
         hidden_states = ttnn.to_torch(hidden_states, dtype=self.config.dtype, mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=0))
         hidden_states = hidden_states[:hidden_states.shape[0] // 8, :, :]
 
@@ -315,54 +379,152 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
             routing_weights_tt = ttnn.div(routing_weights_tt,
                                           ttnn.sum(routing_weights_tt, dim=1, keepdim=True))
-
-        # compare_tensor_pcc(routing_weights, routing_weights_tt_cpu)
-
         routing_weights = routing_weights.to(hidden_states.dtype)  # [BS K]
 
-        final_hidden_states = torch.zeros(
-            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
-        )  # [BS H]
-        final_hidden_states_tt = ttnn.zeros(
-            (batch_size * sequence_length, hidden_dim), dtype=ttnn.bfloat16, device=self.mesh_device,
-        )  # [BS H]
+        hidden_states_tt = ttnn.to_layout(hidden_states_tt, ttnn.ROW_MAJOR_LAYOUT)
+        hidden_states_tt = ttnn.reshape(hidden_states_tt, (batch_size, sequence_length, 1, hidden_dim))
 
-        for expert_idx in range(self.num_experts):
-            expert_layer = self.experts[expert_idx]
-            expert_layer_tt = ttnn.from_torch(
-                expert_layer.state_dict()["down_proj.weight"],
-                device=self.mesh_device, mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-            expert_layer_tt = ttnn.to_layout(expert_layer_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        selected_experts_tt = ttnn.to_layout(selected_experts_tt, ttnn.ROW_MAJOR_LAYOUT)
+        selected_experts_tt = ttnn.reshape(selected_experts_tt, (batch_size, sequence_length, 1, self.top_k))
 
-        # E = num_experts = 128, top_k = 8
-        # [BS 8 E] => [E 8 BS] = [128 8 BS]
-        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+        all_to_all_dispatch_output_tensors = ttnn.from_torch(
+            torch.zeros([1, batch_size, sequence_length, hidden_dim]),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+        all_to_all_dispatch_metadata_tensors = ttnn.from_torch(
+            torch.zeros([1, batch_size, sequence_length, self.top_k], dtype=torch.int32),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.uint16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+        all_to_all_combine_output_tensors = ttnn.from_torch(
+            torch.zeros([self.top_k, batch_size, sequence_length, hidden_dim]),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
 
-        # [E 8 BS] => [E] > 0 => [E] => [E_active, 1]
-        expert_hitted = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+        ttnn.all_to_all_dispatch(
+            hidden_states_tt,
+            selected_experts_tt,
+            self.expert_mapping_tensors_tt,
+            output_tensors=[
+                all_to_all_dispatch_output_tensors,
+                all_to_all_dispatch_metadata_tensors
+            ],
+            cluster_axis=0,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            num_links=1,
+            topology=ttnn.Topology.Linear,
+            global_semaphore=self.ccl.get_semaphore(0),
+            init_semaphore=self.ccl.get_semaphore(0)
+        )
+        post_all_to_all_dispatch_output = ttnn.reshape(
+            all_to_all_dispatch_output_tensors, shape=(1, 1, batch_size * sequence_length, hidden_dim)
+        )
+        post_all_to_all_dispatch_output = ttnn.repeat(post_all_to_all_dispatch_output, ttnn.Shape((1, self.num_experts_per_device, 1, 1)))
+        post_all_to_all_dispatch_output = ttnn.to_layout(post_all_to_all_dispatch_output, ttnn.TILE_LAYOUT)
 
-        # print(f"{expert_hitted=}")
+        # [1, num_experts, BS, 2048] @ [1, num_experts, 2048, 768] -> [1, num_experts, BS, 768]
+        gate_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.gate_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        up_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.up_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        ttnn.deallocate(post_all_to_all_dispatch_output)
+        
+        glu_output_tt = ttnn.mul(gate_proj_output_tt, up_proj_output_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG, input_tensor_a_activations=[ttnn.UnaryOpType.SILU])
+        ttnn.deallocate(gate_proj_output_tt)
+        ttnn.deallocate(up_proj_output_tt)
+        
+        experts_output_tt = ttnn.matmul(glu_output_tt, self.down_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        ttnn.deallocate(glu_output_tt)
 
-        for expert_idx in expert_hitted:
-            expert_layer = self.experts[expert_idx]
-            # print(f"{expert_idx=} {expert_mask[expert_idx]=} {expert_mask[expert_idx].squeeze(0)=}")
-            idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+        experts_output_tt = ttnn.to_layout(experts_output_tt, ttnn.ROW_MAJOR_LAYOUT)
+        experts_output_tt = ttnn.reshape(experts_output_tt, (self.num_experts_per_device, batch_size, sequence_length, hidden_dim))
 
-            # print(f"{expert_idx=} {idx=} {top_x=}")
+        ttnn.all_to_all_combine(
+            experts_output_tt,
+            self.expert_mapping_tensors_tt,
+            all_to_all_dispatch_metadata_tensors,
+            optional_output_tensor=all_to_all_combine_output_tensors,
+            axis=0,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            num_links=1,
+            global_semaphore=self.ccl.get_semaphore(0),
+            init_semaphore=self.ccl.get_semaphore(0)
+        )
+        post_combine_output_tensor = ttnn.reshape(all_to_all_combine_output_tensors, shape=(self.top_k, 1, batch_size * sequence_length, hidden_dim))
+        post_combine_output_tensor = ttnn.to_layout(post_combine_output_tensor, ttnn.TILE_LAYOUT)
 
-            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)  # [N H]
-            current_hidden_states = torch.mul(expert_layer(current_state), routing_weights[top_x, idx, None])
+        routing_weights_tt_rm = ttnn.to_layout(routing_weights_tt, ttnn.ROW_MAJOR_LAYOUT)
+        routing_weights_tt_rm = ttnn.repeat(routing_weights_tt_rm, ttnn.Shape((hidden_dim, 1, 1, 1)))
+        routing_weights_tt_rm = ttnn.permute(routing_weights_tt_rm, (3, 1, 2, 0))
+        routing_weights_tt = ttnn.to_layout(routing_weights_tt_rm, ttnn.TILE_LAYOUT)
+        ttnn.deallocate(routing_weights_tt_rm)
 
-            final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
-        final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+        post_combine_output_tensor = ttnn.mul(post_combine_output_tensor, routing_weights_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
-        final_hidden_states_tt = ttnn.from_torch(final_hidden_states,
-                                                 device=self.mesh_device,
-                                                 mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                                                 dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        final_hidden_states_tt = ttnn.to_layout(final_hidden_states_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        post_combine_output_tensor = ttnn.sum(post_combine_output_tensor, dim=0, keepdim=True)
 
+        post_combine_output_tensor_rs = ttnn.reduce_scatter(
+            post_combine_output_tensor, 
+            dim=3,
+            math_op=ttnn.ReduceType.Sum,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            topology=ttnn.Topology.Linear
+        )
+        ttnn.synchronize_device(self.mesh_device)
+        ttnn.deallocate(post_combine_output_tensor)
+
+        post_combine_output_tensor_g = ttnn.all_gather(
+            post_combine_output_tensor_rs,
+            dim=3,
+            cluster_axis=1,
+            topology=ttnn.Topology.Linear,
+            mesh_device=self.mesh_device
+        )
+        ttnn.synchronize_device(self.mesh_device)
+        ttnn.deallocate(post_combine_output_tensor_rs)
+
+        final_hidden_states_tt = ttnn.reshape(post_combine_output_tensor_g, (batch_size, sequence_length, hidden_dim))
+        ttnn.deallocate(post_combine_output_tensor_g)
+
+        if False:
+            final_hidden_states = torch.zeros(
+                (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
+            )  # [BS H]
+
+            # E = num_experts = 128, top_k = 8
+            # [BS 8 E] => [E 8 BS] = [128 8 BS]
+            expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+
+            # [E 8 BS] => [E] > 0 => [E] => [E_active, 1]
+            expert_hitted = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+            for expert_idx in expert_hitted:
+                expert_layer = self.experts[expert_idx]
+                idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+
+                current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)  # [N H]
+                current_hidden_states = torch.mul(expert_layer(current_state), routing_weights[top_x, idx, None])
+
+                final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
+            
+            final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+
+            final_hidden_states_cpu = ttnn.to_torch(
+                final_hidden_states_tt,
+                dtype=torch.bfloat16,
+                mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=0)
+            )[:batch_size, :, :]
+
+            compare_tensor_pcc(final_hidden_states, final_hidden_states_cpu)
         return final_hidden_states_tt
 
 
