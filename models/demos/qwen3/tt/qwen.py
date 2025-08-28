@@ -300,7 +300,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             layout=ttnn.ROW_MAJOR_LAYOUT,
         )
 
-        gate_proj = [] 
+        gate_proj = []
         up_proj = []
         down_proj = []
 
@@ -352,40 +352,26 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         )
         """
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        hidden_states = ttnn.to_torch(hidden_states, dtype=self.config.dtype, mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=0))
-        hidden_states = hidden_states[:hidden_states.shape[0] // 8, :, :]
+    def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
 
         batch_size, sequence_length, hidden_dim = hidden_states.shape
-        hidden_states = hidden_states.view(-1, hidden_dim)  # [BS H], S=1 at decode phase
+        hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim))  # [BS, H]
 
-        hidden_states_tt = ttnn.from_torch(hidden_states,
-                                           device=self.mesh_device,
-                                           mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                                           dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        hidden_states_tt = ttnn.to_layout(hidden_states_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-
-        router_logits = self.gate(hidden_states)  # [BS N]
-        router_logits_tt = ttnn.linear(hidden_states_tt, self.gate_weight_tt, dtype=ttnn.bfloat16)
-
-        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)  # [BS N]
+        router_logits_tt = ttnn.linear(hidden_states, self.gate_weight_tt, dtype=ttnn.bfloat16)
 
         routing_weights_tt = ttnn.softmax(router_logits_tt, dim=1)  # [BS N]
 
-        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)  # [BS K] [BS K]
-        routing_weights_tt, selected_experts_tt = ttnn.topk(routing_weights_tt, self.top_k, dim=1, largest=True)  # [BS K] [BS K]
+        routing_weights_tt, selected_experts = ttnn.topk(routing_weights_tt, self.top_k, dim=1, largest=True)  # [BS K] [BS K]
 
         if self.norm_topk_prob:
-            routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
             routing_weights_tt = ttnn.div(routing_weights_tt,
                                           ttnn.sum(routing_weights_tt, dim=1, keepdim=True))
-        routing_weights = routing_weights.to(hidden_states.dtype)  # [BS K]
 
-        hidden_states_tt = ttnn.to_layout(hidden_states_tt, ttnn.ROW_MAJOR_LAYOUT)
-        hidden_states_tt = ttnn.reshape(hidden_states_tt, (batch_size, sequence_length, 1, hidden_dim))
+        hidden_states = ttnn.to_layout(hidden_states, ttnn.ROW_MAJOR_LAYOUT)
+        hidden_states = ttnn.reshape(hidden_states, (batch_size, sequence_length, 1, hidden_dim))
 
-        selected_experts_tt = ttnn.to_layout(selected_experts_tt, ttnn.ROW_MAJOR_LAYOUT)
-        selected_experts_tt = ttnn.reshape(selected_experts_tt, (batch_size, sequence_length, 1, self.top_k))
+        selected_experts = ttnn.to_layout(selected_experts, ttnn.ROW_MAJOR_LAYOUT)
+        selected_experts = ttnn.reshape(selected_experts, (batch_size, sequence_length, 1, self.top_k))
 
         all_to_all_dispatch_output_tensors = ttnn.from_torch(
             torch.zeros([1, batch_size, sequence_length, hidden_dim]),
@@ -413,8 +399,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         )
 
         ttnn.all_to_all_dispatch(
-            hidden_states_tt,
-            selected_experts_tt,
+            hidden_states,
+            selected_experts,
             self.expert_mapping_tensors_tt,
             output_tensors=[
                 all_to_all_dispatch_output_tensors,
@@ -437,11 +423,12 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         gate_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.gate_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         up_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.up_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         ttnn.deallocate(post_all_to_all_dispatch_output)
-        
-        glu_output_tt = ttnn.mul(gate_proj_output_tt, up_proj_output_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG, input_tensor_a_activations=[ttnn.UnaryOpType.SILU])
+
+        glu_output_tt = ttnn.mul(gate_proj_output_tt, up_proj_output_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                                 input_tensor_a_activations=[ttnn.UnaryOpType.SILU])
         ttnn.deallocate(gate_proj_output_tt)
         ttnn.deallocate(up_proj_output_tt)
-        
+
         experts_output_tt = ttnn.matmul(glu_output_tt, self.down_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         ttnn.deallocate(glu_output_tt)
 
@@ -473,7 +460,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         post_combine_output_tensor = ttnn.sum(post_combine_output_tensor, dim=0, keepdim=True)
 
         post_combine_output_tensor_rs = ttnn.reduce_scatter(
-            post_combine_output_tensor, 
+            post_combine_output_tensor,
             dim=3,
             math_op=ttnn.ReduceType.Sum,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -495,36 +482,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         final_hidden_states_tt = ttnn.reshape(post_combine_output_tensor_g, (batch_size, sequence_length, hidden_dim))
         ttnn.deallocate(post_combine_output_tensor_g)
 
-        if False:
-            final_hidden_states = torch.zeros(
-                (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
-            )  # [BS H]
-
-            # E = num_experts = 128, top_k = 8
-            # [BS 8 E] => [E 8 BS] = [128 8 BS]
-            expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
-
-            # [E 8 BS] => [E] > 0 => [E] => [E_active, 1]
-            expert_hitted = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
-
-            for expert_idx in expert_hitted:
-                expert_layer = self.experts[expert_idx]
-                idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
-
-                current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)  # [N H]
-                current_hidden_states = torch.mul(expert_layer(current_state), routing_weights[top_x, idx, None])
-
-                final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
-            
-            final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
-
-            final_hidden_states_cpu = ttnn.to_torch(
-                final_hidden_states_tt,
-                dtype=torch.bfloat16,
-                mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=0)
-            )[:batch_size, :, :]
-
-            compare_tensor_pcc(final_hidden_states, final_hidden_states_cpu)
         return final_hidden_states_tt
 
 
