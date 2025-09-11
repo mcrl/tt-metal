@@ -18,12 +18,6 @@ from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
     "batch_size,num_heads,seq_len,head_dim",
     [
         (1, 32, 9, 128),
-        # (4, 8, 6, 128),
-        # (4, 8, 4, 128),
-        # (4, 8, 1, 128),
-        # (4, 8, 69, 128),
-        # (4, 64, 64, 64),
-        # (1, 88, 77, 43),
     ],
 )
 def test_sdpa_tt_matches_reference(mesh_device, batch_size, num_heads, seq_len, head_dim):

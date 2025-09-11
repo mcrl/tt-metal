@@ -1,5 +1,6 @@
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional
+from enum import Enum
 import torch
 
 
@@ -53,4 +54,9 @@ class Qwen3MoeConfig:
         return asdict(self)
 
 
-__all__ = ["Qwen3MoeConfig"]
+class InferenceMode(Enum):
+    PREFILL = "prefill"
+    DECODE = "decode"
+
+
+__all__ = ["Qwen3MoeConfig", "InferenceMode"]
