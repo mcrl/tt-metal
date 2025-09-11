@@ -1,7 +1,8 @@
-from typing import Optional
-
-import torch
 import ttnn
+import torch
+from typing import Optional
+from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
+PAD_MULTIPLE = 32
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -27,24 +28,26 @@ def sdpa_forward_prefill(
     attention_mask: Optional[ttnn.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
-    mesh_device: ttnn.Device = None,
 ) -> torch.Tensor:
 
     query_shape = query.shape
     key_shape = key.shape
     value_shape = value.shape
 
-    padded_query_shape = (query_shape[0], query_shape[1], ((query_shape[2] + 31) // 32) * 32, ((query_shape[3] + 31) // 32) * 32)
-    padded_key_shape = (key_shape[0], key_shape[1], ((key_shape[2] + 31) // 32) * 32, ((key_shape[3] + 31) // 32) * 32)
-    padded_value_shape = (value_shape[0], value_shape[1], ((value_shape[2] + 31) // 32) * 32, ((value_shape[3] + 31) // 32) * 32)
+    padded_query_shape = (query_shape[0], query_shape[1], ((query_shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE)
+                          * PAD_MULTIPLE, ((query_shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE)
+    padded_key_shape = (key_shape[0], key_shape[1], ((key_shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE)
+                        * PAD_MULTIPLE, ((key_shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE)
+    padded_value_shape = (value_shape[0], value_shape[1], ((value_shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE)
+                          * PAD_MULTIPLE, ((value_shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE)
 
     query = ttnn.pad(query, [(0, 0), (0, 0), (0, padded_query_shape[2] - query_shape[2]), (0, padded_query_shape[3] - query_shape[3])], 0.0)
     value = ttnn.pad(value, [(0, 0), (0, 0), (0, padded_value_shape[2] - value_shape[2]), (0, padded_value_shape[3] - value_shape[3])], 0.0)
     key = ttnn.pad(key, [(0, 0), (0, 0), (0, padded_key_shape[2] - key_shape[2]), (0, padded_key_shape[3] - key_shape[3])], 0.0)
 
-    query = ttnn.to_layout(query, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    value = ttnn.to_layout(value, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    key = ttnn.to_layout(key, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    query = ttnn.to_layout(query, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    value = ttnn.to_layout(value, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    key = ttnn.to_layout(key, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
     attn_output = ttnn.transformer.scaled_dot_product_attention(
         query,
@@ -73,18 +76,22 @@ def sdpa_forward_decode(
     attention_mask: Optional[ttnn.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
-    mesh_device: ttnn.Device = None,
 ) -> torch.Tensor:
 
     query_shape = query.shape
     key_shape = key.shape
     value_shape = value.shape
 
-    padded_query_shape = (query_shape[0], query_shape[1], ((query_shape[2] + 31) // 32) * 32, ((query_shape[3] + 31) // 32) * 32)
-    padded_key_shape = (key_shape[0], key_shape[1], ((key_shape[2] + 31) // 32) * 32, ((key_shape[3] + 31) // 32) * 32)
-    padded_value_shape = (value_shape[0], value_shape[1], ((value_shape[2] + 31) // 32) * 32, ((value_shape[3] + 31) // 32) * 32)
-    padded_attention_mask_shape = (attention_mask.shape[0], attention_mask.shape[1], ((
-        attention_mask.shape[2] + 31) // 32) * 32, ((attention_mask.shape[3] + 31) // 32) * 32)
+    padded_query_shape = (query_shape[0], query_shape[1], ((query_shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE)
+                          * PAD_MULTIPLE, ((query_shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE)
+    padded_key_shape = (key_shape[0], key_shape[1], ((key_shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE)
+                        * PAD_MULTIPLE, ((key_shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE)
+    padded_value_shape = (value_shape[0], value_shape[1], ((value_shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE)
+                          * PAD_MULTIPLE, ((value_shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE)
+    padded_attention_mask_shape = (attention_mask.shape[0],
+                                   attention_mask.shape[1],
+                                   ((attention_mask.shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE,
+                                   ((attention_mask.shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE)
 
     query = ttnn.pad(query, [(0, 0), (0, 0), (0, padded_query_shape[2] - query_shape[2]), (0, padded_query_shape[3] - query_shape[3])], 0.0)
     value = ttnn.pad(value, [(0, 0), (0, 0), (0, padded_value_shape[2] - value_shape[2]), (0, padded_value_shape[3] - value_shape[3])], 0.0)
@@ -97,23 +104,11 @@ def sdpa_forward_decode(
          (0, padded_attention_mask_shape[3] - attention_mask.shape[3])],
         0.0)
 
-    query = ttnn.to_layout(query, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    value = ttnn.to_layout(value, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    key = ttnn.to_layout(key, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    attention_mask = ttnn.to_layout(attention_mask, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    query = ttnn.to_layout(query, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    value = ttnn.to_layout(value, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    key = ttnn.to_layout(key, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    attention_mask = ttnn.to_layout(attention_mask, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
-    # attn_output = ttnn.transformer.scaled_dot_product_attention_decode(
-    #     query,
-    #     key,
-    #     value,
-    #     attn_mask=attention_mask,
-    #     is_causal=False,
-    #     scale=scaling,
-    #     compute_kernel_config=ttnn.WormholeComputeKernelConfig(
-    #         math_fidelity=ttnn.MathFidelity.HiFi4,
-    #         math_approx_mode=False,
-    #     )
-    # )
     attn_output = ttnn.transformer.scaled_dot_product_attention(
         query,
         key,
@@ -142,14 +137,12 @@ def sdpa_forward(
     dropout: float = 0.0,
     scaling: Optional[float] = None,
     mesh_device: ttnn.Device = None,
-    mode="prefill"
+    mode: InferenceMode = InferenceMode.PREFILL
 ) -> torch.Tensor:
 
-    assert mode in ["prefill", "decode"], f"Unsupported mode: {mode}"
-
-    if mode == "prefill":
+    if mode == InferenceMode.PREFILL:
         return sdpa_forward_prefill(query, key, value, attention_mask, dropout, scaling, mesh_device)
-    elif mode == "decode":
+    elif mode == InferenceMode.DECODE:
         return sdpa_forward_decode(query, key, value, attention_mask, dropout, scaling, mesh_device)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
