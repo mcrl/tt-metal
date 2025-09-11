@@ -8,6 +8,8 @@ from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, In
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
 from models.demos.qwen3.tt.rope import apply_rotary_emb as apply_rotary_emb_tt
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
+from models.demos.qwen3.tt.timer import profile_time
+from models.demos.qwen3.tt.timer import start_timer, stop_timer
 
 
 class Qwen3MoeAttention(nn.Module):
@@ -103,6 +105,7 @@ class Qwen3MoeAttention(nn.Module):
         self.o_proj_weight = ttnn.to_layout(self.o_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         self.is_tt_setup = True
 
+    @profile_time()
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -114,6 +117,7 @@ class Qwen3MoeAttention(nn.Module):
         batch_size, sequence_length, hidden_size = hidden_states.shape
         hidden_shape = (batch_size, sequence_length, -1, self.head_dim)
 
+        start_timer("attention-qkv-projection", device=self.mesh_device)
         hidden_states_tt = hidden_states
         query_states_tt = ttnn.linear(hidden_states_tt, self.q_proj_weight, dtype=ttnn.bfloat16)
         query_states_tt = ttnn.reshape(query_states_tt, hidden_shape)
@@ -130,7 +134,9 @@ class Qwen3MoeAttention(nn.Module):
         query_states_tt = ttnn.permute(query_states_tt, dims=(0, 2, 1, 3))
         key_states_tt = ttnn.permute(key_states_tt, dims=(0, 2, 1, 3))
         value_states_tt = ttnn.permute(value_states_tt, dims=(0, 2, 1, 3))
+        stop_timer("attention-qkv-projection", device=self.mesh_device)
 
+        start_timer("attention-kv-cache", device=self.mesh_device)
         if mode == InferenceMode.PREFILL:
             for b in range(batch_size):
                 ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b:b+1], b)
@@ -143,10 +149,12 @@ class Qwen3MoeAttention(nn.Module):
                 ttnn.kv_cache.update_cache_for_token_(self.cache_v_tt,
                                                       value_states_tt[b:b+1],
                                                       start_pos + b * self.kv_heads_per_device * self.config.max_seq_len)
+        stop_timer("attention-kv-cache", device=self.mesh_device)
 
         key_states_tt = self.cache_k_tt[:batch_size, :, : start_pos + sequence_length, :]
         value_states_tt = self.cache_v_tt[:batch_size, :, : start_pos + sequence_length, :]
 
+        start_timer("attention-sdpa", device=self.mesh_device)
         tt_out = tt_sdpa_forward(
             query_states_tt,
             key_states_tt,
@@ -156,11 +164,13 @@ class Qwen3MoeAttention(nn.Module):
             scaling=self.scaling,
             mode=mode,
         )
+        stop_timer("attention-sdpa", device=self.mesh_device)
 
         tt_out = ttnn.reshape(tt_out, [tt_out.shape[0], tt_out.shape[1], tt_out.shape[2] * tt_out.shape[3]])
 
         tt_out = ttnn.to_layout(tt_out, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
+        start_timer("attention-linear", device=self.mesh_device)
         linear_output_ttnn = ttnn.linear(
             tt_out,
             self.o_proj_weight,
@@ -169,7 +179,9 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
+        stop_timer("attention-linear", device=self.mesh_device)
 
+        start_timer("attention-allreduce", device=self.mesh_device)
         B, S, H = linear_output_ttnn.shape
         linear_output_ttnn = linear_output_ttnn.reshape(B, S, 1, H)
         linear_output_ttnn_reduced = ttnn.reduce_scatter(
@@ -188,6 +200,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_device=self.mesh_device
         )
         ttnn.synchronize_device(self.mesh_device)
+        stop_timer("attention-allreduce", device=self.mesh_device)
 
         output = ttnn.reshape(linear_output_ttnn_gathered, (batch_size, sequence_length, hidden_size))
         return output

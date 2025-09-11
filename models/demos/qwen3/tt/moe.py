@@ -4,6 +4,7 @@ import ttnn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.ccl_1d import CCL1D
+from models.demos.qwen3.tt.timer import profile_time
 
 
 class Qwen3MoeMLP(nn.Module):
@@ -96,6 +97,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                                             dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         self.down_proj_tt = ttnn.to_layout(self.down_proj_tt, ttnn.TILE_LAYOUT)
 
+    @profile_time()
     def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
 
         batch_size, sequence_length, hidden_dim = hidden_states.shape

@@ -9,6 +9,7 @@ from models.demos.qwen3.tt.rope import precompute_freqs_cis as precompute_freqs_
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
+from models.demos.qwen3.tt.timer import profile_time
 
 
 class Qwen3MoeDecoderLayer(nn.Module):
@@ -122,6 +123,7 @@ class Qwen3MoeModel(nn.Module):
         self.lm_head_weight_tt = ttnn.to_layout(self.lm_head_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         self.is_tt_setup = True
 
+    @profile_time()
     def forward(self, input_ids: torch.LongTensor, start_pos: int = 0, mode: InferenceMode = InferenceMode.PREFILL) -> torch.Tensor:
         # Normalize mode to InferenceMode enum (caller may pass a string)
         if isinstance(mode, str):
