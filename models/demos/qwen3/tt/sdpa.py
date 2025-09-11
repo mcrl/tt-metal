@@ -136,13 +136,12 @@ def sdpa_forward(
     attention_mask: Optional[ttnn.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
-    mesh_device: ttnn.Device = None,
     mode: InferenceMode = InferenceMode.PREFILL
 ) -> torch.Tensor:
 
     if mode == InferenceMode.PREFILL:
-        return sdpa_forward_prefill(query, key, value, attention_mask, dropout, scaling, mesh_device)
+        return sdpa_forward_prefill(query, key, value, attention_mask, dropout, scaling)
     elif mode == InferenceMode.DECODE:
-        return sdpa_forward_decode(query, key, value, attention_mask, dropout, scaling, mesh_device)
+        return sdpa_forward_decode(query, key, value, attention_mask, dropout, scaling)
     else:
         raise ValueError(f"Unsupported mode: {mode}")

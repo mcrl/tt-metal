@@ -174,8 +174,6 @@ class Qwen3MoeModel(nn.Module):
                 mode=mode,
             )
 
-        ttnn.deallocate(attention_mask_tt)
-
         hidden_states_tt = ttnn.rms_norm(hidden_states_tt, epsilon=self.config.rms_norm_eps, weight=self.norm_weight_tt)
         logits_tt = ttnn.linear(hidden_states_tt, self.lm_head_weight_tt, dtype=ttnn.bfloat16)
         logits_tt_cpu = ttnn.to_torch(logits_tt, dtype=self.config.dtype, mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))

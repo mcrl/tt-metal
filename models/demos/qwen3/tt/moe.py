@@ -165,15 +165,11 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         gate_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.gate_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         up_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.up_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        ttnn.deallocate(post_all_to_all_dispatch_output)
 
         glu_output_tt = ttnn.mul(gate_proj_output_tt, up_proj_output_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG,
                                  input_tensor_a_activations=[ttnn.UnaryOpType.SILU])
-        ttnn.deallocate(gate_proj_output_tt)
-        ttnn.deallocate(up_proj_output_tt)
 
         experts_output_tt = ttnn.matmul(glu_output_tt, self.down_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        ttnn.deallocate(glu_output_tt)
 
         experts_output_tt = ttnn.to_layout(experts_output_tt, ttnn.ROW_MAJOR_LAYOUT)
         experts_output_tt = ttnn.reshape(experts_output_tt, (self.num_experts_per_device, batch_size, sequence_length, hidden_dim))
@@ -196,7 +192,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         routing_weights_tt_rm = ttnn.repeat(routing_weights_tt_rm, ttnn.Shape((hidden_dim, 1, 1, 1)))
         routing_weights_tt_rm = ttnn.permute(routing_weights_tt_rm, (3, 1, 2, 0))
         routing_weights_tt = ttnn.to_layout(routing_weights_tt_rm, ttnn.TILE_LAYOUT)
-        ttnn.deallocate(routing_weights_tt_rm)
 
         post_combine_output_tensor = ttnn.mul(post_combine_output_tensor, routing_weights_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
@@ -210,7 +205,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             topology=ttnn.Topology.Linear
         )
         ttnn.synchronize_device(self.mesh_device)
-        ttnn.deallocate(post_combine_output_tensor)
 
         post_combine_output_tensor_g = ttnn.all_gather(
             post_combine_output_tensor_rs,
@@ -220,10 +214,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             mesh_device=self.mesh_device
         )
         ttnn.synchronize_device(self.mesh_device)
-        ttnn.deallocate(post_combine_output_tensor_rs)
 
         final_hidden_states_tt = ttnn.reshape(post_combine_output_tensor_g, (batch_size, sequence_length, hidden_dim))
-        ttnn.deallocate(post_combine_output_tensor_g)
 
         return final_hidden_states_tt
 

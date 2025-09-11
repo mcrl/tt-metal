@@ -126,8 +126,6 @@ class Qwen3MoeAttention(nn.Module):
         value_states_tt = ttnn.linear(hidden_states_tt, self.v_proj_weight, dtype=ttnn.bfloat16)
         value_states_tt = ttnn.reshape(value_states_tt, hidden_shape)
 
-        ttnn.deallocate(hidden_states_tt)
-
         query_states_tt, key_states_tt = apply_rotary_emb_tt(query_states_tt, key_states_tt, position_embeddings)
         query_states_tt = ttnn.permute(query_states_tt, dims=(0, 2, 1, 3))
         key_states_tt = ttnn.permute(key_states_tt, dims=(0, 2, 1, 3))
@@ -160,10 +158,6 @@ class Qwen3MoeAttention(nn.Module):
         )
 
         tt_out = ttnn.reshape(tt_out, [tt_out.shape[0], tt_out.shape[1], tt_out.shape[2] * tt_out.shape[3]])
-
-        ttnn.deallocate(query_states_tt)
-        ttnn.deallocate(key_states_tt)
-        ttnn.deallocate(value_states_tt)
 
         tt_out = ttnn.to_layout(tt_out, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
