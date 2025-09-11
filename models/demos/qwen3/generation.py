@@ -8,7 +8,7 @@ from tokenizers import Tokenizer
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeModel as Qwen3MoeModelReference
 from models.demos.qwen3.tt.qwen import Qwen3MoeModel as Qwen3MoeModelTT
-
+from models.demos.qwen3.tt.timer import print_timer_all, reset_timer, profile_time, start_timer, stop_timer
 from models.demos.qwen3.common.loader import load, materialize
 
 
@@ -104,15 +104,23 @@ class Qwen3MoETT:
         self.config.max_batch_size = 4
         self.config.max_seq_len = 512
 
+        start_timer("create-model", device=self.mesh_device)
         with torch.device("meta"):
             self.model = Qwen3MoeModelTT(self.config, self.mesh_device)
+        stop_timer("create-model", device=self.mesh_device)
 
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
 
+        start_timer("load-model", device=self.mesh_device)
         materialize(self.model)
         load(ckpt_dir, self.model)
+        stop_timer("load-model", device=self.mesh_device)
+
         self.model.eval()
+
+        start_timer("setup-tt", device=self.mesh_device)
         self.model.setup_tt()
+        stop_timer("setup-tt", device=self.mesh_device)
 
     def generate(self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9) -> List[List[str]]:
         prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
@@ -134,6 +142,8 @@ class Qwen3MoETT:
         eos_reached = torch.tensor([False] * batch_size)
         input_text_mask = torch.ne(tokens, pad_id)
         for curr_pos in range(min_prompt_len, total_len):
+            print_timer_all()
+            reset_timer()
             with torch.inference_mode():
                 mode = "prefill" if prev_pos == 0 else "decode"
                 logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
