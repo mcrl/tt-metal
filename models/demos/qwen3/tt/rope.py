@@ -2,6 +2,7 @@
 from typing import Tuple
 import torch
 import ttnn
+from models.demos.qwen3.tt.timer import start_timer, stop_timer
 
 from .qwen import Qwen3MoeConfig
 
@@ -40,6 +41,7 @@ def apply_rotary_emb(
         batch_size, seq_len, num_heads, head_dim = x.shape
 
         cos, sin = freqs_cis
+
         cos = ttnn.reshape(ttnn.repeat(ttnn.reshape(cos, [1, seq_len, 1, head_dim // 2]),
                                        [batch_size, 1, num_heads, 1]),
                            [batch_size, seq_len, num_heads, head_dim // 2, 1])
@@ -48,14 +50,18 @@ def apply_rotary_emb(
                            [batch_size, seq_len, num_heads, head_dim // 2, 1])
 
         x_ = ttnn.reshape(x, (batch_size, seq_len, num_heads, head_dim // 2, 2))
+
         even = ttnn.slice(x_, (0, 0, 0, 0, 0), (batch_size, seq_len, num_heads, head_dim // 2, 1))
         odd = ttnn.slice(x_, (0, 0, 0, 0, 1), (batch_size, seq_len, num_heads, head_dim // 2, 2))
 
         real = ttnn.subtract(ttnn.multiply(even, cos), ttnn.multiply(odd, sin))
         imag = ttnn.add(ttnn.multiply(odd, cos), ttnn.multiply(even, sin))
+
         y = ttnn.concat([real, imag], dim=-1)
 
-        return ttnn.reshape(y, (batch_size, seq_len, num_heads, head_dim))
+        result = ttnn.reshape(y, (batch_size, seq_len, num_heads, head_dim))
+
+        return result
 
     yq = ttnn.to_layout(rotate(xq), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
     yk = ttnn.to_layout(rotate(xk), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
