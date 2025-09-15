@@ -4,7 +4,7 @@ import ttnn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.ccl_1d import CCL1D
-from models.demos.qwen3.tt.timer import profile_time
+from models.demos.qwen3.tt.timer import profile_time, start_timer, stop_timer
 
 
 class Qwen3MoeMLP(nn.Module):
@@ -103,10 +103,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim))
 
+        start_timer("moe-router", device=self.mesh_device)
         router_logits_tt = ttnn.linear(hidden_states, self.gate_weight_tt, dtype=ttnn.bfloat16)
-
         routing_weights_tt = ttnn.softmax(router_logits_tt, dim=1)
-
         routing_weights_tt, selected_experts = ttnn.topk(routing_weights_tt, self.top_k, dim=1, largest=True)
 
         if self.norm_topk_prob:
@@ -118,7 +117,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         selected_experts = ttnn.to_layout(selected_experts, ttnn.ROW_MAJOR_LAYOUT)
         selected_experts = ttnn.reshape(selected_experts, (batch_size, sequence_length, 1, self.top_k))
+        stop_timer("moe-router", device=self.mesh_device)
 
+        start_timer("moe-prepare-tensors", device=self.mesh_device)
         all_to_all_dispatch_output_tensors = ttnn.from_torch(
             torch.zeros([1, batch_size, sequence_length, hidden_dim]),
             device=self.mesh_device,
@@ -143,7 +144,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.ROW_MAJOR_LAYOUT,
         )
+        stop_timer("moe-prepare-tensors", device=self.mesh_device)
 
+        start_timer("moe-all-to-all-dispatch", device=self.mesh_device)
         ttnn.all_to_all_dispatch(
             hidden_states,
             selected_experts,
@@ -164,7 +167,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         )
         post_all_to_all_dispatch_output = ttnn.repeat(post_all_to_all_dispatch_output, ttnn.Shape((1, self.num_experts_per_device, 1, 1)))
         post_all_to_all_dispatch_output = ttnn.to_layout(post_all_to_all_dispatch_output, ttnn.TILE_LAYOUT)
+        stop_timer("moe-all-to-all-dispatch", device=self.mesh_device)
 
+        start_timer("moe-expert-compute", device=self.mesh_device)
         gate_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.gate_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         up_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.up_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
@@ -175,7 +180,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         experts_output_tt = ttnn.to_layout(experts_output_tt, ttnn.ROW_MAJOR_LAYOUT)
         experts_output_tt = ttnn.reshape(experts_output_tt, (self.num_experts_per_device, batch_size, sequence_length, hidden_dim))
+        stop_timer("moe-expert-compute", device=self.mesh_device)
 
+        start_timer("moe-all-to-all-combine", device=self.mesh_device)
         ttnn.all_to_all_combine(
             experts_output_tt,
             self.expert_mapping_tensors_tt,
@@ -189,16 +196,19 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         )
         post_combine_output_tensor = ttnn.reshape(all_to_all_combine_output_tensors, shape=(self.top_k, 1, batch_size * sequence_length, hidden_dim))
         post_combine_output_tensor = ttnn.to_layout(post_combine_output_tensor, ttnn.TILE_LAYOUT)
+        stop_timer("moe-all-to-all-combine", device=self.mesh_device)
 
         routing_weights_tt_rm = ttnn.to_layout(routing_weights_tt, ttnn.ROW_MAJOR_LAYOUT)
         routing_weights_tt_rm = ttnn.repeat(routing_weights_tt_rm, ttnn.Shape((hidden_dim, 1, 1, 1)))
         routing_weights_tt_rm = ttnn.permute(routing_weights_tt_rm, (3, 1, 2, 0))
         routing_weights_tt = ttnn.to_layout(routing_weights_tt_rm, ttnn.TILE_LAYOUT)
 
+        start_timer("moe-post", device=self.mesh_device)
         post_combine_output_tensor = ttnn.mul(post_combine_output_tensor, routing_weights_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-
         post_combine_output_tensor = ttnn.sum(post_combine_output_tensor, dim=0, keepdim=True)
+        stop_timer("moe-post", device=self.mesh_device)
 
+        start_timer("moe-reduce-scatter", device=self.mesh_device)
         post_combine_output_tensor_rs = ttnn.reduce_scatter(
             post_combine_output_tensor,
             dim=3,
@@ -207,7 +217,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             topology=ttnn.Topology.Linear
         )
         ttnn.synchronize_device(self.mesh_device)
+        stop_timer("moe-reduce-scatter", device=self.mesh_device)
 
+        start_timer("moe-all-gather", device=self.mesh_device)
         post_combine_output_tensor_g = ttnn.all_gather(
             post_combine_output_tensor_rs,
             dim=3,
@@ -216,6 +228,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             mesh_device=self.mesh_device
         )
         ttnn.synchronize_device(self.mesh_device)
+        stop_timer("moe-all-gather", device=self.mesh_device)
 
         final_hidden_states_tt = ttnn.reshape(post_combine_output_tensor_g, (batch_size, sequence_length, hidden_dim))
 

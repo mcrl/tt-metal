@@ -9,7 +9,7 @@ from models.demos.qwen3.tt.rope import precompute_freqs_cis as precompute_freqs_
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
-from models.demos.qwen3.tt.timer import profile_time
+from models.demos.qwen3.tt.timer import profile_time, start_timer, stop_timer
 
 
 class Qwen3MoeDecoderLayer(nn.Module):
@@ -28,7 +28,9 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self.mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device)
 
         self.input_layernorm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
-        self.post_attention_layernorm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
+        self.post_attention_layernorm = Qwen3MoeRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device
+        )
 
     def setup_tt(self):
         if self.is_tt_setup:
@@ -36,18 +38,29 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self.self_attn.setup_tt()
         self.mlp.setup_tt()
 
-        self.input_layernorm_weight_tt = ttnn.from_torch(self.input_layernorm.weight,
-                                                         device=self.mesh_device,
-                                                         mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                                                         dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.input_layernorm_weight_tt = ttnn.to_layout(self.input_layernorm_weight_tt, ttnn.TILE_LAYOUT,
-                                                        dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.post_attention_layernorm_weight_tt = ttnn.from_torch(self.post_attention_layernorm.weight,
-                                                                  device=self.mesh_device,
-                                                                  mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                                                                  dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.post_attention_layernorm_weight_tt = ttnn.to_layout(self.post_attention_layernorm_weight_tt, ttnn.TILE_LAYOUT,
-                                                                 dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        self.input_layernorm_weight_tt = ttnn.from_torch(
+            self.input_layernorm.weight,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        self.input_layernorm_weight_tt = ttnn.to_layout(
+            self.input_layernorm_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+        )
+        self.post_attention_layernorm_weight_tt = ttnn.from_torch(
+            self.post_attention_layernorm.weight,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        self.post_attention_layernorm_weight_tt = ttnn.to_layout(
+            self.post_attention_layernorm_weight_tt,
+            ttnn.TILE_LAYOUT,
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
         self.is_tt_setup = True
 
     def forward(
@@ -56,11 +69,13 @@ class Qwen3MoeDecoderLayer(nn.Module):
         start_pos: int,
         position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
         attention_mask: ttnn.Tensor,
-        mode: InferenceMode = InferenceMode.PREFILL
+        mode: InferenceMode = InferenceMode.PREFILL,
     ) -> ttnn.Tensor:
 
         hidden_states_0 = hidden_states
-        attn_input = ttnn.rms_norm(hidden_states_0, epsilon=self.config.rms_norm_eps, weight=self.input_layernorm_weight_tt)
+        attn_input = ttnn.rms_norm(
+            hidden_states_0, epsilon=self.config.rms_norm_eps, weight=self.input_layernorm_weight_tt
+        )
         attn_result = self.self_attn(
             hidden_states=attn_input,
             start_pos=start_pos,
@@ -71,7 +86,9 @@ class Qwen3MoeDecoderLayer(nn.Module):
         )
 
         hidden_states_1 = ttnn.add(attn_result, hidden_states_0)
-        mlp_input = ttnn.rms_norm(hidden_states_1, epsilon=self.config.rms_norm_eps, weight=self.post_attention_layernorm_weight_tt)
+        mlp_input = ttnn.rms_norm(
+            hidden_states_1, epsilon=self.config.rms_norm_eps, weight=self.post_attention_layernorm_weight_tt
+        )
         mlp_result = self.mlp(mlp_input)
         output = ttnn.add(hidden_states_1, mlp_result)
 
@@ -106,25 +123,42 @@ class Qwen3MoeModel(nn.Module):
             return
         for layer in self.layers:
             layer.setup_tt()
-        self.embedding_weight_tt = ttnn.from_torch(self.embed_tokens.weight,
-                                                   device=self.mesh_device,
-                                                   mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                                                   dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.embedding_weight_tt = ttnn.to_layout(self.embedding_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.norm_weight_tt = ttnn.from_torch(self.norm.weight,
-                                              device=self.mesh_device,
-                                              mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                                              dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.norm_weight_tt = ttnn.to_layout(self.norm_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.lm_head_weight_tt = ttnn.from_torch(self.lm_head.weight.transpose(0, 1),
-                                                 device=self.mesh_device,
-                                                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                                                 dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.lm_head_weight_tt = ttnn.to_layout(self.lm_head_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        self.embedding_weight_tt = ttnn.from_torch(
+            self.embed_tokens.weight,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        self.embedding_weight_tt = ttnn.to_layout(
+            self.embedding_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+        )
+        self.norm_weight_tt = ttnn.from_torch(
+            self.norm.weight,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        self.norm_weight_tt = ttnn.to_layout(
+            self.norm_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+        )
+        self.lm_head_weight_tt = ttnn.from_torch(
+            self.lm_head.weight.transpose(0, 1),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        self.lm_head_weight_tt = ttnn.to_layout(
+            self.lm_head_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+        )
         self.is_tt_setup = True
 
     @profile_time()
-    def forward(self, input_ids: torch.LongTensor, start_pos: int = 0, mode: InferenceMode = InferenceMode.PREFILL) -> torch.Tensor:
+    def forward(
+        self, input_ids: torch.LongTensor, start_pos: int = 0, mode: InferenceMode = InferenceMode.PREFILL
+    ) -> torch.Tensor:
         # Normalize mode to InferenceMode enum (caller may pass a string)
         if isinstance(mode, str):
             mode = InferenceMode(mode)
@@ -133,15 +167,26 @@ class Qwen3MoeModel(nn.Module):
 
         # CPU rope buffer exists for reference/compat but isn't used below
 
-        pos_embs_cos = self.position_embeddings_tt[0][start_pos: start_pos + sequence_length]
-        pos_embs_sin = self.position_embeddings_tt[1][start_pos: start_pos + sequence_length]
+        pos_embs_cos = self.position_embeddings_tt[0][start_pos : start_pos + sequence_length]
+        pos_embs_sin = self.position_embeddings_tt[1][start_pos : start_pos + sequence_length]
 
-        cos_tt = ttnn.from_torch(pos_embs_cos, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT,
-                                 device=self.mesh_device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                                 mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device))
-        sin_tt = ttnn.from_torch(pos_embs_sin, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT,
-                                 device=self.mesh_device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                                 mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device))
+        start_timer("input-transfer", device=self.mesh_device)
+        cos_tt = ttnn.from_torch(
+            pos_embs_cos,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
+        sin_tt = ttnn.from_torch(
+            pos_embs_sin,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
 
         attention_mask = (
             torch.full(size=(1, 1, sequence_length, start_pos + sequence_length), fill_value=True, dtype=torch.bool)
@@ -157,13 +202,21 @@ class Qwen3MoeModel(nn.Module):
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-        input_ids_tt = ttnn.from_torch(input_ids,
-                                       device=self.mesh_device,
-                                       mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                                       dtype=ttnn.uint32, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        input_ids_tt = ttnn.to_layout(input_ids_tt, ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        input_ids_tt = ttnn.from_torch(
+            input_ids,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.uint32,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        input_ids_tt = ttnn.to_layout(
+            input_ids_tt, ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+        )
+        stop_timer("input-transfer", device=self.mesh_device)
 
+        start_timer("embedding", device=self.mesh_device)
         hidden_states_tt = ttnn.embedding(input_ids_tt, self.embedding_weight_tt, dtype=ttnn.bfloat16)
+        stop_timer("embedding", device=self.mesh_device)
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             position_embeddings = cos_tt, sin_tt
@@ -177,8 +230,16 @@ class Qwen3MoeModel(nn.Module):
             )
 
         hidden_states_tt = ttnn.rms_norm(hidden_states_tt, epsilon=self.config.rms_norm_eps, weight=self.norm_weight_tt)
+
+        start_timer("LMhead", device=self.mesh_device)
         logits_tt = ttnn.linear(hidden_states_tt, self.lm_head_weight_tt, dtype=ttnn.bfloat16)
-        logits_tt_cpu = ttnn.to_torch(logits_tt, dtype=self.config.dtype, mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2))
+        stop_timer("LMhead", device=self.mesh_device)
+
+        start_timer("output-transfer", device=self.mesh_device)
+        logits_tt_cpu = ttnn.to_torch(
+            logits_tt, dtype=self.config.dtype, mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2)
+        )
+        stop_timer("output-transfer", device=self.mesh_device)
 
         return logits_tt_cpu
 

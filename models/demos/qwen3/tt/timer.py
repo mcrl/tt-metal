@@ -12,6 +12,7 @@ def sync_and_time(device=None):
 
 
 TIMER = {}
+DEVICE_CACHE = None
 
 
 def reset_timer():
@@ -22,9 +23,22 @@ def profile_enabled() -> bool:
     return os.getenv("PROFILE_TIME", "0") == "1"
 
 
+def set_and_get_device_cache(device=None):
+    global DEVICE_CACHE
+    if device is not None:
+        DEVICE_CACHE = device
+    else:
+        if DEVICE_CACHE is None:
+            raise ValueError("Device is not set")
+    return DEVICE_CACHE
+
+
 def start_timer(key: str, device=None):
     if not profile_enabled():
         return
+
+    device = set_and_get_device_cache(device)
+
     now = sync_and_time(device)
     entry = TIMER.get(key)
     if entry is None:
@@ -36,6 +50,9 @@ def start_timer(key: str, device=None):
 def stop_timer(key: str, device=None):
     if not profile_enabled():
         return 0.0
+
+    device = set_and_get_device_cache(device)
+
     now = sync_and_time(device)
     entry = TIMER.get(key)
     if entry is None:
@@ -66,9 +83,11 @@ def print_timer_all():
         total = entry.get("total", 0.0)
         count = entry.get("count", 0)
         avg = (total / count) if count > 0 else 0.0
+        min_sample = min(entry.get("samples", []))
+        max_sample = max(entry.get("samples", []))
         samples = entry.get("samples", [])
-        samples_str = ", ".join(f"{sample:.4f}s" for sample in samples)
-        print(f"\n[{key}] total={total:.6f}s, count={count}, avg={avg:.6f}s")
+        samples_str = ", ".join(f"{sample * 1000:.2f}ms" for sample in samples)
+        print(f"\n[{key}] total={total * 1000:.3f}ms, count={count}, avg={avg * 1000:.3f}ms, min={min_sample * 1000:.2f}ms, max={max_sample * 1000:.2f}ms")
         print(f"{samples_str}")
 
 
