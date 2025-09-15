@@ -28,12 +28,14 @@ def create_mesh_device(device_params: Optional[Dict] = None):
 
 
 def main(
-        ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
-        tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
-        config_path: Optional[str] = None,
+    ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
+    tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
+    config_path: Optional[str] = None,
 ):
     mesh_device = create_mesh_device()
-    qwen3_moe = Qwen3MoETT(mesh_device=mesh_device, ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path)
+    qwen3_moe = Qwen3MoETT(
+        mesh_device=mesh_device, ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path
+    )
     prompts = [
         "Four score and seven years ago our fathers brought",
         "We hold these truths to be",

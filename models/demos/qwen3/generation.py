@@ -2,7 +2,7 @@ import json
 from typing import Optional, List
 import torch
 import ttnn
-
+import time
 from tokenizers import Tokenizer
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
@@ -10,6 +10,7 @@ from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeModel as Qwe
 from models.demos.qwen3.tt.qwen import Qwen3MoeModel as Qwen3MoeModelTT
 from models.demos.qwen3.tt.timer import print_timer_all, reset_timer, profile_time, start_timer, stop_timer
 from models.demos.qwen3.common.loader import load, materialize
+from models.utility_functions import enable_persistent_kernel_cache
 
 
 def sample_top_p(probs, p):
@@ -43,7 +44,9 @@ class Qwen3MoEReference:
         load(ckpt_dir, self.model)
         self.model.eval()
 
-    def generate(self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9) -> List[List[str]]:
+    def generate(
+        self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9
+    ) -> List[List[str]]:
         prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
         batch_size = len(prompt_tokens)
         assert batch_size <= self.config.max_batch_size
@@ -71,10 +74,15 @@ class Qwen3MoEReference:
                 next_tokens = sample_top_p(probs, top_p).reshape(-1)
             else:
                 next_tokens = torch.argmax(logits[:, -1, :], dim=-1)
-            next_tokens = torch.where(condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens)
+            next_tokens = torch.where(
+                condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
+            )
             tokens[:, curr_pos] = next_tokens
 
-            eos_reached = torch.logical_or(eos_reached, torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)))
+            eos_reached = torch.logical_or(
+                eos_reached,
+                torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
+            )
             prev_pos = curr_pos
             if all(eos_reached):
                 break
@@ -86,7 +94,9 @@ class Qwen3MoEReference:
 
 
 class Qwen3MoETT:
-    def __init__(self, mesh_device: ttnn.Device, ckpt_dir: str, tokenizer_path: str, config_path: Optional[str] = None) -> None:
+    def __init__(
+        self, mesh_device: ttnn.Device, ckpt_dir: str, tokenizer_path: str, config_path: Optional[str] = None
+    ) -> None:
         torch.manual_seed(42)
         torch.set_default_device(torch.device("cpu"))
         torch.set_default_dtype(torch.bfloat16)
@@ -101,8 +111,8 @@ class Qwen3MoETT:
         self.config = Qwen3MoeConfig.from_dict(data)
 
         # FIXME: ad-hoc for reducing KV cache memory
-        self.config.max_batch_size = 4
-        self.config.max_seq_len = 512
+        self.config.max_batch_size = 2
+        self.config.max_seq_len = 128
 
         start_timer("create-model", device=self.mesh_device)
         with torch.device("meta"):
@@ -122,8 +132,15 @@ class Qwen3MoETT:
         self.model.setup_tt()
         stop_timer("setup-tt", device=self.mesh_device)
 
-    def generate(self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9) -> List[List[str]]:
+        print_timer_all()
+        enable_persistent_kernel_cache()
+
+    def generate(
+        self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9
+    ) -> List[List[str]]:
+
         prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
+
         batch_size = len(prompt_tokens)
         assert batch_size <= self.config.max_batch_size
 
@@ -141,8 +158,21 @@ class Qwen3MoETT:
         eos_id = self.config.eos_token_id
         eos_reached = torch.tensor([False] * batch_size)
         input_text_mask = torch.ne(tokens, pad_id)
+
+        warmup = True
+        if warmup is True:
+            for curr_pos in range(min_prompt_len, total_len):
+                with torch.inference_mode():
+                    mode = "prefill" if prev_pos == 0 else "decode"
+                    logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
+                prev_pos = curr_pos
+
+        reset_timer()
+
+        ttnn.synchronize_device(self.mesh_device)
+        prev_pos = 0
+        generate_start_time = time.time()
         for curr_pos in range(min_prompt_len, total_len):
-            print_timer_all()
             reset_timer()
             with torch.inference_mode():
                 mode = "prefill" if prev_pos == 0 else "decode"
@@ -153,15 +183,27 @@ class Qwen3MoETT:
                 next_tokens = sample_top_p(probs, top_p).reshape(-1)
             else:
                 next_tokens = torch.argmax(logits[:, -1, :], dim=-1)
-            next_tokens = torch.where(condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens)
+            next_tokens = torch.where(
+                condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
+            )
             tokens[:, curr_pos] = next_tokens
 
-            eos_reached = torch.logical_or(eos_reached, torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)))
+            eos_reached = torch.logical_or(
+                eos_reached,
+                torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
+            )
             prev_pos = curr_pos
+            print_timer_all()
             if all(eos_reached):
                 break
 
         tokens = tokens.tolist()
         prompt_lengths = [len(t) for t in prompt_tokens]
         split_tokens = [(output[:length], output[length:]) for output, length in zip(tokens, prompt_lengths)]
+        generate_end_time = time.time()
+
+        print(
+            f"Generation Time: {generate_end_time - generate_start_time:.3f}s, {batch_size=}, {min_prompt_len=}, {max_prompt_len=}, {max_gen_len=}"
+        )
+
         return list(map(self.tokenizer.decode_batch, split_tokens))
