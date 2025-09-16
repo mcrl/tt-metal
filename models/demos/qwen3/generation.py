@@ -65,9 +65,23 @@ class Qwen3MoEReference:
         eos_id = self.config.eos_token_id
         eos_reached = torch.tensor([False] * batch_size)
         input_text_mask = torch.ne(tokens, pad_id)
+
+        warmup = True
+        if warmup is True:
+            for curr_pos in range(min_prompt_len, total_len):
+                with torch.inference_mode():
+                    mode = "prefill" if prev_pos == 0 else "decode"
+                    logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
+                prev_pos = curr_pos
+        prev_pos = 0
+
+        iter_times = []
+        generate_start_time = time.time()
         for curr_pos in range(min_prompt_len, total_len):
+            iter_start_time = time.time()
             with torch.inference_mode():
                 logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode="decode")
+            iter_times.append(time.time() - iter_start_time)
 
             if temperature > 0:
                 probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
@@ -87,10 +101,13 @@ class Qwen3MoEReference:
             if all(eos_reached):
                 break
 
+        generate_end_time = time.time()
+        print(f"Generation Time: {generate_end_time - generate_start_time:.3f}s, {batch_size=}, {min_prompt_len=}, {max_prompt_len=}, {max_gen_len=}")
+
         tokens = tokens.tolist()
         prompt_lengths = [len(t) for t in prompt_tokens]
         split_tokens = [(output[:length], output[length:]) for output, length in zip(tokens, prompt_lengths)]
-        return list(map(self.tokenizer.decode_batch, split_tokens))
+        return list(map(self.tokenizer.decode_batch, split_tokens)), iter_times
 
 
 class Qwen3MoETT:
@@ -111,8 +128,8 @@ class Qwen3MoETT:
         self.config = Qwen3MoeConfig.from_dict(data)
 
         # FIXME: ad-hoc for reducing KV cache memory
-        self.config.max_batch_size = 2
-        self.config.max_seq_len = 128
+        self.config.max_batch_size = 4
+        self.config.max_seq_len = 256
 
         start_timer("create-model", device=self.mesh_device)
         with torch.device("meta"):
@@ -171,12 +188,16 @@ class Qwen3MoETT:
 
         ttnn.synchronize_device(self.mesh_device)
         prev_pos = 0
+
+        iter_times = []
         generate_start_time = time.time()
         for curr_pos in range(min_prompt_len, total_len):
             reset_timer()
+            iter_start_time = time.time()
             with torch.inference_mode():
                 mode = "prefill" if prev_pos == 0 else "decode"
                 logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
+            iter_times.append(time.time() - iter_start_time)
 
             if temperature > 0:
                 probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
@@ -206,4 +227,4 @@ class Qwen3MoETT:
             f"Generation Time: {generate_end_time - generate_start_time:.3f}s, {batch_size=}, {min_prompt_len=}, {max_prompt_len=}, {max_gen_len=}"
         )
 
-        return list(map(self.tokenizer.decode_batch, split_tokens))
+        return list(map(self.tokenizer.decode_batch, split_tokens)), iter_times

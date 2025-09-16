@@ -1,11 +1,12 @@
 import fire
 from typing import Optional, Dict
 
-from models.demos.qwen3.generation import Qwen3MoETT
+from models.demos.qwen3.generation import Qwen3MoETT, Qwen3MoEReference
 import ttnn
 from loguru import logger
 from tests.scripts.common import get_updated_device_params
 import tt_lock
+from test_dataset.dataset_loader import load_prompts
 
 
 def create_mesh_device(device_params: Optional[Dict] = None):
@@ -27,23 +28,54 @@ def create_mesh_device(device_params: Optional[Dict] = None):
     return mesh_device
 
 
+def perftest_tt(batch_size: int, prompt_len: int, gen_tokens: int,
+                ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
+                tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
+                config_path: str = "/shared/models/Qwen3-30B-A3B/config.json"):
+    mesh_device = create_mesh_device()
+    qwen3_moe = Qwen3MoETT(
+        mesh_device=mesh_device, ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path
+    )
+
+    prompts = load_prompts(batch_size, prompt_len)
+    prompt_and_responses, iter_times = qwen3_moe.generate(prompts, max_gen_len=gen_tokens, temperature=0.1, top_p=0.3)
+
+    return prompt_and_responses, iter_times
+
+
+def perftest_reference(batch_size: int, prompt_len: int, gen_tokens: int,
+                       ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
+                       tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
+                       config_path: str = "/shared/models/Qwen3-30B-A3B/config.json"):
+    qwen3_moe_reference = Qwen3MoEReference(
+        ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path
+    )
+
+    prompts = load_prompts(batch_size, prompt_len)
+    prompt_and_responses, iter_times = qwen3_moe_reference.generate(prompts, max_gen_len=gen_tokens, temperature=0.1, top_p=0.3)
+
+    return prompt_and_responses, iter_times
+
+
 def main(
     ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
     tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
     config_path: Optional[str] = None,
 ):
-    mesh_device = create_mesh_device()
-    qwen3_moe = Qwen3MoETT(
-        mesh_device=mesh_device, ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path
-    )
-    prompts = [
-        "Four score and seven years ago our fathers brought",
-        "We hold these truths to be",
-    ]
-    responses = qwen3_moe.generate(prompts, max_gen_len=6, temperature=0.4, top_p=0.8)
+    batch_size = 4
+    prompt_len = 64
+    gen_tokens = 32
+    prompt_and_responses_tt, iter_times_tt = perftest_tt(batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path)
+    prompt_and_responses_reference, iter_times_reference = perftest_reference(batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path)
+    print(f"TT Time: {sum(iter_times_tt)}")
+    print(f"Reference Time: {sum(iter_times_reference)}")
 
-    for prompt, completion in responses:
-        print("\033[31m" + prompt + "\033[0m" + completion + "\n")
+    print(f"TT Results:")
+    for i in range(batch_size):
+        print("\033[31m" + prompt_and_responses_tt[i][0] + "\033[0m" + prompt_and_responses_tt[i][1] + "\n")
+    print(f"Reference Results:")
+    for i in range(batch_size):
+        print("\033[31m" + prompt_and_responses_reference[i][0] + "\033[0m" + prompt_and_responses_reference[i][1] + "\n")
 
 
 if __name__ == "__main__":
