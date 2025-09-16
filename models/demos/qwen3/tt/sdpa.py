@@ -38,10 +38,6 @@ def sdpa_forward_prefill(
     key_shape = key.shape
     value_shape = value.shape
 
-    # print(f"{query.shape=}, {query.dtype=}, {query.layout=}, {query.tile=}")
-    # print(f"{key.shape=}, {key.dtype=}, {key.layout=}, {key.tile=}")
-    # print(f"{value.shape=}, {value.dtype=}, {value.layout=}, {value.tile=}")
-
     padded_query_shape = (
         query_shape[0],
         query_shape[1],
