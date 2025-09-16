@@ -82,26 +82,33 @@ jobs:
       - name: Enable Performance mode
         uses: tenstorrent/tt-metal/.github/actions/set-cpu-governor@main
         with:
-          governor: performance
-      - name: Run demo regression tests
-        timeout-minutes: ${{ matrix.test-group.timeout }}
-        shell: bash
-        run: |
-          source /work/tests/scripts/t3000/run_t3000_demo_tests.sh
-          ${{ matrix.test-group.cmd }}
+          docker_image: ${{ inputs.docker-image }}
+          docker_password: ${{ secrets.GITHUB_TOKEN }}
+          docker_opts: |
+            -e TT_METAL_HOME=${{ github.workspace }}
+            -e ARCH_NAME=${{ matrix.test-group.arch }}
+            -e LD_LIBRARY_PATH=${{ github.workspace }}/build/lib
+            -v /mnt/MLPerf:/mnt/MLPerf
+          install_wheel: true
+          run_args: |
+            source ${{ github.workspace }}/tests/scripts/t3000/run_t3000_demo_tests.sh
+            ${{ matrix.test-group.cmd }}
 
       - name: Save environment data
-        id: save-environment-data
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          if [ -d "generated/benchmark_data" ]; then
-            echo "has_benchmark_data=true" >> $GITHUB_OUTPUT
-            python3 .github/scripts/data_analysis/create_benchmark_with_environment_json.py
-          else
-            echo "::warning::Benchmark data directory 'generated/benchmark_data' does not exist"
-            echo "has_benchmark_data=false" >> $GITHUB_OUTPUT
-          fi
+        if: ${{ (matrix.test-group.name == 't3k_falcon7b_tests' || matrix.test-group.name == 't3k_falcon40b_tests' || matrix.test-group.name == 't3k_mixtral_tests' || matrix.test-group.name == 't3k_qwen25_tests' || matrix.test-group.name == 't3k_qwen3_tests' || matrix.test-group.name == 't3k_llama3_tests' || matrix.test-group.name == 't3k_llama3_70b_tests' || matrix.test-group.name == 't3k_llama3_vision_tests') && !cancelled() }}
+        uses: ./.github/actions/docker-run
+        env:
+          LOGURU_LEVEL: INFO
+        with:
+          docker_image: ${{ inputs.docker-image }}
+          docker_password: ${{ secrets.GITHUB_TOKEN }}
+          docker_opts: |
+            -e TT_METAL_HOME=${{ github.workspace }}
+            -e ARCH_NAME=${{ matrix.test-group.arch }}
+            -e LD_LIBRARY_PATH=${{ github.workspace }}/build/lib
+            -v /mnt/MLPerf:/mnt/MLPerf
+          install_wheel: true
+          run_args: python3 .github/scripts/data_analysis/create_benchmark_with_environment_json.py
 
       - name: Upload benchmark data
         if: ${{ !cancelled() && steps.save-environment-data.conclusion == 'success' && steps.save-environment-data.outputs.has_benchmark_data == 'true' }}
