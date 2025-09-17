@@ -8,7 +8,7 @@ from tokenizers import Tokenizer
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeModel as Qwen3MoeModelReference
 from models.demos.qwen3.tt.qwen import Qwen3MoeModel as Qwen3MoeModelTT
-from models.demos.qwen3.tt.timer import print_timer_all, reset_timer, profile_time, start_timer, stop_timer
+from models.demos.qwen3.utils.timer import print_timer_all, reset_timer, profile_time, start_timer, stop_timer
 from models.demos.qwen3.common.loader import load, materialize
 from models.utility_functions import enable_persistent_kernel_cache
 

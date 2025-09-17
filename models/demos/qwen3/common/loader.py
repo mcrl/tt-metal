@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from safetensors.torch import safe_open
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from models.demos.qwen3.utils.profiler import profile_trace
 
 def load_shard(ckpt_path: Path, state_dict: Dict[str, torch.Tensor]) -> None:
     with safe_open(ckpt_path, framework="pt", device="cpu") as f:
@@ -39,7 +39,7 @@ def load(ckpt_dir: str, model: nn.Module, io_workers: int = 4, blas_workers: int
 
     torch.set_num_threads(num_threads)
 
-
+@profile_trace("load-model", level=0)
 def materialize(model: nn.Module) -> None:
     seen_param_map = dict()
 
