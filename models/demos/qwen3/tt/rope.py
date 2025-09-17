@@ -1,7 +1,8 @@
 from typing import Tuple
 import torch
 import ttnn
-from models.demos.qwen3.tt.timer import start_timer, stop_timer
+from models.demos.qwen3.utils.timer import start_timer, stop_timer
+from models.demos.qwen3.utils.profiler import profile_trace
 
 
 def precompute_freqs_cis(config) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
@@ -28,6 +29,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     return freqs_cis.view(*shape)
 
 
+@profile_trace("apply_rotary_emb", level=3)
 def apply_rotary_emb(
     xq: ttnn.Tensor,
     xk: ttnn.Tensor,

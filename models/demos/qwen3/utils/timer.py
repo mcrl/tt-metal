@@ -2,7 +2,6 @@ import os
 import ttnn
 import time
 
-
 def sync_and_time(device=None):
     if device is not None:
         ttnn.synchronize_device(device)
@@ -19,7 +18,7 @@ def reset_timer():
     TIMER.clear()
 
 
-def profile_enabled() -> bool:
+def timer_enabled() -> bool:
     return os.getenv("PROFILE_TIME", "0") == "1"
 
 
@@ -34,7 +33,7 @@ def set_and_get_device_cache(device=None):
 
 
 def start_timer(key: str, device=None):
-    if not profile_enabled():
+    if not timer_enabled():
         return
 
     device = set_and_get_device_cache(device)
@@ -48,7 +47,7 @@ def start_timer(key: str, device=None):
 
 
 def stop_timer(key: str, device=None):
-    if not profile_enabled():
+    if not timer_enabled():
         return 0.0
 
     device = set_and_get_device_cache(device)
@@ -76,7 +75,7 @@ def get_timer(key: str):
 
 
 def print_timer_all():
-    if not profile_enabled():
+    if not timer_enabled():
         print("Profiling disabled (set PROFILE_TIME=1 to enable)")
         return
     for key, entry in TIMER.items():
@@ -94,7 +93,7 @@ def print_timer_all():
 def timed(name: str | None = None):
     def decorator(func):
         def wrapper(*args, **kwargs):
-            if not profile_enabled():
+            if not timer_enabled():
                 return func(*args, **kwargs)
             self_obj = args[0] if args else None
             device = getattr(self_obj, "mesh_device", None)
