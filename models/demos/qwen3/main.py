@@ -7,7 +7,8 @@ from loguru import logger
 from tests.scripts.common import get_updated_device_params
 import tt_lock
 from test_dataset.dataset_loader import load_prompts
-
+from models.demos.qwen3.utils.timer import set_and_get_device_cache
+from models.demos.qwen3.utils.profiler import profile_trace
 
 def create_mesh_device(device_params: Optional[Dict] = None):
     params = dict(device_params or {})
@@ -27,12 +28,13 @@ def create_mesh_device(device_params: Optional[Dict] = None):
 
     return mesh_device
 
-
 def perftest_tt(batch_size: int, prompt_len: int, gen_tokens: int,
                 ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
                 tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
                 config_path: str = "/shared/models/Qwen3-30B-A3B/config.json"):
     mesh_device = create_mesh_device()
+    set_and_get_device_cache(mesh_device)
+
     qwen3_moe = Qwen3MoETT(
         mesh_device=mesh_device, ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path
     )
