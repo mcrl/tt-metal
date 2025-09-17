@@ -5,7 +5,8 @@ from typing import Tuple
 import ttnn
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.reference.rope import precompute_freqs_cis
-from models.demos.qwen3.tt.rope import precompute_freqs_cis as precompute_freqs_cis_tt
+from models.demos.qwen3.tt.rope import precompute_freqs_cis as precompute_freqs_cis_tt, precompute_freqs_cis_v2 as precompute_freqs_cis_tt_v2
+
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
@@ -112,9 +113,8 @@ class Qwen3MoeModel(nn.Module):
         self.norm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        position_embeddings = precompute_freqs_cis(config)
         self.position_embeddings_tt = precompute_freqs_cis_tt(config)
-        self.register_buffer("position_embeddings", position_embeddings, persistent=False)
+        self.position_embeddings_tt_v2 = precompute_freqs_cis_tt_v2(config)
 
         assert config.sliding_window is None
 
@@ -167,14 +167,17 @@ class Qwen3MoeModel(nn.Module):
 
         # CPU rope buffer exists for reference/compat but isn't used below
 
-        pos_embs_cos = self.position_embeddings_tt[0][start_pos : start_pos + sequence_length]
-        pos_embs_sin = self.position_embeddings_tt[1][start_pos : start_pos + sequence_length]
+        # pos_embs_cos = self.position_embeddings_tt[0][start_pos : start_pos + sequence_length]
+        # pos_embs_sin = self.position_embeddings_tt[1][start_pos : start_pos + sequence_length]
+
+        pos_embs_cos = self.position_embeddings_tt_v2[0][start_pos : start_pos + sequence_length]
+        pos_embs_sin = self.position_embeddings_tt_v2[1][start_pos : start_pos + sequence_length]
 
         start_timer("input-transfer", device=self.mesh_device)
         cos_tt = ttnn.from_torch(
             pos_embs_cos,
             dtype=ttnn.bfloat16,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
+            layout=ttnn.TILE_LAYOUT,
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
@@ -182,7 +185,7 @@ class Qwen3MoeModel(nn.Module):
         sin_tt = ttnn.from_torch(
             pos_embs_sin,
             dtype=ttnn.bfloat16,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
+            layout=ttnn.TILE_LAYOUT,
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
