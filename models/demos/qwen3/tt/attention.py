@@ -6,10 +6,11 @@ import ttnn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
-from models.demos.qwen3.tt.rope import apply_rotary_emb as apply_rotary_emb_tt
+from models.demos.qwen3.tt.rope import apply_rotary_emb as apply_rotary_emb_tt, apply_rotary_emb_v2 as apply_rotary_emb_tt_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.timer import profile_time
 from models.demos.qwen3.tt.timer import start_timer, stop_timer
+from models.tt_transformers.tt.common import get_rot_transformation_mat
 
 
 class Qwen3MoeAttention(nn.Module):
@@ -151,6 +152,14 @@ class Qwen3MoeAttention(nn.Module):
         self.o_proj_weight = ttnn.to_layout(
             self.o_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
         )
+        self.trans_mat_tt = ttnn.from_torch(
+            get_rot_transformation_mat(dhead=ttnn.TILE_SIZE),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
+        )
         self.is_tt_setup = True
 
     @profile_time()
@@ -184,7 +193,8 @@ class Qwen3MoeAttention(nn.Module):
         stop_timer("attention-qkv-projection", device=self.mesh_device)
 
         start_timer("attention-rope", device=self.mesh_device)
-        query_states_tt, key_states_tt = apply_rotary_emb_tt(query_states_tt, key_states_tt, position_embeddings)
+        # query_states_tt, key_states_tt = apply_rotary_emb_tt(query_states_tt, key_states_tt, position_embeddings)
+        query_states_tt, key_states_tt = apply_rotary_emb_tt_v2(query_states_tt, key_states_tt, position_embeddings, self.trans_mat_tt)
         stop_timer("attention-rope", device=self.mesh_device)
 
         start_timer("attention-post-rope-permute", device=self.mesh_device)
@@ -196,18 +206,18 @@ class Qwen3MoeAttention(nn.Module):
         start_timer("attention-kv-cache-store", device=self.mesh_device)
         if mode == InferenceMode.PREFILL:
             for b in range(batch_size):
-                ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b : b + 1], b)
-                ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b : b + 1], b)
+                ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b: b + 1], b)
+                ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b: b + 1], b)
         elif mode == InferenceMode.DECODE:
             for b in range(batch_size):
                 ttnn.kv_cache.update_cache_for_token_(
                     self.cache_k_tt,
-                    key_states_tt[b : b + 1],
+                    key_states_tt[b: b + 1],
                     start_pos + b * self.kv_heads_per_device * self.config.max_seq_len,
                 )
                 ttnn.kv_cache.update_cache_for_token_(
                     self.cache_v_tt,
-                    value_states_tt[b : b + 1],
+                    value_states_tt[b: b + 1],
                     start_pos + b * self.kv_heads_per_device * self.config.max_seq_len,
                 )
         stop_timer("attention-kv-cache-store", device=self.mesh_device)

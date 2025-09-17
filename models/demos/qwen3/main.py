@@ -38,7 +38,7 @@ def perftest_tt(batch_size: int, prompt_len: int, gen_tokens: int,
     )
 
     prompts = load_prompts(batch_size, prompt_len)
-    prompt_and_responses, iter_times = qwen3_moe.generate(prompts, max_gen_len=gen_tokens, temperature=0.1, top_p=0.3)
+    prompt_and_responses, iter_times = qwen3_moe.generate(prompts, max_gen_len=gen_tokens, temperature=0.7, top_p=0.8)
 
     return prompt_and_responses, iter_times
 
@@ -52,7 +52,7 @@ def perftest_reference(batch_size: int, prompt_len: int, gen_tokens: int,
     )
 
     prompts = load_prompts(batch_size, prompt_len)
-    prompt_and_responses, iter_times = qwen3_moe_reference.generate(prompts, max_gen_len=gen_tokens, temperature=0.1, top_p=0.3)
+    prompt_and_responses, iter_times = qwen3_moe_reference.generate(prompts, max_gen_len=gen_tokens, temperature=0.7, top_p=0.8)
 
     return prompt_and_responses, iter_times
 
