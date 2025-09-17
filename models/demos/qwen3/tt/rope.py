@@ -78,14 +78,20 @@ def precompute_freqs_cis_v2(config) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
 
     with torch.device("cpu"), torch.no_grad():
         indices = torch.div(
-            torch.arange(start=0, end=dim, step=1, dtype=torch.int64).to(dtype=torch.float32)[:(dim)], dim
+            torch.arange(start=0, end=dim, step=2, dtype=torch.int64).to(dtype=torch.float32)[:(dim // 2)], dim
         )
         freqs = torch.reciprocal(torch.pow(theta, indices)).to(dtype=torch.float32)
         t = torch.arange(start=0, end=max_seq_len, step=1, dtype=torch.int64).to(dtype=torch.float32)
         freqs = torch.outer(t, freqs).to(dtype=torch.float32)
         freqs_cis = torch.polar(abs=torch.ones_like(input=freqs, dtype=torch.float32), angle=torch.neg(freqs))
 
-    return freqs_cis.real, freqs_cis.imag
+        cos = freqs_cis.real
+        sin = freqs_cis.imag
+
+        cos_interleaved = torch.stack([cos, cos], dim=-1).flatten(start_dim=-2)
+        sin_interleaved = torch.stack([sin, sin], dim=-1).flatten(start_dim=-2)
+
+    return cos_interleaved, sin_interleaved
 
 
 def apply_rotary_emb_v2(
@@ -99,14 +105,6 @@ def apply_rotary_emb_v2(
 
     cos, sin = freqs_cis
 
-    # if cos.shape[0] != seq_len:
-    #     cos = ttnn.slice(cos, (0, 0), (seq_len, cos.shape[1]))
-    #     sin = ttnn.slice(sin, (0, 0), (seq_len, sin.shape[1]))
-
-    # cos_4d = ttnn.reshape(cos, [1, 1, seq_len, head_dim // 2])
-    # sin_4d = ttnn.reshape(sin, [1, 1, seq_len, head_dim // 2])
-    # cos_full = ttnn.concat([cos_4d, cos_4d], dim=-1)
-    # sin_full = ttnn.concat([sin_4d, sin_4d], dim=-1)
     cos_full, sin_full = ttnn.reshape(cos, [1, 1, seq_len, head_dim]), ttnn.reshape(sin, [1, 1, seq_len, head_dim])
 
     xq_bnsh = ttnn.permute(xq, (0, 2, 1, 3))
