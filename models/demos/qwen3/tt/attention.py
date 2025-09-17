@@ -196,18 +196,18 @@ class Qwen3MoeAttention(nn.Module):
         start_timer("attention-kv-cache-store", device=self.mesh_device)
         if mode == InferenceMode.PREFILL:
             for b in range(batch_size):
-                ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b: b + 1], b)
-                ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b: b + 1], b)
+                ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b : b + 1], b)
+                ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b : b + 1], b)
         elif mode == InferenceMode.DECODE:
             for b in range(batch_size):
                 ttnn.kv_cache.update_cache_for_token_(
                     self.cache_k_tt,
-                    key_states_tt[b: b + 1],
+                    key_states_tt[b : b + 1],
                     start_pos + b * self.kv_heads_per_device * self.config.max_seq_len,
                 )
                 ttnn.kv_cache.update_cache_for_token_(
                     self.cache_v_tt,
-                    value_states_tt[b: b + 1],
+                    value_states_tt[b : b + 1],
                     start_pos + b * self.kv_heads_per_device * self.config.max_seq_len,
                 )
         stop_timer("attention-kv-cache-store", device=self.mesh_device)

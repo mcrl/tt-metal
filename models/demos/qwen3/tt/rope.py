@@ -1,19 +1,18 @@
-
 from typing import Tuple
 import torch
 import ttnn
 from models.demos.qwen3.tt.timer import start_timer, stop_timer
 
-from .qwen import Qwen3MoeConfig
 
-
-def precompute_freqs_cis(config: Qwen3MoeConfig) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
+def precompute_freqs_cis(config) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
     theta = config.rope_theta
     dim = config.head_dim
     max_seq_len = config.max_seq_len
 
     with torch.device("cpu"), torch.no_grad():
-        indices = torch.div(torch.arange(start=0, end=dim, step=2, dtype=torch.int64).to(dtype=torch.float32)[: (dim // 2)], dim)
+        indices = torch.div(
+            torch.arange(start=0, end=dim, step=2, dtype=torch.int64).to(dtype=torch.float32)[: (dim // 2)], dim
+        )
         freqs = torch.reciprocal(torch.pow(theta, indices)).to(dtype=torch.float32)
         t = torch.arange(start=0, end=max_seq_len, step=1, dtype=torch.int64).to(dtype=torch.float32)
         freqs = torch.outer(t, freqs).to(dtype=torch.float32)
@@ -42,12 +41,14 @@ def apply_rotary_emb(
 
         cos, sin = freqs_cis
 
-        cos = ttnn.reshape(ttnn.repeat(ttnn.reshape(cos, [1, seq_len, 1, head_dim // 2]),
-                                       [batch_size, 1, num_heads, 1]),
-                           [batch_size, seq_len, num_heads, head_dim // 2, 1])
-        sin = ttnn.reshape(ttnn.repeat(ttnn.reshape(sin, [1, seq_len, 1, head_dim // 2]),
-                                       [batch_size, 1, num_heads, 1]),
-                           [batch_size, seq_len, num_heads, head_dim // 2, 1])
+        cos = ttnn.reshape(
+            ttnn.repeat(ttnn.reshape(cos, [1, seq_len, 1, head_dim // 2]), [batch_size, 1, num_heads, 1]),
+            [batch_size, seq_len, num_heads, head_dim // 2, 1],
+        )
+        sin = ttnn.reshape(
+            ttnn.repeat(ttnn.reshape(sin, [1, seq_len, 1, head_dim // 2]), [batch_size, 1, num_heads, 1]),
+            [batch_size, seq_len, num_heads, head_dim // 2, 1],
+        )
 
         x_ = ttnn.reshape(x, (batch_size, seq_len, num_heads, head_dim // 2, 2))
 
