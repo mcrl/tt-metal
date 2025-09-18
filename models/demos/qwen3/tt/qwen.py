@@ -48,9 +48,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.input_layernorm_weight_tt = ttnn.to_layout(
-            self.input_layernorm_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.post_attention_layernorm_weight_tt = ttnn.from_torch(
             self.post_attention_layernorm.weight,
@@ -58,12 +56,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.post_attention_layernorm_weight_tt = ttnn.to_layout(
-            self.post_attention_layernorm_weight_tt,
-            ttnn.TILE_LAYOUT,
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
         )
         self.is_tt_setup = True
 
@@ -141,9 +134,7 @@ class Qwen3MoeModel(nn.Module):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.embedding_weight_tt = ttnn.to_layout(
-            self.embedding_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.norm_weight_tt = ttnn.from_torch(
             self.norm.weight,
@@ -151,9 +142,7 @@ class Qwen3MoeModel(nn.Module):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.norm_weight_tt = ttnn.to_layout(
-            self.norm_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.lm_head_weight_tt = ttnn.from_torch(
             self.lm_head.weight.transpose(0, 1),
@@ -161,9 +150,7 @@ class Qwen3MoeModel(nn.Module):
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.lm_head_weight_tt = ttnn.to_layout(
-            self.lm_head_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.is_tt_setup = True
 
@@ -218,9 +205,7 @@ class Qwen3MoeModel(nn.Module):
                 mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
                 dtype=ttnn.uint32,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            )
-            input_ids_tt = ttnn.to_layout(
-                input_ids_tt, ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+                layout=ttnn.ROW_MAJOR_LAYOUT,
             )
 
         with Profiler().trace_with_timer("embedding", level=3, args={"class": "Qwen3MoeModel"}):

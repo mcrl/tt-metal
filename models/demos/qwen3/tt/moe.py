@@ -52,8 +52,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             self.gate.weight.transpose(0, 1),
             device=self.mesh_device,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.gate_weight_tt = ttnn.to_layout(self.gate_weight_tt, ttnn.TILE_LAYOUT)
+            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT)
 
         self.num_devices = self.mesh_device.get_num_devices()
         self.num_experts_per_device = self.num_experts // self.num_devices
@@ -85,20 +85,20 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.gate_proj_tt = ttnn.from_torch(gate_proj,
                                             device=self.mesh_device,
                                             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                                            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.gate_proj_tt = ttnn.to_layout(self.gate_proj_tt, ttnn.TILE_LAYOUT)
+                                            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                                            layout=ttnn.TILE_LAYOUT)
 
         self.up_proj_tt = ttnn.from_torch(up_proj,
                                           device=self.mesh_device,
                                           mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                                          dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.up_proj_tt = ttnn.to_layout(self.up_proj_tt, ttnn.TILE_LAYOUT)
+                                          dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                                          layout=ttnn.TILE_LAYOUT)
 
         self.down_proj_tt = ttnn.from_torch(down_proj,
                                             device=self.mesh_device,
                                             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                                            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        self.down_proj_tt = ttnn.to_layout(self.down_proj_tt, ttnn.TILE_LAYOUT)
+                                            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                                            layout=ttnn.TILE_LAYOUT)
 
     @profile_trace("Qwen3MoeSparseMoeBlock", level=2)
     def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
@@ -108,7 +108,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         with Profiler().trace_with_timer("moe-router", level=3):
             router_logits_tt = ttnn.linear(hidden_states, self.gate_weight_tt, dtype=ttnn.bfloat16)
 
-        with Profiler().trace_with_timer("softmax", level=3):  
+        with Profiler().trace_with_timer("softmax", level=3):
             routing_weights_tt = ttnn.softmax(router_logits_tt, dim=1)
 
         with Profiler().trace_with_timer("topk", level=3):
