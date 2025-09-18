@@ -67,8 +67,8 @@ def main(
     config_path: Optional[str] = None,
 ):
     batch_size = 8
-    prompt_len = 64
-    gen_tokens = 64
+    prompt_len = 8
+    gen_tokens = 16
     prompt_and_responses_tt, iter_times_tt = perftest_tt(batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path)
     prompt_and_responses_reference, iter_times_reference = perftest_reference(batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path)
     print(f"TT Time: {sum(iter_times_tt)}")
