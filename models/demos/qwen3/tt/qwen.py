@@ -124,7 +124,6 @@ class Qwen3MoeModel(nn.Module):
         self.norm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        self.position_embeddings_tt = precompute_freqs_cis_tt(config)
         self.position_embeddings_tt_v2 = precompute_freqs_cis_tt_v2(config)
 
         assert config.sliding_window is None
@@ -176,11 +175,6 @@ class Qwen3MoeModel(nn.Module):
             mode = InferenceMode(mode)
 
         batch_size, sequence_length = input_ids.shape
-
-        # CPU rope buffer exists for reference/compat but isn't used below
-
-        # pos_embs_cos = self.position_embeddings_tt[0][start_pos : start_pos + sequence_length]
-        # pos_embs_sin = self.position_embeddings_tt[1][start_pos : start_pos + sequence_length]
 
         pos_embs_cos = self.position_embeddings_tt_v2[0][start_pos: start_pos + sequence_length]
         pos_embs_sin = self.position_embeddings_tt_v2[1][start_pos: start_pos + sequence_length]
