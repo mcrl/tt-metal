@@ -9,6 +9,7 @@ from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeModel as Qwen3MoeModelReference
 from models.demos.qwen3.tt.qwen import Qwen3MoeModel as Qwen3MoeModelTT
 from models.demos.qwen3.utils.timer import print_timer_all, reset_timer, profile_time, start_timer, stop_timer
+from models.demos.qwen3.utils.profiler import disable_profiler, enable_profiler
 from models.demos.qwen3.common.loader import load, materialize
 from models.utility_functions import enable_persistent_kernel_cache
 
@@ -178,11 +179,13 @@ class Qwen3MoETT:
 
         warmup = True
         if warmup is True:
+            disable_profiler()
             for curr_pos in range(min_prompt_len, total_len):
                 with torch.inference_mode():
                     mode = "prefill" if prev_pos == 0 else "decode"
                     logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
                 prev_pos = curr_pos
+            enable_profiler()
 
         reset_timer()
 
