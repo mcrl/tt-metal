@@ -1,3 +1,6 @@
+from models.demos.qwen3.utils.timer import start_timer, stop_timer, profile_time
+from models.demos.qwen3.utils.profiler import profile_trace, Profiler
+from models.tt_transformers.tt.common import get_rot_transformation_mat
 import torch
 from torch import nn
 from typing import Tuple
@@ -6,10 +9,8 @@ import ttnn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
-from models.demos.qwen3.tt.rope import apply_rotary_emb as apply_rotary_emb_tt
+from models.demos.qwen3.tt.rope import apply_rotary_emb as apply_rotary_emb_tt, apply_rotary_emb_v2 as apply_rotary_emb_tt_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
-from models.demos.qwen3.utils.profiler import profile_trace, Profiler
-from models.demos.qwen3.utils.timer import start_timer, stop_timer, profile_time
 
 
 class Qwen3MoeAttention(nn.Module):
@@ -153,6 +154,14 @@ class Qwen3MoeAttention(nn.Module):
         self.o_proj_weight = ttnn.to_layout(
             self.o_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
         )
+        self.trans_mat_tt = ttnn.from_torch(
+            get_rot_transformation_mat(dhead=ttnn.TILE_SIZE),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.bfloat16,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
+        )
         self.is_tt_setup = True
 
     @profile_trace("Qwen3MoeAttention", level=2)
@@ -184,7 +193,8 @@ class Qwen3MoeAttention(nn.Module):
             value_states_tt = ttnn.linear(hidden_states_tt, self.v_proj_weight, dtype=ttnn.bfloat16)
             value_states_tt = ttnn.reshape(value_states_tt, hidden_shape)
 
-        query_states_tt, key_states_tt = apply_rotary_emb_tt(query_states_tt, key_states_tt, position_embeddings)
+        with Profiler().trace_with_timer("rope", level=3):
+            query_states_tt, key_states_tt = apply_rotary_emb_tt_v2(query_states_tt, key_states_tt, position_embeddings, self.trans_mat_tt)
 
         with Profiler().trace_with_timer("permute", level=3):
             query_states_tt = ttnn.permute(query_states_tt, dims=(0, 2, 1, 3))
@@ -206,25 +216,27 @@ class Qwen3MoeAttention(nn.Module):
                     ttnn.kv_cache.update_cache_for_token_(
                         self.cache_v_tt,
                         value_states_tt[b: b + 1],
-                    start_pos + b * self.kv_heads_per_device * self.config.max_seq_len,
-                )
+                        start_pos + b * self.kv_heads_per_device * self.config.max_seq_len,
+                    )
 
         with Profiler().trace_with_timer("kv-cache-load", level=3):
             key_states_tt = self.cache_k_tt[:batch_size, :, : start_pos + sequence_length, :]
             value_states_tt = self.cache_v_tt[:batch_size, :, : start_pos + sequence_length, :]
 
-        tt_out = tt_sdpa_forward(
-            query_states_tt,
-            key_states_tt,
-            value_states_tt,
-            attention_mask=attention_mask if mode == InferenceMode.DECODE else None,
-            dropout=0.0,
-            scaling=self.scaling,
-            mode=mode,
-        )        
+        with Profiler().trace_with_timer("sdpa", level=3):
+            tt_out = tt_sdpa_forward(
+                query_states_tt,
+                key_states_tt,
+                value_states_tt,
+                attention_mask=attention_mask if mode == InferenceMode.DECODE else None,
+                dropout=0.0,
+                scaling=self.scaling,
+                mode=mode,
+            )
+
         with Profiler().trace_with_timer("reshape", level=3):
             tt_out = ttnn.reshape(tt_out, [tt_out.shape[0], tt_out.shape[1], tt_out.shape[2] * tt_out.shape[3]])
-        
+
         with Profiler().trace_with_timer("to-layout", level=3):
             tt_out = ttnn.to_layout(tt_out, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 

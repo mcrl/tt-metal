@@ -10,6 +10,7 @@ from test_dataset.dataset_loader import load_prompts
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
 from models.demos.qwen3.utils.profiler import profile_trace
 
+
 def create_mesh_device(device_params: Optional[Dict] = None):
     params = dict(device_params or {})
     updated_device_params = get_updated_device_params(params)
@@ -28,6 +29,7 @@ def create_mesh_device(device_params: Optional[Dict] = None):
 
     return mesh_device
 
+
 def perftest_tt(batch_size: int, prompt_len: int, gen_tokens: int,
                 ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
                 tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
@@ -40,7 +42,7 @@ def perftest_tt(batch_size: int, prompt_len: int, gen_tokens: int,
     )
 
     prompts = load_prompts(batch_size, prompt_len)
-    prompt_and_responses, iter_times = qwen3_moe.generate(prompts, max_gen_len=gen_tokens, temperature=0.1, top_p=0.3)
+    prompt_and_responses, iter_times = qwen3_moe.generate(prompts, max_gen_len=gen_tokens, temperature=0.7, top_p=0.8)
 
     return prompt_and_responses, iter_times
 
@@ -54,7 +56,7 @@ def perftest_reference(batch_size: int, prompt_len: int, gen_tokens: int,
     )
 
     prompts = load_prompts(batch_size, prompt_len)
-    prompt_and_responses, iter_times = qwen3_moe_reference.generate(prompts, max_gen_len=gen_tokens, temperature=0.1, top_p=0.3)
+    prompt_and_responses, iter_times = qwen3_moe_reference.generate(prompts, max_gen_len=gen_tokens, temperature=0.7, top_p=0.8)
 
     return prompt_and_responses, iter_times
 
@@ -64,9 +66,9 @@ def main(
     tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
     config_path: Optional[str] = None,
 ):
-    batch_size = 4
+    batch_size = 8
     prompt_len = 64
-    gen_tokens = 32
+    gen_tokens = 64
     prompt_and_responses_tt, iter_times_tt = perftest_tt(batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path)
     prompt_and_responses_reference, iter_times_reference = perftest_reference(batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path)
     print(f"TT Time: {sum(iter_times_tt)}")
