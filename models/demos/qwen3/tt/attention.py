@@ -206,16 +206,17 @@ class Qwen3MoeAttention(nn.Module):
                     ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b: b + 1], b)
                     ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b: b + 1], b)
             elif mode == InferenceMode.DECODE:
-                for b in range(batch_size):
-                    ttnn.kv_cache.update_cache_for_token_(
-                        self.cache_k_tt,
-                        key_states_tt[b: b + 1],
-                        start_pos + b * self.kv_heads_per_device * self.config.max_seq_len,
-                    )
-                    ttnn.kv_cache.update_cache_for_token_(
-                        self.cache_v_tt,
-                        value_states_tt[b: b + 1],
-                    start_pos + b * self.kv_heads_per_device * self.config.max_seq_len,
+                ttnn.kv_cache.update_cache_for_token_(
+                    self.cache_k_tt,
+                    ttnn.permute(key_states_tt, dims=(2, 1, 0, 3)),
+                    start_pos,
+                    0,
+                )
+                ttnn.kv_cache.update_cache_for_token_(
+                    self.cache_v_tt,
+                    ttnn.permute(value_states_tt, dims=(2, 1, 0, 3)),
+                    start_pos,
+                    0,
                 )
 
         with Profiler().trace_with_timer("kv-cache-load", level=3):
