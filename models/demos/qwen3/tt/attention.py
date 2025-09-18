@@ -67,9 +67,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=mapper,
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.q_proj_weight = ttnn.to_layout(
-            self.q_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
 
         def reshape_weight(x, head_dim, repeats):
@@ -86,9 +84,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.cache_k_tt = ttnn.to_layout(
-            self.cache_k_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.cache_v_tt = ttnn.from_torch(
             self.cache_v,
@@ -96,9 +92,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.cache_v_tt = ttnn.to_layout(
-            self.cache_v_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
 
         self.k_proj_weight = ttnn.from_torch(
@@ -107,9 +101,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=mapper,
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.k_proj_weight = ttnn.to_layout(
-            self.k_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.v_proj_weight = ttnn.from_torch(
             reshape_weight(self.v_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF),
@@ -117,9 +109,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=mapper,
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.v_proj_weight = ttnn.to_layout(
-            self.v_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
 
         self.query_rmsnorm_weight_tt = ttnn.from_torch(
@@ -128,9 +118,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.query_rmsnorm_weight_tt = ttnn.to_layout(
-            self.query_rmsnorm_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.key_rmsnorm_weight_tt = ttnn.from_torch(
             self.k_norm.weight,
@@ -138,9 +126,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.key_rmsnorm_weight_tt = ttnn.to_layout(
-            self.key_rmsnorm_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
 
         self.o_proj_weight = ttnn.from_torch(
@@ -150,9 +136,6 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-        )
-        self.o_proj_weight = ttnn.to_layout(
-            self.o_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
         )
         self.trans_mat_tt = ttnn.from_torch(
             get_rot_transformation_mat(dhead=ttnn.TILE_SIZE),
