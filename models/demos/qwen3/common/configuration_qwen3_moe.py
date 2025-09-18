@@ -36,7 +36,7 @@ class Qwen3MoeConfig:
     head_dim: int = 128
     _attn_implementation: str = "sdpa"
     max_seq_len: int = 32768
-    max_batch_size: int = 4
+    max_batch_size: int = 8
     bos_token_id: int = 151643
     pad_token_id: int = 151643
     eos_token_id: int = 151645

@@ -1,8 +1,6 @@
 from models.demos.qwen3.utils.timer import start_timer, stop_timer, profile_time
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 from models.tt_transformers.tt.common import get_rot_transformation_mat
-from models.demos.qwen3.tt.timer import start_timer, stop_timer
-from models.demos.qwen3.tt.timer import profile_time
 import torch
 from torch import nn
 from typing import Tuple
@@ -13,9 +11,6 @@ from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, In
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
 from models.demos.qwen3.tt.rope import apply_rotary_emb as apply_rotary_emb_tt, apply_rotary_emb_v2 as apply_rotary_emb_tt_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
-<< << << < HEAD
-== == == =
->>>>>> > 34c81db06a2ecc1bc3bb3d9e62e37657242ce638
 
 
 class Qwen3MoeAttention(nn.Module):
