@@ -128,7 +128,7 @@ class Qwen3MoETT:
         self.config = Qwen3MoeConfig.from_dict(data)
 
         # FIXME: ad-hoc for reducing KV cache memory
-        self.config.max_batch_size = 4
+        self.config.max_batch_size = 8
         self.config.max_seq_len = 256
 
         start_timer("create-model", device=self.mesh_device)
