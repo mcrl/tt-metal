@@ -35,7 +35,7 @@ class Qwen3MoeConfig:
     mlp_only_layers: List = None
     head_dim: int = 128
     _attn_implementation: str = "sdpa"
-    max_seq_len: int = 32768
+    max_seq_len: int = 40960
     max_batch_size: int = 8
     bos_token_id: int = 151643
     pad_token_id: int = 151643
@@ -48,7 +48,14 @@ class Qwen3MoeConfig:
 
     @classmethod
     def from_dict(cls, data: Optional[Dict] = None):
-        return cls(**(data or {}))
+        if data is None:
+            return cls()
+        # Filter out unexpected keyword arguments
+        import inspect
+
+        valid_params = inspect.signature(cls.__init__).parameters
+        filtered_data = {k: v for k, v in data.items() if k in valid_params}
+        return cls(**filtered_data)
 
     def dict(self):
         return asdict(self)

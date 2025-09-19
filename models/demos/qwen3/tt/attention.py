@@ -9,7 +9,10 @@ import ttnn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
-from models.demos.qwen3.tt.rope import apply_rotary_emb as apply_rotary_emb_tt, apply_rotary_emb_v2 as apply_rotary_emb_tt_v2
+from models.demos.qwen3.tt.rope import (
+    apply_rotary_emb as apply_rotary_emb_tt,
+    apply_rotary_emb_v2 as apply_rotary_emb_tt_v2,
+)
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 
 
@@ -46,6 +49,9 @@ class Qwen3MoeAttention(nn.Module):
             config.max_seq_len,
             self.head_dim,
         )
+        print(
+            f"cache_shape: {cache_shape}, size: {cache_shape[0] * cache_shape[1] * cache_shape[2] * cache_shape[3] * 2 / 1e9} GB"
+        )
         cache_k = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
         cache_v = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
         self.register_buffer("cache_k", cache_k, persistent=False)
@@ -60,16 +66,13 @@ class Qwen3MoeAttention(nn.Module):
     def setup_tt(self):
         if self.is_tt_setup:
             return
-        mapper = ttnn.ShardTensorToMesh(self.mesh_device, dim=1)
         self.q_proj_weight = ttnn.from_torch(
             self.q_proj.weight.transpose(0, 1),
             device=self.mesh_device,
-            mesh_mapper=mapper,
+            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.q_proj_weight = ttnn.to_layout(
-            self.q_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
 
         def reshape_weight(x, head_dim, repeats):
@@ -86,9 +89,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.cache_k_tt = ttnn.to_layout(
-            self.cache_k_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.cache_v_tt = ttnn.from_torch(
             self.cache_v,
@@ -96,30 +97,24 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.cache_v_tt = ttnn.to_layout(
-            self.cache_v_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
 
         self.k_proj_weight = ttnn.from_torch(
             reshape_weight(self.k_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF),
             device=self.mesh_device,
-            mesh_mapper=mapper,
+            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.k_proj_weight = ttnn.to_layout(
-            self.k_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.v_proj_weight = ttnn.from_torch(
             reshape_weight(self.v_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF),
             device=self.mesh_device,
-            mesh_mapper=mapper,
+            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.v_proj_weight = ttnn.to_layout(
-            self.v_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
 
         self.query_rmsnorm_weight_tt = ttnn.from_torch(
@@ -128,9 +123,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.query_rmsnorm_weight_tt = ttnn.to_layout(
-            self.query_rmsnorm_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
         self.key_rmsnorm_weight_tt = ttnn.from_torch(
             self.k_norm.weight,
@@ -138,9 +131,7 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        self.key_rmsnorm_weight_tt = ttnn.to_layout(
-            self.key_rmsnorm_weight_tt, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            layout=ttnn.TILE_LAYOUT,
         )
 
         self.o_proj_weight = ttnn.from_torch(
@@ -150,9 +141,6 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-        )
-        self.o_proj_weight = ttnn.to_layout(
-            self.o_proj_weight, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
         )
         self.trans_mat_tt = ttnn.from_torch(
             get_rot_transformation_mat(dhead=ttnn.TILE_SIZE),
@@ -194,7 +182,9 @@ class Qwen3MoeAttention(nn.Module):
             value_states_tt = ttnn.reshape(value_states_tt, hidden_shape)
 
         with Profiler().trace_with_timer("rope", level=3):
-            query_states_tt, key_states_tt = apply_rotary_emb_tt_v2(query_states_tt, key_states_tt, position_embeddings, self.trans_mat_tt)
+            query_states_tt, key_states_tt = apply_rotary_emb_tt_v2(
+                query_states_tt, key_states_tt, position_embeddings, self.trans_mat_tt
+            )
 
         with Profiler().trace_with_timer("permute", level=3):
             query_states_tt = ttnn.permute(query_states_tt, dims=(0, 2, 1, 3))
@@ -204,8 +194,8 @@ class Qwen3MoeAttention(nn.Module):
         with Profiler().trace_with_timer("kv-cache-store", level=3):
             if mode == InferenceMode.PREFILL:
                 for b in range(batch_size):
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b: b + 1], b)
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b: b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b : b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b : b + 1], b)
             elif mode == InferenceMode.DECODE:
                 ttnn.kv_cache.update_cache_for_token_(
                     self.cache_k_tt,
@@ -239,7 +229,9 @@ class Qwen3MoeAttention(nn.Module):
             tt_out = ttnn.reshape(tt_out, [tt_out.shape[0], tt_out.shape[1], tt_out.shape[2] * tt_out.shape[3]])
 
         with Profiler().trace_with_timer("to-layout", level=3):
-            tt_out = ttnn.to_layout(tt_out, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            tt_out = ttnn.to_layout(
+                tt_out, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            )
 
         with Profiler().trace_with_timer("output-proj", level=3):
             linear_output_ttnn = ttnn.linear(
