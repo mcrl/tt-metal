@@ -166,19 +166,28 @@ class Qwen3MoeAttention(nn.Module):
         hidden_states_tt = hidden_states
 
         with Profiler().trace_with_timer("qkv-proj", level=3):
-            query_states_tt = ttnn.linear(hidden_states_tt, self.q_proj_weight, dtype=ttnn.bfloat16)
+            query_states_tt = ttnn.linear(
+                hidden_states_tt,
+                self.q_proj_weight,
+                dtype=ttnn.bfloat16,
+                memory_config=ttnn.L1_MEMORY_CONFIG,
+            )
             query_states_tt = ttnn.reshape(query_states_tt, hidden_shape)
             query_states_tt = ttnn.rms_norm(
                 query_states_tt, epsilon=self.config.rms_norm_eps, weight=self.query_rmsnorm_weight_tt
             )
 
-            key_states_tt = ttnn.linear(hidden_states_tt, self.k_proj_weight, dtype=ttnn.bfloat16)
+            key_states_tt = ttnn.linear(
+                hidden_states_tt, self.k_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
+            )
             key_states_tt = ttnn.reshape(key_states_tt, hidden_shape)
 
             key_states_tt = ttnn.rms_norm(
                 key_states_tt, epsilon=self.config.rms_norm_eps, weight=self.key_rmsnorm_weight_tt
             )
-            value_states_tt = ttnn.linear(hidden_states_tt, self.v_proj_weight, dtype=ttnn.bfloat16)
+            value_states_tt = ttnn.linear(
+                hidden_states_tt, self.v_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
+            )
             value_states_tt = ttnn.reshape(value_states_tt, hidden_shape)
 
         with Profiler().trace_with_timer("rope", level=3):

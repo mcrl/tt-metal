@@ -6,6 +6,7 @@ from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 
 PAD_MULTIPLE = 32
 
+
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, seq_len, head_dim = hidden_states.shape
     if n_rep == 1:

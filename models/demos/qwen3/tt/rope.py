@@ -78,7 +78,7 @@ def precompute_freqs_cis_v2(config) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
 
     with torch.device("cpu"), torch.no_grad():
         indices = torch.div(
-            torch.arange(start=0, end=dim, step=2, dtype=torch.int64).to(dtype=torch.float32)[:(dim // 2)], dim
+            torch.arange(start=0, end=dim, step=2, dtype=torch.int64).to(dtype=torch.float32)[: (dim // 2)], dim
         )
         freqs = torch.reciprocal(torch.pow(theta, indices)).to(dtype=torch.float32)
         t = torch.arange(start=0, end=max_seq_len, step=1, dtype=torch.int64).to(dtype=torch.float32)
@@ -109,9 +109,6 @@ def apply_rotary_emb_v2(
 
     xq_bnsh = ttnn.permute(xq, (0, 2, 1, 3))
     xk_bnsh = ttnn.permute(xk, (0, 2, 1, 3))
-
-    xq_bnsh = ttnn.to_layout(xq_bnsh, layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
-    xk_bnsh = ttnn.to_layout(xk_bnsh, layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
 
     yq_bnsh = ttnn.experimental.rotary_embedding_llama(xq_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False)
     yk_bnsh = ttnn.experimental.rotary_embedding_llama(xk_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False)
