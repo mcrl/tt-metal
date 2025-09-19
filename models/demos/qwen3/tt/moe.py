@@ -40,65 +40,87 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
         self.experts = nn.ModuleList(
-            [Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size, mesh_device=mesh_device) for _ in range(self.num_experts)]
+            [
+                Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size, mesh_device=mesh_device)
+                for _ in range(self.num_experts)
+            ]
         )
 
         self.layer_idx = layer_idx
 
     @profile_trace("setup-tt", level=2, args={"class": "Qwen3MoeSparseMoeBlock"})
     def setup_tt(self):
-        self.ccl = CCL1D(self.mesh_device)
-        self.gate_weight_tt = ttnn.from_torch(
-            self.gate.weight.transpose(0, 1),
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT)
+
+        with Profiler().trace_with_timer("CCL", level=3):
+            self.ccl = CCL1D(self.mesh_device)
+
+        with Profiler().trace_with_timer("gate_weight_tt", level=3):
+            self.gate_weight_tt = ttnn.from_torch(
+                self.gate.weight.transpose(0, 1),
+                device=self.mesh_device,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                dtype=ttnn.bfloat16,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.TILE_LAYOUT,
+            )
 
         self.num_devices = self.mesh_device.get_num_devices()
         self.num_experts_per_device = self.num_experts // self.num_devices
-        self.expert_mapping_tensors_tt = ttnn.from_torch(
-            torch.eye(self.num_devices, dtype=torch.int32)
-            .repeat_interleave(self.num_experts_per_device, dim=0)
-            .unsqueeze(0)
-            .unsqueeze(0),
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            dtype=ttnn.uint16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-        )
+
+        with Profiler().trace_with_timer("expert_mapping_tensors_tt", level=3):
+            self.expert_mapping_tensors_tt = ttnn.from_torch(
+                torch.eye(self.num_devices, dtype=torch.int32)
+                .repeat_interleave(self.num_experts_per_device, dim=0)
+                .unsqueeze(0)
+                .unsqueeze(0),
+                device=self.mesh_device,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                dtype=ttnn.uint16,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+            )
 
         gate_proj = []
         up_proj = []
         down_proj = []
 
-        for expert_idx in range(self.num_experts):
-            gate_proj.append(self.experts[expert_idx].gate_proj.weight)
-            up_proj.append(self.experts[expert_idx].up_proj.weight)
-            down_proj.append(self.experts[expert_idx].down_proj.weight)
+        with Profiler().trace_with_timer("proj prepare", level=3):
+            for expert_idx in range(self.num_experts):
+                gate_proj.append(self.experts[expert_idx].gate_proj.weight)
+                up_proj.append(self.experts[expert_idx].up_proj.weight)
+                down_proj.append(self.experts[expert_idx].down_proj.weight)
 
-        gate_proj = torch.stack(gate_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
-        up_proj = torch.stack(up_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
-        down_proj = torch.stack(down_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
+            gate_proj = torch.stack(gate_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
+            up_proj = torch.stack(up_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
+            down_proj = torch.stack(down_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
 
-        self.gate_proj_tt = ttnn.from_torch(gate_proj,
-                                            device=self.mesh_device,
-                                            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                                            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                                            layout=ttnn.TILE_LAYOUT)
+        with Profiler().trace_with_timer("proj upload", level=3):
+            self.gate_proj_tt = ttnn.from_torch(
+                gate_proj,
+                device=self.mesh_device,
+                mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+                dtype=ttnn.bfloat16,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.TILE_LAYOUT,
+            )
 
-        self.up_proj_tt = ttnn.from_torch(up_proj,
-                                          device=self.mesh_device,
-                                          mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                                          dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                                          layout=ttnn.TILE_LAYOUT)
+            self.up_proj_tt = ttnn.from_torch(
+                up_proj,
+                device=self.mesh_device,
+                mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+                dtype=ttnn.bfloat16,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.TILE_LAYOUT,
+            )
 
-        self.down_proj_tt = ttnn.from_torch(down_proj,
-                                            device=self.mesh_device,
-                                            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                                            dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                                            layout=ttnn.TILE_LAYOUT)
+            self.down_proj_tt = ttnn.from_torch(
+                down_proj,
+                device=self.mesh_device,
+                mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+                dtype=ttnn.bfloat16,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.TILE_LAYOUT,
+            )
 
     @profile_trace("Qwen3MoeSparseMoeBlock", level=2)
     def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
@@ -116,8 +138,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("div", level=3):
             if self.norm_topk_prob:
-                routing_weights_tt = ttnn.div(routing_weights_tt,
-                                              ttnn.sum(routing_weights_tt, dim=1, keepdim=True))
+                routing_weights_tt = ttnn.div(routing_weights_tt, ttnn.sum(routing_weights_tt, dim=1, keepdim=True))
 
         with Profiler().trace_with_timer("to-layout", level=3):
             hidden_states = ttnn.to_layout(hidden_states, ttnn.ROW_MAJOR_LAYOUT)
@@ -157,34 +178,43 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 hidden_states,
                 selected_experts,
                 self.expert_mapping_tensors_tt,
-                output_tensors=[
-                    all_to_all_dispatch_output_tensors,
-                    all_to_all_dispatch_metadata_tensors
-                ],
+                output_tensors=[all_to_all_dispatch_output_tensors, all_to_all_dispatch_metadata_tensors],
                 cluster_axis=0,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
                 topology=ttnn.Topology.Linear,
                 global_semaphore=self.ccl.get_semaphore(0),
-                init_semaphore=self.ccl.get_semaphore(0)
+                init_semaphore=self.ccl.get_semaphore(0),
             )
             post_all_to_all_dispatch_output = ttnn.reshape(
                 all_to_all_dispatch_output_tensors, shape=(1, 1, batch_size * sequence_length, hidden_dim)
             )
-            post_all_to_all_dispatch_output = ttnn.repeat(post_all_to_all_dispatch_output, ttnn.Shape((1, self.num_experts_per_device, 1, 1)))
+            post_all_to_all_dispatch_output = ttnn.repeat(
+                post_all_to_all_dispatch_output, ttnn.Shape((1, self.num_experts_per_device, 1, 1))
+            )
             post_all_to_all_dispatch_output = ttnn.to_layout(post_all_to_all_dispatch_output, ttnn.TILE_LAYOUT)
 
         with Profiler().trace_with_timer("expert-compute", level=3):
-            gate_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.gate_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-            up_proj_output_tt = ttnn.matmul(post_all_to_all_dispatch_output, self.up_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            gate_proj_output_tt = ttnn.matmul(
+                post_all_to_all_dispatch_output, self.gate_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            )
+            up_proj_output_tt = ttnn.matmul(
+                post_all_to_all_dispatch_output, self.up_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            )
 
-            glu_output_tt = ttnn.mul(gate_proj_output_tt, up_proj_output_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                                     input_tensor_a_activations=[ttnn.UnaryOpType.SILU])
+            glu_output_tt = ttnn.mul(
+                gate_proj_output_tt,
+                up_proj_output_tt,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                input_tensor_a_activations=[ttnn.UnaryOpType.SILU],
+            )
 
             experts_output_tt = ttnn.matmul(glu_output_tt, self.down_proj_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
             experts_output_tt = ttnn.to_layout(experts_output_tt, ttnn.ROW_MAJOR_LAYOUT)
-            experts_output_tt = ttnn.reshape(experts_output_tt, (self.num_experts_per_device, batch_size, sequence_length, hidden_dim))
+            experts_output_tt = ttnn.reshape(
+                experts_output_tt, (self.num_experts_per_device, batch_size, sequence_length, hidden_dim)
+            )
 
         with Profiler().trace_with_timer("all-to-all-combine", level=3):
             ttnn.all_to_all_combine(
@@ -196,9 +226,11 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
                 global_semaphore=self.ccl.get_semaphore(0),
-                init_semaphore=self.ccl.get_semaphore(0)
+                init_semaphore=self.ccl.get_semaphore(0),
             )
-            post_combine_output_tensor = ttnn.reshape(all_to_all_combine_output_tensors, shape=(self.top_k, 1, batch_size * sequence_length, hidden_dim))
+            post_combine_output_tensor = ttnn.reshape(
+                all_to_all_combine_output_tensors, shape=(self.top_k, 1, batch_size * sequence_length, hidden_dim)
+            )
             post_combine_output_tensor = ttnn.to_layout(post_combine_output_tensor, ttnn.TILE_LAYOUT)
 
         with Profiler().trace_with_timer("to-layout", level=3):
@@ -208,7 +240,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             routing_weights_tt = ttnn.to_layout(routing_weights_tt_rm, ttnn.TILE_LAYOUT)
 
         with Profiler().trace_with_timer("moe-post", level=3):
-            post_combine_output_tensor = ttnn.mul(post_combine_output_tensor, routing_weights_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            post_combine_output_tensor = ttnn.mul(
+                post_combine_output_tensor, routing_weights_tt, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            )
             post_combine_output_tensor = ttnn.sum(post_combine_output_tensor, dim=0, keepdim=True)
 
         with Profiler().trace_with_timer("all-gather", level=3):
@@ -217,7 +251,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dim=3,
                 math_op=ttnn.ReduceType.Sum,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                topology=ttnn.Topology.Linear
+                topology=ttnn.Topology.Linear,
             )
             ttnn.synchronize_device(self.mesh_device)
 
@@ -226,7 +260,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dim=3,
                 cluster_axis=1,
                 topology=ttnn.Topology.Linear,
-                mesh_device=self.mesh_device
+                mesh_device=self.mesh_device,
             )
             ttnn.synchronize_device(self.mesh_device)
 
