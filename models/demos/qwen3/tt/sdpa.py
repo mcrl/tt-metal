@@ -73,9 +73,9 @@ def sdpa_forward_prefill(
         )
 
     with Profiler().trace_with_timer("to_layout", level=3, args={"class": "sdpa_forward_prefill"}):
-        query = ttnn.to_layout(query, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        value = ttnn.to_layout(value, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        key = ttnn.to_layout(key, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        query = ttnn.to_memory_config(query, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        value = ttnn.to_memory_config(value, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        key = ttnn.to_memory_config(key, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
     with Profiler().trace_with_timer("attention", level=3, args={"class": "sdpa_forward_prefill"}):
         attn_output = ttnn.transformer.scaled_dot_product_attention(
@@ -167,10 +167,10 @@ def sdpa_forward_decode(
         )
 
     with Profiler().trace_with_timer("to_layout", level=3, args={"class": "sdpa_forward_decode"}):
-        query = ttnn.to_layout(query, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        value = ttnn.to_layout(value, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        key = ttnn.to_layout(key, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        attention_mask = ttnn.to_layout(attention_mask, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        query = ttnn.to_memory_config(query, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        value = ttnn.to_memory_config(value, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        key = ttnn.to_memory_config(key, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        attention_mask = ttnn.to_memory_config(attention_mask, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
     with Profiler().trace_with_timer("attention", level=3, args={"class": "sdpa_forward_decode"}):
         attn_output = ttnn.transformer.scaled_dot_product_attention(
