@@ -264,7 +264,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             )
             ttnn.synchronize_device(self.mesh_device)
 
-        final_hidden_states_tt = ttnn.reshape(post_combine_output_tensor_g, (batch_size, sequence_length, hidden_dim))
+        with Profiler().trace_with_timer("reshape", level=3):
+            final_hidden_states_tt = ttnn.reshape(post_combine_output_tensor_g, (batch_size, sequence_length, hidden_dim))
 
         return final_hidden_states_tt
 

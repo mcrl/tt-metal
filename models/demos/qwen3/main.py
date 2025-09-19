@@ -1,13 +1,13 @@
 import fire
 from typing import Optional, Dict
-
+import os
 from models.demos.qwen3.generation import Qwen3MoETT, Qwen3MoEReference
 import ttnn
 from loguru import logger
 import tt_lock
 from test_dataset.dataset_loader import load_prompts
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
-from models.demos.qwen3.utils.profiler import profile_trace
+from models.demos.qwen3.utils.profiler import init_trace_file
 from models.demos.qwen3.utils.device import create_mesh_device
 
 
@@ -55,6 +55,8 @@ def main(
     tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
     config_path: Optional[str] = "/shared/models/Qwen3-30B-A3B/config.json",
 ):
+    init_trace_file()
+    
     batch_size = 32
     prompt_len = 64
     gen_tokens = 64

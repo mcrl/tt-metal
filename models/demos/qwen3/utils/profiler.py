@@ -10,12 +10,29 @@ from models.demos.qwen3.utils.timer import start_timer, stop_timer, timer_enable
 CATEGORIES = {0: "Program", 1: "Block", 2: "Operation"}
 EVENTS = []
 LOCK = threading.RLock()
+ENABLED = True
 
 def profiler_enabled() -> bool:
     return os.getenv("PROFILE_TRACE", "0") == "1"
 
 def get_trace_file() -> str:
     return os.getenv("PROFILE_TRACE_FILENAME", "trace.json")
+
+def init_trace_file():
+    output_file = get_trace_file()
+
+    if not os.path.exists(output_file):
+        return
+    
+    name, ext = os.path.splitext(output_file)
+
+    prefix = 1
+    while True:
+        new_filename = f"{name}_{prefix}{ext}"
+        if not os.path.exists(new_filename):
+            os.environ["PROFILE_TRACE_FILENAME"] = new_filename
+            break
+        prefix += 1
 
 def save_process_events_on_exit():
     if profiler_enabled():
@@ -61,8 +78,16 @@ def save_process_events_on_exit():
 if profiler_enabled():
     atexit.register(save_process_events_on_exit)
 
+def enable_profiler():
+    global ENABLED
+    ENABLED = True
+
+def disable_profiler():
+    global ENABLED
+    ENABLED = False
+
 def add_event(event):
-    if not profiler_enabled():
+    if not profiler_enabled() or not ENABLED:
         return
     
     try:
