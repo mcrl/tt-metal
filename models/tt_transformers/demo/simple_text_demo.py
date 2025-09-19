@@ -1402,7 +1402,7 @@ def test_demo_text(
                 "N300_Qwen2.5-7B": (95, 1.20),  # (value, high_tolerance_ratio)
                 # T3K targets
                 "T3K_Llama-3.1-70B": 204,
-                "T3K_Qwen2.5-Coder-32B": 220,  # `f10cs08`
+                "T3K_Qwen2.5-Coder-32B": 220,
                 "T3K_Qwen2.5-72B": 245,
                 "T3K_Qwen3-32B": 166.5,
             }
