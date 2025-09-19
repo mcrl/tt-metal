@@ -9,6 +9,7 @@ from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeModel as Qwen3MoeModelReference
 from models.demos.qwen3.tt.qwen import Qwen3MoeModel as Qwen3MoeModelTT
 from models.demos.qwen3.utils.timer import print_timer_all, reset_timer, profile_time, start_timer, stop_timer
+from models.demos.qwen3.utils.profiler import disable_profiler, enable_profiler
 from models.demos.qwen3.common.loader import load, materialize
 from models.utility_functions import enable_persistent_kernel_cache
 from utils.memory_state import print_memory_state
@@ -131,7 +132,7 @@ class Qwen3MoETT:
         self.config = Qwen3MoeConfig.from_dict(data)
 
         # FIXME: ad-hoc for reducing KV cache memory
-        self.config.max_batch_size = 64
+        self.config.max_batch_size = 32
         self.config.max_seq_len = 512
 
         with Profiler().trace_with_timer("Create-Model", level=4):
@@ -177,6 +178,7 @@ class Qwen3MoETT:
 
         """ Warmup """
 
+        # disable_profiler()
         with Profiler().trace_with_timer("Warmup", level=4):
             warmup = True
             if warmup is True:
@@ -185,6 +187,7 @@ class Qwen3MoETT:
                         mode = "prefill" if prev_pos == 0 else "decode"
                         logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
                     prev_pos = curr_pos
+        # enable_profiler()
 
         ttnn.synchronize_device(self.mesh_device)
         prev_pos = 0

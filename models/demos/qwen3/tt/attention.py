@@ -200,10 +200,15 @@ class Qwen3MoeAttention(nn.Module):
             start_index = (0, 0, 0, 0)
             end_index = (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim)
 
-            ttnn.deallocate(key_states_tt)
-            ttnn.deallocate(value_states_tt)
-            key_states_tt = ttnn.slice(self.cache_k_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG)
-            value_states_tt = ttnn.slice(self.cache_v_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG)
+        tt_out = tt_sdpa_forward(
+            query_states_tt,
+            key_states_tt,
+            value_states_tt,
+            attention_mask=attention_mask if mode == InferenceMode.DECODE else None,
+            dropout=0.0,
+            scaling=self.scaling,
+            mode=mode,
+        )
 
         tt_out = tt_sdpa_forward(
             query_states_tt,
@@ -253,7 +258,8 @@ class Qwen3MoeAttention(nn.Module):
             )
             ttnn.synchronize_device(self.mesh_device)
 
-        output = ttnn.reshape(linear_output_ttnn_gathered, (batch_size, sequence_length, hidden_size), memory_config=ttnn.L1_MEMORY_CONFIG)
+        with Profiler().trace_with_timer("reshape", level=3):
+            output = ttnn.reshape(linear_output_ttnn_gathered, (batch_size, sequence_length, hidden_size))
         return output
 
 
