@@ -12,7 +12,6 @@ import safetensors.torch
 import torch
 from loguru import logger
 
-from models.demos.qwen3.utils.abstract_module import AbstractModule
 from models.utility_functions import comp_pcc
 
 
@@ -34,50 +33,6 @@ def load_state_dict(model_path: Path, module_path: str):
         for safetensor_state_dict in [safetensors.torch.load_file(model_path / safetensor_file_path)]
         for weight_name in weight_names
     }
-
-
-SEQ_LEN_DIM_IDX = 2
-
-
-def pad_or_trim_seq_len(tensor: torch.Tensor, mode: Literal["prefill", "decode"], seq_len: int) -> torch.Tensor:
-    """Changes the tensor's sequence length to match the given seq_len, adding padding if necessary."""
-    assert mode in ["prefill", "decode"], f"Unsupported mode: {mode}"
-
-    tensor_seq_len = tensor.shape[SEQ_LEN_DIM_IDX]
-    if tensor_seq_len == seq_len:
-        return tensor.clone()
-
-    padded_tensor_shape = list(tensor.shape)
-    padded_tensor_shape[SEQ_LEN_DIM_IDX] = seq_len
-    padded_tensor = torch.zeros(padded_tensor_shape, dtype=tensor.dtype, device=tensor.device)
-
-    padded_tensor_ranges = tuple(
-        slice(None) if idx != SEQ_LEN_DIM_IDX else slice(None, min(seq_len, tensor_seq_len))
-        for idx in range(tensor.ndim)
-    )
-    padded_tensor[padded_tensor_ranges] = tensor[padded_tensor_ranges]
-
-    return padded_tensor
-
-
-def get_model_config(ModuleClass: type[AbstractModule], mode: Literal["prefill", "decode"], *args, **kwargs) -> Any:
-    """Get the module config for the given mode and kwargs."""
-    if mode == "prefill":
-        return ModuleClass.prefill_model_config(*args, **kwargs)
-    elif mode == "decode":
-        return ModuleClass.decode_model_config(*args, **kwargs)
-    else:
-        raise ValueError(f"Unsupported mode: {mode}. Supported modes are 'prefill' and 'decode'.")
-
-
-def run_module_forward(ModuleClass: type[AbstractModule], mode: Literal["prefill", "decode"], *args, **kwargs) -> Any:
-    """Run the module forward pass for the given mode and kwargs."""
-    if mode == "prefill":
-        return ModuleClass.forward_prefill(*args, **kwargs)
-    elif mode == "decode":
-        return ModuleClass.forward_decode(*args, **kwargs)
-    else:
-        raise ValueError(f"Unsupported mode: {mode}. Supported modes are 'prefill' and 'decode'.")
 
 
 def compare_tensor_pcc(
