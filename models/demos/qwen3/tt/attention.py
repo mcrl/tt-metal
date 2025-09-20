@@ -206,18 +206,10 @@ class Qwen3MoeAttention(nn.Module):
                     ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b : b + 1], b)
                     ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b : b + 1], b)
             elif mode == InferenceMode.DECODE:
-                ttnn.kv_cache.update_cache_for_token_(
-                    self.cache_k_tt,
-                    ttnn.permute(key_states_tt, dims=(2, 1, 0, 3)),
-                    start_pos,
-                    0,
-                )
-                ttnn.kv_cache.update_cache_for_token_(
-                    self.cache_v_tt,
-                    ttnn.permute(value_states_tt, dims=(2, 1, 0, 3)),
-                    start_pos,
-                    0,
-                )
+                key_states_tt = ttnn.permute(key_states_tt, dims=(2, 1, 0, 3))
+                value_states_tt = ttnn.permute(value_states_tt, dims=(2, 1, 0, 3))
+                ttnn.kv_cache.update_cache_for_token_(self.cache_k_tt, key_states_tt, update_index=start_pos, batch_offset=0)
+                ttnn.kv_cache.update_cache_for_token_(self.cache_v_tt, value_states_tt, update_index=start_pos, batch_offset=0)
 
         with Profiler().trace_with_timer("kv-cache-load", level=3):
             key_states_tt = self.cache_k_tt[:batch_size, :, : start_pos + sequence_length, :]
