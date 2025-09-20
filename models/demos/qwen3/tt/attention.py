@@ -183,9 +183,9 @@ class Qwen3MoeAttention(nn.Module):
             )
 
         with Profiler().trace_with_timer("permute", level=3):
-            query_states_tt = ttnn.permute(query_states_tt, dims=(0, 2, 1, 3))
-            key_states_tt = ttnn.permute(key_states_tt, dims=(0, 2, 1, 3))
-            value_states_tt = ttnn.permute(value_states_tt, dims=(0, 2, 1, 3))
+            query_states_tt = ttnn.permute(query_states_tt, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+            key_states_tt = ttnn.permute(key_states_tt, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+            value_states_tt = ttnn.permute(value_states_tt, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
 
         with Profiler().trace_with_timer("kv-cache-store", level=3):
             if mode == InferenceMode.PREFILL:
@@ -193,14 +193,14 @@ class Qwen3MoeAttention(nn.Module):
                     ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b : b + 1], b)
                     ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b : b + 1], b)
             elif mode == InferenceMode.DECODE:
-                key_states_tt = ttnn.permute(key_states_tt, dims=(2, 1, 0, 3))
-                value_states_tt = ttnn.permute(value_states_tt, dims=(2, 1, 0, 3))
+                key_states_tt = ttnn.permute(key_states_tt, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+                value_states_tt = ttnn.permute(value_states_tt, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
                 ttnn.kv_cache.update_cache_for_token_(self.cache_k_tt, key_states_tt, update_index=start_pos, batch_offset=0)
                 ttnn.kv_cache.update_cache_for_token_(self.cache_v_tt, value_states_tt, update_index=start_pos, batch_offset=0)
 
         with Profiler().trace_with_timer("kv-cache-load", level=3):
-            key_states_tt = self.cache_k_tt[:batch_size, :, : start_pos + sequence_length, :]
-            value_states_tt = self.cache_v_tt[:batch_size, :, : start_pos + sequence_length, :]
+            key_states_tt = ttnn.slice(self.cache_k_tt, (0, 0, 0, 0), (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim), memory_config=ttnn.L1_MEMORY_CONFIG)
+            value_states_tt = ttnn.slice(self.cache_v_tt, (0, 0, 0, 0), (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim), memory_config=ttnn.L1_MEMORY_CONFIG)
 
         tt_out = tt_sdpa_forward(
             query_states_tt,
