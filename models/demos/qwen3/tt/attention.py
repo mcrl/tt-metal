@@ -178,9 +178,7 @@ class Qwen3MoeAttention(nn.Module):
             value_states_tt = ttnn.reshape(value_states_tt, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         with Profiler().trace_with_timer("rope", level=3):
-            query_states_tt, key_states_tt = apply_rotary_emb_tt_v2(
-                query_states_tt, key_states_tt, position_embeddings, self.trans_mat_tt
-            )
+            query_states_tt, key_states_tt = apply_rotary_emb_tt_v2(query_states_tt, key_states_tt, position_embeddings, self.trans_mat_tt)
 
         with Profiler().trace_with_timer("permute", level=3):
             query_states_tt = ttnn.permute(query_states_tt, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
@@ -199,8 +197,13 @@ class Qwen3MoeAttention(nn.Module):
                 ttnn.kv_cache.update_cache_for_token_(self.cache_v_tt, value_states_tt, update_index=start_pos, batch_offset=0)
 
         with Profiler().trace_with_timer("kv-cache-load", level=3):
-            key_states_tt = ttnn.slice(self.cache_k_tt, (0, 0, 0, 0), (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim), memory_config=ttnn.L1_MEMORY_CONFIG)
-            value_states_tt = ttnn.slice(self.cache_v_tt, (0, 0, 0, 0), (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim), memory_config=ttnn.L1_MEMORY_CONFIG)
+            start_index = (0, 0, 0, 0)
+            end_index = (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim)
+
+            ttnn.deallocate(key_states_tt)
+            ttnn.deallocate(value_states_tt)
+            key_states_tt = ttnn.slice(self.cache_k_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG)
+            value_states_tt = ttnn.slice(self.cache_v_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         tt_out = tt_sdpa_forward(
             query_states_tt,
@@ -212,12 +215,11 @@ class Qwen3MoeAttention(nn.Module):
             mode=mode,
         )        
         with Profiler().trace_with_timer("reshape", level=3):
-            tt_out = ttnn.reshape(tt_out, [tt_out.shape[0], tt_out.shape[1], tt_out.shape[2] * tt_out.shape[3]])
-        
+            new_shape = (batch_size, sequence_length, self.num_key_value_heads * self.head_dim)
+            tt_out = ttnn.reshape(tt_out, shape=new_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
+
         with Profiler().trace_with_timer("to-layout", level=3):
-            tt_out = ttnn.to_layout(
-                tt_out, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG
-            )
+            tt_out = ttnn.to_layout(tt_out, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         with Profiler().trace_with_timer("output-proj", level=3):
             linear_output_ttnn = ttnn.linear(
@@ -226,12 +228,14 @@ class Qwen3MoeAttention(nn.Module):
                 transpose_a=False,
                 transpose_b=True,
                 dtype=ttnn.bfloat16,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,  # Inefficient Here!
             )
+            ttnn.deallocate(tt_out)
+            #linear_output_ttnn = ttnn.to_layout(linear_output_ttnn, layout=ttnn.ROW_MAJOR_LAYOUT)
 
         with Profiler().trace_with_timer("all-reduce", level=3):
             B, S, H = linear_output_ttnn.shape
-            linear_output_ttnn = linear_output_ttnn.reshape(B, S, 1, H)
+            linear_output_ttnn = ttnn.reshape(linear_output_ttnn, shape=(B, S, 1, H), memory_config=ttnn.L1_MEMORY_CONFIG)
             linear_output_ttnn_reduced = ttnn.reduce_scatter(
                 linear_output_ttnn,
                 dim=-1,
@@ -249,7 +253,7 @@ class Qwen3MoeAttention(nn.Module):
             )
             ttnn.synchronize_device(self.mesh_device)
 
-        output = ttnn.reshape(linear_output_ttnn_gathered, (batch_size, sequence_length, hidden_size))
+        output = ttnn.reshape(linear_output_ttnn_gathered, (batch_size, sequence_length, hidden_size), memory_config=ttnn.L1_MEMORY_CONFIG)
         return output
 
 
