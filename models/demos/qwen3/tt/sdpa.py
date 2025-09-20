@@ -1,6 +1,6 @@
 import ttnn
 import torch
-from typing import Optional
+from typing import Optional, Union
 from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 
@@ -38,44 +38,17 @@ def sdpa_forward_prefill(
     key_shape = key.shape
     value_shape = value.shape
 
-    padded_query_shape = (
-        query_shape[0],
-        query_shape[1],
-        ((query_shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE,
-        ((query_shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE,
-    )
-    padded_key_shape = (
-        key_shape[0],
-        key_shape[1],
-        ((key_shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE,
-        ((key_shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE,
-    )
-    padded_value_shape = (
-        value_shape[0],
-        value_shape[1],
-        ((value_shape[2] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE,
-        ((value_shape[3] + PAD_MULTIPLE - 1) // PAD_MULTIPLE) * PAD_MULTIPLE,
-    )
+    def _explicit_pad(x: ttnn.Tensor, value: Union[float, int], *, use_multicore: Optional[bool] = None, memory_config: Optional[ttnn.MemoryConfig] = None) -> ttnn.Tensor:
+        unpadded_shape = x.shape
+        padded_shape = ttnn.pad_to_tile_shape(unpadded_shape=unpadded_shape)
+        padding = [(0, y - x) for x, y in zip(unpadded_shape, padded_shape)]
+        return ttnn.pad(x, padding=padding, value=value, **{k: v for k, v in {"use_multicore": use_multicore, "memory_config": memory_config}.items() if v is not None})
+
 
     with Profiler().trace_with_timer("padding", level=3, args={"class": "sdpa_forward_prefill"}):
-        query = ttnn.pad(
-            query,
-            [(0, 0), (0, 0), (0, padded_query_shape[2] - query_shape[2]), (0, padded_query_shape[3] - query_shape[3])],
-            0.0,
-        )
-        value = ttnn.pad(
-            value,
-            [(0, 0), (0, 0), (0, padded_value_shape[2] - value_shape[2]), (0, padded_value_shape[3] - value_shape[3])],
-            0.0,
-        )
-        key = ttnn.pad(
-            key, [(0, 0), (0, 0), (0, padded_key_shape[2] - key_shape[2]), (0, padded_key_shape[3] - key_shape[3])], 0.0
-        )
-
-    with Profiler().trace_with_timer("to_layout", level=3, args={"class": "sdpa_forward_prefill"}):
-        query = ttnn.to_memory_config(query, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        value = ttnn.to_memory_config(value, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        key = ttnn.to_memory_config(key, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        query = ttnn.to_memory_config(_explicit_pad(query, 0.0), memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        key = ttnn.to_memory_config(_explicit_pad(key, 0.0), memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        value = ttnn.to_memory_config(_explicit_pad(value, 0.0), memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
     with Profiler().trace_with_timer("attention", level=3, args={"class": "sdpa_forward_prefill"}):
         attn_output = ttnn.transformer.scaled_dot_product_attention(
@@ -92,11 +65,11 @@ def sdpa_forward_prefill(
         )
 
     with Profiler().trace_with_timer("to_layout", level=3, args={"class": "sdpa_forward_prefill"}):
-        attn_output = ttnn.to_layout(ttnn.permute(attn_output, dims=(0, 2, 1, 3)), layout=ttnn.ROW_MAJOR_LAYOUT)
+        attn_output = ttnn.to_layout(ttnn.permute(attn_output, dims=(0, 2, 1, 3)), layout=ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
 
     with Profiler().trace_with_timer("slicing", level=3, args={"class": "sdpa_forward_prefill"}):
         attn_output = ttnn.slice(
-            attn_output, [0, 0, 0, 0], [query_shape[0], query_shape[2], query_shape[1], value_shape[3]]
+            attn_output, [0, 0, 0, 0], [query_shape[0], query_shape[2], query_shape[1], value_shape[3]], memory_config=ttnn.L1_MEMORY_CONFIG
         )
 
     return attn_output
