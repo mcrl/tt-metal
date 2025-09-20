@@ -100,19 +100,18 @@ def apply_rotary_emb_v2(
     freqs_cis: Tuple[ttnn.Tensor, ttnn.Tensor],
     trans_mat: ttnn.Tensor,
 ) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
-
     batch_size, seq_len, num_heads, head_dim = xq.shape
 
     cos, sin = freqs_cis
+    cos_full = ttnn.reshape(cos, [1, 1, seq_len, head_dim], memory_config=ttnn.L1_MEMORY_CONFIG)
+    sin_full = ttnn.reshape(sin, [1, 1, seq_len, head_dim], memory_config=ttnn.L1_MEMORY_CONFIG)
 
-    cos_full, sin_full = ttnn.reshape(cos, [1, 1, seq_len, head_dim]), ttnn.reshape(sin, [1, 1, seq_len, head_dim])
-
-    xq_bnsh = ttnn.permute(xq, (0, 2, 1, 3))
-    xk_bnsh = ttnn.permute(xk, (0, 2, 1, 3))
+    xq_bnsh = ttnn.permute(xq, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+    xk_bnsh = ttnn.permute(xk, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
 
     yq_bnsh = ttnn.experimental.rotary_embedding_llama(xq_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False)
     yk_bnsh = ttnn.experimental.rotary_embedding_llama(xk_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False)
 
-    yq = ttnn.to_layout(ttnn.permute(yq_bnsh, (0, 2, 1, 3)), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
-    yk = ttnn.to_layout(ttnn.permute(yk_bnsh, (0, 2, 1, 3)), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
+    yq = ttnn.to_layout(ttnn.permute(yq_bnsh, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
+    yk = ttnn.to_layout(ttnn.permute(yk_bnsh, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
     return yq, yk
