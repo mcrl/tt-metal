@@ -10,12 +10,18 @@ class Qwen3MoeRMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = torch.mul(hidden_states, torch.rsqrt(variance + self.variance_epsilon))
-        return torch.mul(self.weight, hidden_states.to(input_dtype))
+    def setup_tt(self):
+        self.weight_tt = ttnn.from_torch(
+            self.weight,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
+
+    def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
+        return ttnn.rms_norm(hidden_states, epsilon=self.epsilon, weight=self.weight_tt, memory_config=ttnn.L1_MEMORY_CONFIG)
 
 
 __all__ = ["Qwen3MoeRMSNorm"]
