@@ -250,8 +250,9 @@ def sdpa_forward_decode_v3(
     )
     key = ttnn.pad(key, [(0, 0), (0, 0), (0, padded_key_shape[2] - key_shape[2]), (0, 0)], 0.0)
 
-    value = ttnn.to_layout(value, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    key = ttnn.to_layout(key, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    query = ttnn.to_memory_config(ttnn.to_layout(query, layout=ttnn.TILE_LAYOUT), memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    key = ttnn.to_memory_config(ttnn.to_layout(key, layout=ttnn.TILE_LAYOUT), memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    value = ttnn.to_memory_config(ttnn.to_layout(value, layout=ttnn.TILE_LAYOUT), memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
     attn_output = ttnn.transformer.scaled_dot_product_attention_decode(
         query,

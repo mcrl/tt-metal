@@ -55,7 +55,7 @@ def main(
     tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
     config_path: Optional[str] = "/shared/models/Qwen3-30B-A3B/config.json",
 ):
-    batch_size = 16
+    batch_size = 64
     prompt_len = 16
     gen_tokens = 16
     prompt_and_responses_tt, iter_times_tt = perftest_tt(
