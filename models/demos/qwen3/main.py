@@ -7,7 +7,8 @@ from loguru import logger
 import tt_lock
 from test_dataset.dataset_loader import load_prompts
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
-from models.demos.qwen3.utils.profiler import init_trace_file
+from models.demos.qwen3.utils.profiler import profile_trace
+from models.demos.qwen3.utils.timer import print_timer_all
 from models.demos.qwen3.utils.device import create_mesh_device
 
 
@@ -55,11 +56,10 @@ def main(
     tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
     config_path: Optional[str] = "/shared/models/Qwen3-30B-A3B/config.json",
 ):
-    init_trace_file()
+    batch_size = 64
+    prompt_len = 16
+    gen_tokens = 16
     
-    batch_size = 32
-    prompt_len = 64
-    gen_tokens = 64
     prompt_and_responses_tt, iter_times_tt = perftest_tt(
         batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path
     )
@@ -73,6 +73,8 @@ def main(
     # print(f"Reference Results:")
     # for i in range(batch_size):
     #     print("\033[31m" + prompt_and_responses_reference[i][0] + "\033[0m" + prompt_and_responses_reference[i][1] + "\n")
+
+    print_timer_all()
 
 
 if __name__ == "__main__":

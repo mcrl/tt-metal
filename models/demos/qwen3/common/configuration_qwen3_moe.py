@@ -2,6 +2,7 @@ from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional
 from enum import Enum
 import torch
+import json
 
 
 @dataclass(frozen=False)
@@ -56,6 +57,12 @@ class Qwen3MoeConfig:
         valid_params = inspect.signature(cls.__init__).parameters
         filtered_data = {k: v for k, v in data.items() if k in valid_params}
         return cls(**filtered_data)
+
+    @classmethod
+    def from_file(cls, file_path: str):
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
 
     def dict(self):
         return asdict(self)
