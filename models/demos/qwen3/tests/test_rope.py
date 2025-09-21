@@ -7,7 +7,7 @@ import torch
 
 import ttnn
 import tt_lock
-
+from models.demos.qwen3.utils.tensor_info import print_tensor_info
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.rope import (
     apply_rotary_emb as ttnn_apply_rotary_emb,
@@ -85,6 +85,12 @@ def test_rope(batch_size, seq_len, heads, head_dim, mesh_device):
         device=mesh_device,
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
     )
+
+    print_tensor_info(q_tt, "q_tt")
+    print_tensor_info(k_tt, "k_tt")
+    print_tensor_info(cos_tt, "cos_tt")
+    print_tensor_info(sin_tt, "sin_tt")
+    print_tensor_info(trans_mat_tt, "trans_mat_tt")
 
     tt_out = ttnn_apply_rotary_emb_v2(q_tt, k_tt, (cos_tt, sin_tt), trans_mat_tt)
     q_tt_out = ttnn.to_torch(tt_out[0], dtype=torch.bfloat16, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=2))
