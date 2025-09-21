@@ -16,9 +16,9 @@ def perftest_tt(
     batch_size: int,
     prompt_len: int,
     gen_tokens: int,
-    ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
-    tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
-    config_path: str = "/shared/models/Qwen3-30B-A3B/config.json",
+    ckpt_dir: str,
+    tokenizer_path: str,
+    config_path: str,
 ):
     mesh_device = create_mesh_device()
     set_and_get_device_cache(mesh_device)
@@ -37,9 +37,9 @@ def perftest_reference(
     batch_size: int,
     prompt_len: int,
     gen_tokens: int,
-    ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
-    tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
-    config_path: str = "/shared/models/Qwen3-30B-A3B/config.json",
+    ckpt_dir: str,
+    tokenizer_path: str,
+    config_path: str,
 ):
     qwen3_moe_reference = Qwen3MoEReference(ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path)
 
@@ -55,25 +55,42 @@ def main(
     ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
     tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
     config_path: Optional[str] = "/shared/models/Qwen3-30B-A3B/config.json",
+    batch_size: int = 4,
+    prompt_len: int = 64,
+    gen_tokens: int = 64,
+    run_tt: bool = True,
+    run_reference: bool = False,
 ):
     init_trace_file()
-    
-    batch_size = 32
-    prompt_len = 64
-    gen_tokens = 64
-    prompt_and_responses_tt, iter_times_tt = perftest_tt(
-        batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path
-    )
-    # prompt_and_responses_reference, iter_times_reference = perftest_reference(batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path)
-    print(f"TT Time: {sum(iter_times_tt)}")
-    # print(f"Reference Time: {sum(iter_times_reference)}")
 
-    print(f"TT Results:")
-    for i in range(batch_size):
-        print("\033[31m" + prompt_and_responses_tt[i][0] + "\033[0m" + prompt_and_responses_tt[i][1] + "\n")
-    # print(f"Reference Results:")
-    # for i in range(batch_size):
-    #     print("\033[31m" + prompt_and_responses_reference[i][0] + "\033[0m" + prompt_and_responses_reference[i][1] + "\n")
+    ran_any = False
+
+    if run_tt:
+        ran_any = True
+        prompt_and_responses_tt, iter_times_tt = perftest_tt(
+            batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path
+        )
+        print(f"TT Time: {sum(iter_times_tt)}")
+
+        print(f"TT Results:")
+        for i in range(batch_size):
+            print("\033[31m" + prompt_and_responses_tt[i][0] + "\033[0m" + prompt_and_responses_tt[i][1] + "\n")
+
+    if run_reference:
+        ran_any = True
+        prompt_and_responses_reference, iter_times_reference = perftest_reference(
+            batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path
+        )
+        print(f"Reference Time: {sum(iter_times_reference)}")
+
+        print(f"Reference Results:")
+        for i in range(batch_size):
+            print(
+                "\033[31m" + prompt_and_responses_reference[i][0] + "\033[0m" + prompt_and_responses_reference[i][1] + "\n"
+            )
+
+    if not ran_any:
+        print("No runs selected. Set run_tt=True and/or run_reference=True.")
 
     print_timer_all()
 

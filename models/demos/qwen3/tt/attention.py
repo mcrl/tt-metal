@@ -49,9 +49,6 @@ class Qwen3MoeAttention(nn.Module):
             config.max_seq_len,
             self.head_dim,
         )
-        print(
-            f"cache_shape: {cache_shape}, size: {cache_shape[0] * cache_shape[1] * cache_shape[2] * cache_shape[3] * 2 / 1e9} GB"
-        )
         cache_k = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
         cache_v = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
         self.register_buffer("cache_k", cache_k, persistent=False)

@@ -49,6 +49,8 @@ def load_reference_layer(layer_idx=0, seq_len=32):
     [
         (1, 32),
         (2, 64),
+        (1, 1),
+        (4, 1),
     ],
 )
 def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
