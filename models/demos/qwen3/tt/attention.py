@@ -205,16 +205,15 @@ class Qwen3MoeAttention(nn.Module):
             key_states_tt = ttnn.slice(self.cache_k_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG)
             value_states_tt = ttnn.slice(self.cache_v_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        with Profiler().trace_with_timer("sdpa", level=3):
-            tt_out = tt_sdpa_forward(
-                query_states_tt,
-                key_states_tt,
-                value_states_tt,
-                attention_mask=attention_mask if mode == InferenceMode.DECODE else None,
-                dropout=0.0,
-                scaling=self.scaling,
-                mode=mode,
-            )
+        tt_out = tt_sdpa_forward(
+            query_states_tt,
+            key_states_tt,
+            value_states_tt,
+            attention_mask=attention_mask if mode == InferenceMode.DECODE else None,
+            dropout=0.0,
+            scaling=self.scaling,
+            mode=mode,
+        )
 
         with Profiler().trace_with_timer("reshape", level=3):
             new_shape = (batch_size, sequence_length, self.num_key_value_heads * self.head_dim)
@@ -254,8 +253,10 @@ class Qwen3MoeAttention(nn.Module):
                 mesh_device=self.mesh_device,
             )
             ttnn.synchronize_device(self.mesh_device)
-
-        output = ttnn.reshape(linear_output_ttnn_gathered, (batch_size, sequence_length, hidden_size), memory_config=ttnn.L1_MEMORY_CONFIG)
+        
+        with Profiler().trace_with_timer("reshape", level=3):
+            output = ttnn.reshape(linear_output_ttnn_gathered, (batch_size, sequence_length, hidden_size), memory_config=ttnn.L1_MEMORY_CONFIG)
+        
         return output
 
 

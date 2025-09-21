@@ -1,6 +1,6 @@
 import fire
 from typing import Optional, Dict
-
+import os
 from models.demos.qwen3.generation import Qwen3MoETT, Qwen3MoEReference
 import ttnn
 from loguru import logger
@@ -59,6 +59,7 @@ def main(
     batch_size = 64
     prompt_len = 16
     gen_tokens = 16
+    
     prompt_and_responses_tt, iter_times_tt = perftest_tt(
         batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path
     )
