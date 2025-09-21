@@ -7,7 +7,8 @@ from loguru import logger
 import tt_lock
 from test_dataset.dataset_loader import load_prompts
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
-from models.demos.qwen3.utils.profiler import init_trace_file
+from models.demos.qwen3.utils.profiler import profile_trace
+from models.demos.qwen3.utils.timer import print_timer_all
 from models.demos.qwen3.utils.device import create_mesh_device
 
 
@@ -73,6 +74,8 @@ def main(
     # print(f"Reference Results:")
     # for i in range(batch_size):
     #     print("\033[31m" + prompt_and_responses_reference[i][0] + "\033[0m" + prompt_and_responses_reference[i][1] + "\n")
+
+    print_timer_all()
 
 
 if __name__ == "__main__":
