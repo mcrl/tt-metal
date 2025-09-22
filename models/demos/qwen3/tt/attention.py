@@ -1,4 +1,3 @@
-from models.demos.qwen3.utils.timer import start_timer, stop_timer, profile_time
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 from models.tt_transformers.tt.common import get_rot_transformation_mat
 import torch
@@ -10,10 +9,7 @@ import ttnn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
-from models.demos.qwen3.tt.rope import (
-    apply_rotary_emb as apply_rotary_emb_tt,
-    apply_rotary_emb_v2 as apply_rotary_emb_tt_v2,
-)
+from models.demos.qwen3.tt.rope import apply_rotary_emb_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 
 
@@ -26,6 +22,7 @@ class Qwen3MoeAttention(nn.Module):
         self.mesh_device = mesh_device
         self.is_tt_setup = False
         self.head_dim = config.head_dim
+        self.num_attention_heads = config.num_attention_heads
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = pow(self.head_dim, -0.5)
@@ -44,26 +41,22 @@ class Qwen3MoeAttention(nn.Module):
         self.KV_REPEAT_COEF = 2
         self.kv_heads_per_device = self.num_key_value_heads * self.KV_REPEAT_COEF // self.mesh_device.shape[1]
 
-        cache_shape = (
+        self.cache_shape = (
             config.max_batch_size,
-            self.num_key_value_heads * self.KV_REPEAT_COEF,
+            self.num_key_value_heads * self.KV_REPEAT_COEF // self.mesh_device.shape[1],
             config.max_seq_len,
             self.head_dim,
         )
-        cache_k = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
-        cache_v = torch.zeros(cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
-        self.register_buffer("cache_k", cache_k, persistent=False)
-        self.register_buffer("cache_v", cache_v, persistent=False)
 
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
         assert config.sliding_window is None
-        assert not config.attention_bias
 
     @profile_trace("setup-tt", level=2, args={"class": "Qwen3MoeAttention"})
     def setup_tt(self):
         if self.is_tt_setup:
             return
+
         self.q_proj_weight = ttnn.as_tensor(
             self.q_proj.weight.transpose(0, 1),
             device=self.mesh_device,
@@ -82,18 +75,16 @@ class Qwen3MoeAttention(nn.Module):
             x = x.view(hidden_size, -1)
             return x.contiguous()
 
-        self.cache_k_tt = ttnn.as_tensor(
-            self.cache_k,
+        self.cache_k = ttnn.zeros(
+            self.cache_shape,
             device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
         )
-        self.cache_v_tt = ttnn.as_tensor(
-            self.cache_v,
+        self.cache_v = ttnn.zeros(
+            self.cache_shape,
             device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
@@ -118,24 +109,8 @@ class Qwen3MoeAttention(nn.Module):
             cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_v_proj",
         )
 
-        self.query_rmsnorm_weight_tt = ttnn.as_tensor(
-            self.q_norm.weight,
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_q_rmsnorm_weight",
-        )
-        self.key_rmsnorm_weight_tt = ttnn.as_tensor(
-            self.k_norm.weight,
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_k_rmsnorm_weight",
-        )
+        self.q_norm.setup_tt()
+        self.k_norm.setup_tt()
 
         self.o_proj_weight = ttnn.as_tensor(
             self.o_proj.weight,
@@ -146,7 +121,7 @@ class Qwen3MoeAttention(nn.Module):
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_o_proj",
         )
-        self.trans_mat_tt = ttnn.as_tensor(
+        self.trans_mat = ttnn.as_tensor(
             get_rot_transformation_mat(dhead=ttnn.TILE_SIZE),
             device=self.mesh_device,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
@@ -168,79 +143,70 @@ class Qwen3MoeAttention(nn.Module):
     ) -> torch.Tensor:
         batch_size, sequence_length, hidden_size = hidden_states.shape
         hidden_shape = (batch_size, sequence_length, -1, self.head_dim)
-        hidden_states_tt = hidden_states
 
-        with Profiler().trace_with_timer("qkv-proj", level=3):
-            query_states_tt = ttnn.linear(
-                hidden_states_tt, self.q_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
+        with Profiler().trace_with_timer("qkv-proj-linear", level=3):
+            query_states = ttnn.linear(
+                hidden_states, self.q_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
             )
-            query_states_tt = ttnn.reshape(query_states_tt, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
-            query_states_tt = ttnn.rms_norm(
-                query_states_tt,
-                epsilon=self.config.rms_norm_eps,
-                weight=self.query_rmsnorm_weight_tt,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
+            key_states = ttnn.linear(
+                hidden_states, self.k_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
+            )
+            value_states = ttnn.linear(
+                hidden_states, self.v_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-            key_states_tt = ttnn.linear(
-                hidden_states_tt, self.k_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
-            )
-            key_states_tt = ttnn.reshape(key_states_tt, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
-            key_states_tt = ttnn.rms_norm(
-                key_states_tt,
-                epsilon=self.config.rms_norm_eps,
-                weight=self.key_rmsnorm_weight_tt,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
-            )
+        with Profiler().trace_with_timer("qkv-proj-reshape", level=3):
+            key_states = ttnn.reshape(key_states, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
+            query_states = ttnn.reshape(query_states, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
+            value_states = ttnn.reshape(value_states, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-            value_states_tt = ttnn.linear(
-                hidden_states_tt, self.v_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
-            )
-            value_states_tt = ttnn.reshape(value_states_tt, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
+        with Profiler().trace_with_timer("rmsnorm", level=3):
+            query_states = self.q_norm(query_states)
+            key_states = self.k_norm(key_states)
 
         with Profiler().trace_with_timer("rope", level=3):
-            query_states_tt, key_states_tt = apply_rotary_emb_tt_v2(
-                query_states_tt, key_states_tt, position_embeddings, self.trans_mat_tt
+            query_states, key_states = apply_rotary_emb_v2(
+                query_states, key_states, position_embeddings, self.trans_mat
             )
 
         with Profiler().trace_with_timer("permute", level=3):
-            query_states_tt = ttnn.permute(query_states_tt, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
-            key_states_tt = ttnn.permute(key_states_tt, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
-            value_states_tt = ttnn.permute(value_states_tt, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+            value_states = ttnn.permute(value_states, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+
+        # Q, K, V: [B n S H]
 
         with Profiler().trace_with_timer("kv-cache-store", level=3):
             if mode == InferenceMode.PREFILL:
                 for b in range(batch_size):
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b : b + 1], b)
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b : b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b: b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b: b + 1], b)
             elif mode == InferenceMode.DECODE:
-                key_states_tt = ttnn.permute(key_states_tt, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
-                value_states_tt = ttnn.permute(value_states_tt, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+                key_states = ttnn.permute(key_states, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+                value_states = ttnn.permute(value_states, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
                 ttnn.kv_cache.update_cache_for_token_(
-                    self.cache_k_tt, key_states_tt, update_index=start_pos, batch_offset=0
+                    self.cache_k, key_states, update_index=start_pos, batch_offset=0
                 )
                 ttnn.kv_cache.update_cache_for_token_(
-                    self.cache_v_tt, value_states_tt, update_index=start_pos, batch_offset=0
+                    self.cache_v, value_states, update_index=start_pos, batch_offset=0
                 )
 
         with Profiler().trace_with_timer("kv-cache-load", level=3):
             start_index = (0, 0, 0, 0)
             end_index = (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim)
 
-            ttnn.deallocate(key_states_tt)
-            ttnn.deallocate(value_states_tt)
-            key_states_tt = ttnn.slice(
-                self.cache_k_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG
+            ttnn.deallocate(key_states)
+            ttnn.deallocate(value_states)
+            key_states = ttnn.slice(
+                self.cache_k, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG
             )
-            value_states_tt = ttnn.slice(
-                self.cache_v_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG
+            value_states = ttnn.slice(
+                self.cache_v, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
         with Profiler().trace_with_timer("sdpa", level=3):
-            tt_out = tt_sdpa_forward(
-                query_states_tt,
-                key_states_tt,
-                value_states_tt,
+            attn_out = tt_sdpa_forward(
+                query_states,
+                key_states,
+                value_states,
                 attention_mask=attention_mask if mode == InferenceMode.DECODE else None,
                 dropout=0.0,
                 scaling=self.scaling,
@@ -248,38 +214,33 @@ class Qwen3MoeAttention(nn.Module):
             )
 
         with Profiler().trace_with_timer("reshape", level=3):
-            new_shape = (batch_size, sequence_length, self.num_key_value_heads * self.head_dim)
-            tt_out = ttnn.reshape(tt_out, shape=new_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
-
-        with Profiler().trace_with_timer("to-layout", level=3):
-            tt_out = ttnn.to_layout(tt_out, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG)
+            # [B, n, S, h] -> [B, S, n * h]
+            attn_out = ttnn.transformer.concatenate_heads(attn_out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         with Profiler().trace_with_timer("output-proj", level=3):
-            linear_output_ttnn = ttnn.linear(
-                tt_out,
+            linear_output = ttnn.linear(
+                attn_out,
                 self.o_proj_weight,
                 transpose_a=False,
                 transpose_b=True,
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.L1_MEMORY_CONFIG,  # Inefficient Here!
             )
-            ttnn.deallocate(tt_out)
-            # linear_output_ttnn = ttnn.to_layout(linear_output_ttnn, layout=ttnn.ROW_MAJOR_LAYOUT)
 
         with Profiler().trace_with_timer("all-reduce", level=3):
-            B, S, H = linear_output_ttnn.shape
-            linear_output_ttnn = ttnn.reshape(
-                linear_output_ttnn, shape=(B, S, 1, H), memory_config=ttnn.L1_MEMORY_CONFIG
+            B, S, H = linear_output.shape
+            linear_output = ttnn.reshape(
+                linear_output, shape=(B, S, 1, H), memory_config=ttnn.L1_MEMORY_CONFIG
             )
             linear_output_ttnn_reduced = ttnn.reduce_scatter(
-                linear_output_ttnn,
+                linear_output,
                 dim=-1,
                 math_op=ttnn.ReduceType.Sum,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 topology=ttnn.Topology.Linear,
             )
             ttnn.synchronize_device(self.mesh_device)
-            linear_output_ttnn_gathered = ttnn.all_gather(
+            linear_output_gathered = ttnn.all_gather(
                 linear_output_ttnn_reduced,
                 dim=-1,
                 cluster_axis=1,
@@ -290,7 +251,7 @@ class Qwen3MoeAttention(nn.Module):
 
         with Profiler().trace_with_timer("reshape", level=3):
             output = ttnn.reshape(
-                linear_output_ttnn_gathered,
+                linear_output_gathered,
                 (batch_size, sequence_length, hidden_size),
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
