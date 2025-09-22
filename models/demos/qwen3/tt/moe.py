@@ -5,7 +5,7 @@ from pathlib import Path
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.ccl_1d import CCL1D
-from models.demos.qwen3.utils.timer import profile_time, start_timer, stop_timer
+from models.demos.qwen3.utils.timer import profile_time
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 
 
@@ -21,9 +21,12 @@ class Qwen3MoeMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = nn.SiLU()
         assert config.hidden_act == "silu"
+        self.is_tt_setup = False
 
     def setup_tt(self):
-        pass
+        if self.is_tt_setup:
+            return
+        self.is_tt_setup = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.down_proj(torch.mul(self.act_fn(self.gate_proj(x)), self.up_proj(x)))
@@ -49,9 +52,12 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         )
 
         self.layer_idx = layer_idx
+        self.is_tt_setup = False
 
     @profile_trace("setup-tt", level=2, args={"class": "Qwen3MoeSparseMoeBlock"})
     def setup_tt(self):
+        if self.is_tt_setup:
+            return
 
         with Profiler().trace_with_timer("CCL", level=3):
             self.ccl = CCL1D(self.mesh_device)
@@ -127,6 +133,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 layout=ttnn.TILE_LAYOUT,
                 cache_file_name=Path.home() / ".cache/weights" / f"down_proj_{self.layer_idx}",
             )
+        self.is_tt_setup = True
 
     @profile_trace("Qwen3MoeSparseMoeBlock", level=2)
     def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:

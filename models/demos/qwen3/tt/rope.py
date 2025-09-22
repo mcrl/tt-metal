@@ -1,7 +1,6 @@
 from typing import Tuple
 import torch
 import ttnn
-from models.demos.qwen3.utils.timer import start_timer, stop_timer
 from models.demos.qwen3.utils.profiler import profile_trace
 
 

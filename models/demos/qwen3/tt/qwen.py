@@ -5,9 +5,7 @@ from pathlib import Path
 
 import ttnn
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
-from models.demos.qwen3.reference.rope import precompute_freqs_cis
 from models.demos.qwen3.tt.rope import (
-    precompute_freqs_cis as precompute_freqs_cis_tt,
     precompute_freqs_cis_v2 as precompute_freqs_cis_tt_v2,
 )
 
@@ -45,25 +43,8 @@ class Qwen3MoeDecoderLayer(nn.Module):
             return
         self.self_attn.setup_tt()
         self.mlp.setup_tt()
-
-        self.input_layernorm_weight = ttnn.as_tensor(
-            self.input_layernorm.weight,
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_input_ln_weight",
-        )
-        self.post_attention_layernorm_weight = ttnn.as_tensor(
-            self.post_attention_layernorm.weight,
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_post_attn_ln_weight",
-        )
+        self.input_layernorm.setup_tt()
+        self.post_attention_layernorm.setup_tt()
         self.is_tt_setup = True
 
     @profile_trace("Qwen3MoeDecoderLayer", level=1)
@@ -79,9 +60,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         hidden_states_0 = hidden_states
 
         with Profiler().trace_with_timer("rmsnorm", level=3, args={"class": "Qwen3MoeDecoderLayer"}):
-            attn_input = ttnn.rms_norm(
-                hidden_states_0, epsilon=self.config.rms_norm_eps, weight=self.input_layernorm_weight
-            )
+            attn_input = self.input_layernorm(hidden_states_0)
         attn_result = self.self_attn(
             hidden_states=attn_input,
             start_pos=start_pos,
@@ -95,9 +74,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             hidden_states_1 = ttnn.add(attn_result, hidden_states_0)
 
         with Profiler().trace_with_timer("rmsnorm", level=3, args={"class": "Qwen3MoeDecoderLayer"}):
-            mlp_input = ttnn.rms_norm(
-                hidden_states_1, epsilon=self.config.rms_norm_eps, weight=self.post_attention_layernorm_weight
-            )
+            mlp_input = self.post_attention_layernorm(hidden_states_1)
         mlp_result = self.mlp(mlp_input)
 
         with Profiler().trace_with_timer("add", level=3, args={"class": "Qwen3MoeDecoderLayer"}):
@@ -143,15 +120,7 @@ class Qwen3MoeModel(nn.Module):
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=Path.home() / ".cache/weights/embedding_weight",
         )
-        self.norm_weight = ttnn.as_tensor(
-            self.norm.weight,
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights/final_norm_weight",
-        )
+        self.norm.setup_tt()
         self.lm_head_weight = ttnn.as_tensor(
             self.lm_head.weight.transpose(0, 1),
             device=self.mesh_device,
@@ -232,9 +201,7 @@ class Qwen3MoeModel(nn.Module):
             )
 
         with Profiler().trace_with_timer("rmsnorm", level=3, args={"class": "Qwen3MoeModel"}):
-            hidden_states = ttnn.rms_norm(
-                hidden_states, epsilon=self.config.rms_norm_eps, weight=self.norm_weight
-            )
+            hidden_states = self.norm(hidden_states)
 
         with Profiler().trace_with_timer("LMhead", level=3, args={"class": "Qwen3MoeModel"}):
             logits = ttnn.linear(hidden_states, self.lm_head_weight, dtype=ttnn.bfloat16)
