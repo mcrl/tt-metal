@@ -12,6 +12,9 @@ from models.demos.qwen3.utils.timer import print_timer_all
 from models.demos.qwen3.utils.device import create_mesh_device
 
 
+ttnn.CONFIG.enable_model_cache = True
+
+
 def perftest_tt(
     batch_size: int,
     prompt_len: int,
@@ -86,7 +89,11 @@ def main(
         print(f"Reference Results:")
         for i in range(batch_size):
             print(
-                "\033[31m" + prompt_and_responses_reference[i][0] + "\033[0m" + prompt_and_responses_reference[i][1] + "\n"
+                "\033[31m"
+                + prompt_and_responses_reference[i][0]
+                + "\033[0m"
+                + prompt_and_responses_reference[i][1]
+                + "\n"
             )
 
     if not ran_any:
