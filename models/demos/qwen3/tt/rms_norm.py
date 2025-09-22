@@ -10,8 +10,11 @@ class Qwen3MoeRMSNorm(nn.Module):
         self.mesh_device = mesh_device
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
+        self.is_tt_setup = False
 
     def setup_tt(self):
+        if self.is_tt_setup:
+            return
         self.weight_tensor = ttnn.as_tensor(
             self.weight,
             dtype=ttnn.bfloat16,
@@ -21,10 +24,11 @@ class Qwen3MoeRMSNorm(nn.Module):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             cache_file_name=Path.home() / ".cache/weights" / f"rmsnorm_{id(self)}_weight",
         )
+        self.is_tt_setup = True
 
     def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
         return ttnn.rms_norm(
-            hidden_states, epsilon=self.epsilon, weight=self.weight_tensor, memory_config=ttnn.L1_MEMORY_CONFIG
+            hidden_states, epsilon=self.variance_epsilon, weight=self.weight_tensor, memory_config=ttnn.L1_MEMORY_CONFIG
         )
 
 
