@@ -79,14 +79,14 @@ class Qwen3MoeAttention(nn.Module):
             x = x.view(hidden_size, -1)
             return x.contiguous()
 
-        self.cache_k_tt = ttnn.zeros(
+        self.cache_k = ttnn.zeros(
             self.cache_shape,
             device=self.mesh_device,
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
         )
-        self.cache_v_tt = ttnn.zeros(
+        self.cache_v = ttnn.zeros(
             self.cache_shape,
             device=self.mesh_device,
             dtype=ttnn.bfloat16,
@@ -113,7 +113,7 @@ class Qwen3MoeAttention(nn.Module):
             cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_v_proj",
         )
 
-        self.query_rmsnorm_weight_tt = ttnn.as_tensor(
+        self.query_rmsnorm_weight = ttnn.as_tensor(
             self.q_norm.weight,
             device=self.mesh_device,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
@@ -122,7 +122,7 @@ class Qwen3MoeAttention(nn.Module):
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_q_rmsnorm_weight",
         )
-        self.key_rmsnorm_weight_tt = ttnn.as_tensor(
+        self.key_rmsnorm_weight = ttnn.as_tensor(
             self.k_norm.weight,
             device=self.mesh_device,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
@@ -141,7 +141,7 @@ class Qwen3MoeAttention(nn.Module):
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_o_proj",
         )
-        self.trans_mat_tt = ttnn.as_tensor(
+        self.trans_mat = ttnn.as_tensor(
             get_rot_transformation_mat(dhead=ttnn.TILE_SIZE),
             device=self.mesh_device,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
@@ -185,19 +185,19 @@ class Qwen3MoeAttention(nn.Module):
             query_states_tt = ttnn.rms_norm(
                 query_states_tt,
                 epsilon=self.config.rms_norm_eps,
-                weight=self.query_rmsnorm_weight_tt,
+                weight=self.query_rmsnorm_weight,
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
             key_states_tt = ttnn.rms_norm(
                 key_states_tt,
                 epsilon=self.config.rms_norm_eps,
-                weight=self.key_rmsnorm_weight_tt,
+                weight=self.key_rmsnorm_weight,
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
 
         with Profiler().trace_with_timer("rope", level=3):
             query_states_tt, key_states_tt = apply_rotary_emb_tt_v2(
-                query_states_tt, key_states_tt, position_embeddings, self.trans_mat_tt
+                query_states_tt, key_states_tt, position_embeddings, self.trans_mat
             )
 
         with Profiler().trace_with_timer("permute", level=3):
@@ -208,16 +208,16 @@ class Qwen3MoeAttention(nn.Module):
         with Profiler().trace_with_timer("kv-cache-store", level=3):
             if mode == InferenceMode.PREFILL:
                 for b in range(batch_size):
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k_tt, key_states_tt[b: b + 1], b)
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v_tt, value_states_tt[b: b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states_tt[b: b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states_tt[b: b + 1], b)
             elif mode == InferenceMode.DECODE:
                 key_states_tt = ttnn.permute(key_states_tt, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
                 value_states_tt = ttnn.permute(value_states_tt, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
                 ttnn.kv_cache.update_cache_for_token_(
-                    self.cache_k_tt, key_states_tt, update_index=start_pos, batch_offset=0
+                    self.cache_k, key_states_tt, update_index=start_pos, batch_offset=0
                 )
                 ttnn.kv_cache.update_cache_for_token_(
-                    self.cache_v_tt, value_states_tt, update_index=start_pos, batch_offset=0
+                    self.cache_v, value_states_tt, update_index=start_pos, batch_offset=0
                 )
 
         with Profiler().trace_with_timer("kv-cache-load", level=3):
@@ -227,10 +227,10 @@ class Qwen3MoeAttention(nn.Module):
             ttnn.deallocate(key_states_tt)
             ttnn.deallocate(value_states_tt)
             key_states_tt = ttnn.slice(
-                self.cache_k_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG
+                self.cache_k, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG
             )
             value_states_tt = ttnn.slice(
-                self.cache_v_tt, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG
+                self.cache_v, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
         with Profiler().trace_with_timer("sdpa", level=3):
