@@ -47,12 +47,10 @@ class Qwen3MoeAttention(nn.Module):
 
         self.cache_shape = (
             config.max_batch_size,
-            self.num_key_value_heads * self.KV_REPEAT_COEF,
+            self.num_key_value_heads * self.KV_REPEAT_COEF // self.mesh_device.shape[1],
             config.max_seq_len,
             self.head_dim,
         )
-        self.cache_k = torch.zeros(self.cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
-        self.cache_v = torch.zeros(self.cache_shape, dtype=config.dtype, device=torch.device("cpu"), requires_grad=False)
 
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
@@ -81,23 +79,19 @@ class Qwen3MoeAttention(nn.Module):
             x = x.view(hidden_size, -1)
             return x.contiguous()
 
-        self.cache_k_tt = ttnn.as_tensor(
-            self.cache_k,
+        self.cache_k_tt = ttnn.zeros(
+            self.cache_shape,
             device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_cache_k",
         )
-        self.cache_v_tt = ttnn.as_tensor(
-            self.cache_v,
+        self.cache_v_tt = ttnn.zeros(
+            self.cache_shape,
             device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_cache_v",
         )
 
         self.k_proj_weight = ttnn.as_tensor(
