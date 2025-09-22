@@ -65,17 +65,13 @@ jobs:
       - name: Get is-release-candidate and tag-type
         id: get-is-release-candidate-and-tag-type
         run: |
-          if [[ "$RELEASE_TYPE" != "" && "$RELEASE_TYPE" != "null" ]]; then
-            if [[ "$RELEASE_TYPE" != "dev" && "$RELEASE_TYPE" != "rc" && "$RELEASE_TYPE" != "prod" ]]; then
-              echo "Invalid release-type: $RELEASE_TYPE. Must be one of 'dev', 'rc', or 'prod'."
-              exit 1
-            fi
-            echo "Processing release-type: $RELEASE_TYPE"
-            if [[ "$RELEASE_TYPE" == "prod" ]]; then
-              echo "is-release-candidate=false" >> "$GITHUB_OUTPUT"
-              echo "tag-type=" >> "$GITHUB_OUTPUT"
-            elif [[ "$RELEASE_TYPE" == "rc" ]]; then
-              echo "is-release-candidate=true" >> "$GITHUB_OUTPUT"
+          # A workflow dispatch on a tag is considered a release run for us.
+          isReleaseCandidate=${{ !(github.ref_type == 'tag' && github.event_name == 'workflow_dispatch') }}
+          echo "is-release-candidate=$isReleaseCandidate" >> "$GITHUB_OUTPUT"
+
+          # Set tag-type
+          if [[ "${GITHUB_REF}" == "refs/heads/stable" ]] || [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            if [[ "$isReleaseCandidate" == "true" ]]; then
               echo "tag-type=rc" >> "$GITHUB_OUTPUT"
             else
               echo "is-release-candidate=true" >> "$GITHUB_OUTPUT"
@@ -129,7 +125,7 @@ jobs:
   publish-to-pypi:
     needs: [build-test-publish, create-tag]
     runs-on: ubuntu-latest
-    if: ${{ (github.ref == 'refs/heads/stable' || (startsWith(github.ref, 'refs/tags/') && contains(github.event.base_ref || '', 'refs/heads/stable'))) || inputs.dry-run }}
+    if: ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/')) || inputs.dry-run }}
     environment:
       name: pypi
       url: https://pypi.org/project/ttnn/
@@ -220,7 +216,7 @@ jobs:
     # May accidentally create two releases without restricting to 1 job
     concurrency: create_upload_draft_release
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v') || inputs.dry-run }}
+    if: ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/')) || inputs.dry-run }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
