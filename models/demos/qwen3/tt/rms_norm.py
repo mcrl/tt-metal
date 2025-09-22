@@ -12,7 +12,7 @@ class Qwen3MoeRMSNorm(nn.Module):
         self.variance_epsilon = eps
 
     def setup_tt(self):
-        self.weight_tt = ttnn.as_tensor(
+        self.weight_tensor = ttnn.as_tensor(
             self.weight,
             dtype=ttnn.bfloat16,
             layout=ttnn.TILE_LAYOUT,
@@ -24,7 +24,7 @@ class Qwen3MoeRMSNorm(nn.Module):
 
     def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
         return ttnn.rms_norm(
-            hidden_states, epsilon=self.epsilon, weight=self.weight_tt, memory_config=ttnn.L1_MEMORY_CONFIG
+            hidden_states, epsilon=self.epsilon, weight=self.weight_tensor, memory_config=ttnn.L1_MEMORY_CONFIG
         )
 
 
