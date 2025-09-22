@@ -30,6 +30,7 @@ class Qwen3MoeMLP(nn.Module):
 
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
+
     @profile_trace("create-layer", level=2, args={"class": "Qwen3MoeSparseMoeBlock"})
     def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
         super().__init__()
@@ -167,29 +168,26 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             )
 
         with Profiler().trace_with_timer("prepare-all-to-all", level=3):
-            all_to_all_dispatch_output_tensors = ttnn.from_torch(
-                torch.zeros([1, batch_size, sequence_length, hidden_dim]),
-                device=self.mesh_device,
-                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            all_to_all_dispatch_output_tensors = ttnn.zeros(
+                (1, batch_size, sequence_length, hidden_dim),
                 dtype=ttnn.bfloat16,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
                 layout=ttnn.ROW_MAJOR_LAYOUT,
-            )
-            all_to_all_dispatch_metadata_tensors = ttnn.from_torch(
-                torch.zeros([1, batch_size, sequence_length, self.top_k], dtype=torch.int32),
                 device=self.mesh_device,
-                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                memory_config=ttnn.L1_MEMORY_CONFIG,
+            )
+            all_to_all_dispatch_metadata_tensors = ttnn.zeros(
+                (1, batch_size, sequence_length, self.top_k),
                 dtype=ttnn.uint16,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
                 layout=ttnn.ROW_MAJOR_LAYOUT,
-            )
-            all_to_all_combine_output_tensors = ttnn.from_torch(
-                torch.zeros([self.top_k, batch_size, sequence_length, hidden_dim]),
                 device=self.mesh_device,
-                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                dtype=ttnn.bfloat16,
                 memory_config=ttnn.L1_MEMORY_CONFIG,
+            )
+            all_to_all_combine_output_tensors = ttnn.zeros(
+                (self.top_k, batch_size, sequence_length, hidden_dim),
+                dtype=ttnn.bfloat16,
                 layout=ttnn.ROW_MAJOR_LAYOUT,
+                device=self.mesh_device,
+                memory_config=ttnn.L1_MEMORY_CONFIG,
             )
 
         with Profiler().trace_with_timer("all-to-all-dispatch", level=3):
