@@ -28,7 +28,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     return freqs_cis.view(*shape)
 
 
-@profile_trace("apply_rotary_emb", level=3)
+@profile_trace("apply_rotary_emb", level=4)
 def apply_rotary_emb(
     xq: ttnn.Tensor,
     xk: ttnn.Tensor,

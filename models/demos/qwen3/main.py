@@ -58,9 +58,9 @@ def main(
     ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
     tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
     config_path: Optional[str] = "/shared/models/Qwen3-30B-A3B/config.json",
-    batch_size: int = 4,
-    prompt_len: int = 64,
-    gen_tokens: int = 64,
+    batch_size: int = 2,
+    prompt_len: int = 32,
+    gen_tokens: int = 32,
     run_tt: bool = True,
     run_reference: bool = False,
 ):

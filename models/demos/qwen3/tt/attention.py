@@ -14,7 +14,7 @@ from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 
 
 class Qwen3MoeAttention(nn.Module):
-    @profile_trace("create-layer", level=2, args={"class": "Qwen3MoeAttention"})
+    @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeAttention"})
     def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
         super().__init__()
         self.config = config
@@ -52,7 +52,7 @@ class Qwen3MoeAttention(nn.Module):
         assert config.num_attention_heads % config.num_key_value_heads == 0
         assert config.sliding_window is None
 
-    @profile_trace("setup-tt", level=2, args={"class": "Qwen3MoeAttention"})
+    @profile_trace("setup-tt", level=3, args={"class": "Qwen3MoeAttention"})
     def setup_tt(self):
         if self.is_tt_setup:
             return
@@ -132,7 +132,7 @@ class Qwen3MoeAttention(nn.Module):
         )
         self.is_tt_setup = True
 
-    @profile_trace("Qwen3MoeAttention", level=2)
+    @profile_trace("Qwen3MoeAttention", level=3)
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -144,7 +144,7 @@ class Qwen3MoeAttention(nn.Module):
         batch_size, sequence_length, hidden_size = hidden_states.shape
         hidden_shape = (batch_size, sequence_length, -1, self.head_dim)
 
-        with Profiler().trace_with_timer("qkv-proj-linear", level=3):
+        with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             query_states = ttnn.linear(
                 hidden_states, self.q_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
             )
@@ -155,26 +155,26 @@ class Qwen3MoeAttention(nn.Module):
                 hidden_states, self.v_proj_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("qkv-proj-reshape", level=3):
+        with Profiler().trace_with_timer("qkv-proj-reshape", level=4):
             key_states = ttnn.reshape(key_states, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
             query_states = ttnn.reshape(query_states, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
             value_states = ttnn.reshape(value_states, hidden_shape, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        with Profiler().trace_with_timer("rmsnorm", level=3):
+        with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states = self.q_norm(query_states)
             key_states = self.k_norm(key_states)
 
-        with Profiler().trace_with_timer("rope", level=3):
+        with Profiler().trace_with_timer("rope", level=4):
             query_states, key_states = apply_rotary_emb_v2(
                 query_states, key_states, position_embeddings, self.trans_mat
             )
 
-        with Profiler().trace_with_timer("permute", level=3):
+        with Profiler().trace_with_timer("permute", level=4):
             value_states = ttnn.permute(value_states, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
 
         # Q, K, V: [B n S H]
 
-        with Profiler().trace_with_timer("kv-cache-store", level=3):
+        with Profiler().trace_with_timer("kv-cache-store", level=4):
             if mode == InferenceMode.PREFILL:
                 for b in range(batch_size):
                     ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b: b + 1], b)
@@ -189,7 +189,7 @@ class Qwen3MoeAttention(nn.Module):
                     self.cache_v, value_states, update_index=start_pos, batch_offset=0
                 )
 
-        with Profiler().trace_with_timer("kv-cache-load", level=3):
+        with Profiler().trace_with_timer("kv-cache-load", level=4):
             start_index = (0, 0, 0, 0)
             end_index = (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim)
 
@@ -202,31 +202,21 @@ class Qwen3MoeAttention(nn.Module):
                 self.cache_v, slice_start=start_index, slice_end=end_index, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("sdpa", level=3):
-            attn_out = tt_sdpa_forward(
-                query_states,
-                key_states,
-                value_states,
-                attention_mask=attention_mask if mode == InferenceMode.DECODE else None,
-                dropout=0.0,
-                scaling=self.scaling,
-                mode=mode,
-            )
-
-        tt_out = tt_sdpa_forward(
-            query_states_tt,
-            key_states_tt,
-            value_states_tt,
+        attn_out = tt_sdpa_forward(
+            query_states,
+            key_states,
+            value_states,
             attention_mask=attention_mask if mode == InferenceMode.DECODE else None,
             dropout=0.0,
             scaling=self.scaling,
             mode=mode,
-        )        
-        with Profiler().trace_with_timer("reshape", level=3):
+        )
+
+        with Profiler().trace_with_timer("reshape", level=4):
             # [B, n, S, h] -> [B, S, n * h]
             attn_out = ttnn.transformer.concatenate_heads(attn_out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        with Profiler().trace_with_timer("output-proj", level=3):
+        with Profiler().trace_with_timer("output-proj", level=4):
             linear_output = ttnn.linear(
                 attn_out,
                 self.o_proj_weight,
@@ -236,7 +226,7 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,  # Inefficient Here!
             )
 
-        with Profiler().trace_with_timer("all-reduce", level=3):
+        with Profiler().trace_with_timer("all-reduce", level=4):
             B, S, H = linear_output.shape
             linear_output = ttnn.reshape(
                 linear_output, shape=(B, S, 1, H), memory_config=ttnn.L1_MEMORY_CONFIG
@@ -258,7 +248,7 @@ class Qwen3MoeAttention(nn.Module):
             )
             ttnn.synchronize_device(self.mesh_device)
 
-        with Profiler().trace_with_timer("reshape", level=3):
+        with Profiler().trace_with_timer("reshape", level=4):
             output = ttnn.reshape(
                 linear_output_gathered,
                 (batch_size, sequence_length, hidden_size),

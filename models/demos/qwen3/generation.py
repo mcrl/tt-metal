@@ -135,19 +135,19 @@ class Qwen3MoETT:
         self.config.max_batch_size = 32
         self.config.max_seq_len = 512
 
-        with Profiler().trace_with_timer("Create-Model", level=4):
+        with Profiler().trace_with_timer("Create-Model", level=0):
             with torch.device("meta"):
                 self.model = Qwen3MoeModelTT(self.config, self.mesh_device)
 
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
 
-        with Profiler().trace_with_timer("Load-Model", level=4):
+        with Profiler().trace_with_timer("Load-Model", level=0):
             materialize(self.model)
             load(ckpt_dir, self.model)
 
         self.model.eval()
 
-        with Profiler().trace_with_timer("Setup-TT", level=4):
+        with Profiler().trace_with_timer("Setup-TT", level=0):
             self.model.setup_tt()
 
         enable_persistent_kernel_cache()
@@ -179,7 +179,7 @@ class Qwen3MoETT:
         """ Warmup """
 
         # disable_profiler()
-        with Profiler().trace_with_timer("Warmup", level=4):
+        with Profiler().trace_with_timer("Warmup", level=0):
             warmup = True
             if warmup is True:
                 for curr_pos in range(min_prompt_len, total_len):
@@ -195,7 +195,7 @@ class Qwen3MoETT:
         iter_times = []
         generate_start_time = time.time()
 
-        with Profiler().trace_with_timer("Generate", level=4):
+        with Profiler().trace_with_timer("Generate", level=0):
             for curr_pos in range(min_prompt_len, total_len):
                 iter_start_time = time.time()
                 with torch.inference_mode():

@@ -34,7 +34,7 @@ class Qwen3MoeMLP(nn.Module):
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
 
-    @profile_trace("create-layer", level=2, args={"class": "Qwen3MoeSparseMoeBlock"})
+    @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeSparseMoeBlock"})
     def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
         super().__init__()
         self.config = config
@@ -54,15 +54,15 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.layer_idx = layer_idx
         self.is_tt_setup = False
 
-    @profile_trace("setup-tt", level=2, args={"class": "Qwen3MoeSparseMoeBlock"})
+    @profile_trace("setup-tt", level=3, args={"class": "Qwen3MoeSparseMoeBlock"})
     def setup_tt(self):
         if self.is_tt_setup:
             return
 
-        with Profiler().trace_with_timer("CCL", level=3):
+        with Profiler().trace_with_timer("CCL", level=4):
             self.ccl = CCL1D(self.mesh_device)
 
-        with Profiler().trace_with_timer("gate_weight_tt", level=3):
+        with Profiler().trace_with_timer("gate_weight_tt", level=4):
             self.gate_weight = ttnn.as_tensor(
                 self.gate.weight.transpose(0, 1),
                 device=self.mesh_device,
@@ -76,7 +76,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.num_devices = self.mesh_device.get_num_devices()
         self.num_experts_per_device = self.num_experts // self.num_devices
 
-        with Profiler().trace_with_timer("expert_mapping_tensors_tt", level=3):
+        with Profiler().trace_with_timer("expert_mapping_tensors_tt", level=4):
             self.expert_mapping_tensors = ttnn.from_torch(
                 torch.eye(self.num_devices, dtype=torch.int32)
                 .repeat_interleave(self.num_experts_per_device, dim=0)
@@ -93,7 +93,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         up_proj = []
         down_proj = []
 
-        with Profiler().trace_with_timer("proj prepare", level=3):
+        with Profiler().trace_with_timer("proj prepare", level=4):
             for expert_idx in range(self.num_experts):
                 gate_proj.append(self.experts[expert_idx].gate_proj.weight)
                 up_proj.append(self.experts[expert_idx].up_proj.weight)
@@ -103,7 +103,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             up_proj = torch.stack(up_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
             down_proj = torch.stack(down_proj, dim=0).permute(0, 2, 1).unsqueeze(0)
 
-        with Profiler().trace_with_timer("proj upload", level=3):
+        with Profiler().trace_with_timer("proj upload", level=4):
             self.gate_proj = ttnn.as_tensor(
                 gate_proj,
                 device=self.mesh_device,
@@ -135,25 +135,26 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             )
         self.is_tt_setup = True
 
-    @profile_trace("Qwen3MoeSparseMoeBlock", level=2)
+    @profile_trace("Qwen3MoeSparseMoeBlock", level=3)
     def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
-        hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=ttnn.L1_MEMORY_CONFIG)
+        with Profiler().trace_with_timer("reshape", level=4):
+            hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        with Profiler().trace_with_timer("moe-router", level=3):
+        with Profiler().trace_with_timer("moe-router", level=4):
             router_logits = ttnn.linear(
                 hidden_states, self.gate_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("softmax", level=3):
+        with Profiler().trace_with_timer("softmax", level=4):
             routing_weights = ttnn.softmax(router_logits, dim=1, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        with Profiler().trace_with_timer("topk", level=3):
+        with Profiler().trace_with_timer("topk", level=4):
             routing_weights, selected_experts = ttnn.topk(
                 routing_weights, self.top_k, dim=1, largest=True, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("div", level=3):
+        with Profiler().trace_with_timer("div", level=4):
             if self.norm_topk_prob:
                 routing_weights = ttnn.div(
                     routing_weights,
@@ -161,7 +162,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     memory_config=ttnn.L1_MEMORY_CONFIG,
                 )
 
-        with Profiler().trace_with_timer("to-layout", level=3):
+        with Profiler().trace_with_timer("to-layout", level=4):
             hidden_states = ttnn.to_layout(hidden_states, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
             hidden_states = ttnn.reshape(
                 hidden_states, (batch_size, sequence_length, 1, hidden_dim), memory_config=ttnn.L1_MEMORY_CONFIG
@@ -174,7 +175,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 selected_experts, (batch_size, sequence_length, 1, self.top_k), memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("prepare-all-to-all", level=3):
+        with Profiler().trace_with_timer("prepare-all-to-all", level=4):
             all_to_all_dispatch_output_tensors = ttnn.zeros(
                 (1, batch_size, sequence_length, hidden_dim),
                 dtype=ttnn.bfloat16,
@@ -197,7 +198,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
 
-        with Profiler().trace_with_timer("all-to-all-dispatch", level=3):
+        with Profiler().trace_with_timer("all-to-all-dispatch", level=4):
             ttnn.all_to_all_dispatch(
                 hidden_states,
                 selected_experts,
@@ -224,7 +225,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 post_all_to_all_dispatch_output, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("expert-compute", level=3):
+        with Profiler().trace_with_timer("expert-compute", level=4):
             gate_proj_output = ttnn.matmul(
                 post_all_to_all_dispatch_output, self.gate_proj, memory_config=ttnn.L1_MEMORY_CONFIG
             )
@@ -250,7 +251,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
 
-        with Profiler().trace_with_timer("all-to-all-combine", level=3):
+        with Profiler().trace_with_timer("all-to-all-combine", level=4):
             ttnn.all_to_all_combine(
                 experts_output,
                 self.expert_mapping_tensors,
@@ -271,7 +272,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 post_combine_output_tensor, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("to-layout", level=3):
+        with Profiler().trace_with_timer("to-layout", level=4):
             routing_weights_rm = ttnn.to_layout(
                 routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
             )
@@ -285,7 +286,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 routing_weights_rm, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("moe-post", level=3):
+        with Profiler().trace_with_timer("moe-post", level=4):
             post_combine_output_tensor = ttnn.mul(
                 post_combine_output_tensor, routing_weights, memory_config=ttnn.L1_MEMORY_CONFIG
             )
@@ -293,7 +294,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 post_combine_output_tensor, dim=0, keepdim=True, memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("all-gather", level=3):
+        with Profiler().trace_with_timer("all-gather", level=4):
             post_combine_output_tensor_rs = ttnn.reduce_scatter(
                 post_combine_output_tensor,
                 dim=3,
@@ -313,7 +314,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             )
             ttnn.synchronize_device(self.mesh_device)
 
-        with Profiler().trace_with_timer("reshape", level=3):
+        with Profiler().trace_with_timer("reshape", level=4):
             final_hidden_states = ttnn.reshape(
                 post_combine_output_tensor_g,
                 (batch_size, sequence_length, hidden_dim),
