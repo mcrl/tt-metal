@@ -2,14 +2,6 @@ import os
 import ttnn
 import time
 
-def sync_and_time(device=None):
-    if device is not None:
-        ttnn.synchronize_device(device)
-    else:
-        ttnn.synchronize_device()
-    return time.time()
-
-
 TIMER = {}
 DEVICE_CACHE = None
 
@@ -38,7 +30,7 @@ def start_timer(key: str, device=None):
 
     device = set_and_get_device_cache(device)
 
-    now = sync_and_time(device)
+    now = time.time()
     entry = TIMER.get(key)
     if entry is None:
         TIMER[key] = {"total": 0.0, "start": now, "count": 0, "samples": []}
@@ -52,7 +44,7 @@ def stop_timer(key: str, device=None):
 
     device = set_and_get_device_cache(device)
 
-    now = sync_and_time(device)
+    now = time.time()
     entry = TIMER.get(key)
     if entry is None:
         return 0.0

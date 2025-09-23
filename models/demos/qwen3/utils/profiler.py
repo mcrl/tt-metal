@@ -5,15 +5,20 @@ import threading
 import atexit
 import fcntl
 from functools import wraps
-from models.demos.qwen3.utils.timer import start_timer, stop_timer, timer_enabled, set_and_get_device_cache, sync_and_time
+from models.demos.qwen3.utils.timer import start_timer, stop_timer, timer_enabled, set_and_get_device_cache
 
-CATEGORIES = {0: "Program", 1: "Block", 2: "Operation"}
+CATEGORIES = {0: "Phase", 1: "Program", 2: "Layer", 3: "Block", 4: "Operation"}
 EVENTS = []
 LOCK = threading.RLock()
 ENABLED = True
 
 def profiler_enabled() -> bool:
     return os.getenv("PROFILE_TRACE", "0") == "1"
+
+def level_enabled(level: int) -> bool:
+    level_list = os.getenv("PROFILE_TRACE_LEVELS", "0,1,2,3,4")
+    enabled_levels = set(int(lvl) for lvl in level_list.split(","))
+    return level in enabled_levels
 
 def get_trace_file() -> str:
     return os.getenv("PROFILE_TRACE_FILENAME", "trace.json")
@@ -134,10 +139,8 @@ class ProfilerTimerContext:
         elapsed_time = None
         if timer_enabled():
             elapsed_time = stop_timer(self.name, device=self.device)
-        
-        if profiler_enabled() and self.start_time is not None:
-            sync_and_time(self.device)
 
+        if profiler_enabled() and self.start_time is not None and level_enabled(self.level):
             end_time = time.perf_counter() * 1e6
             tid = self.level
             pid = os.getpid()
@@ -214,14 +217,13 @@ class Profiler:
         if not hasattr(self, '_open_events') or not self._open_events:
             return
         
-        sync_and_time(self.device)
         end_time = time.perf_counter() * 1e6
         
         name = self._open_events.get("name")
         level = self._open_events.get("level")
         args = self._open_events.get("args")
         
-        if name is not None and level is not None:
+        if name is not None and level is not None and level_enabled(level):
             tid = level
             
             begin_event = self._create_event(

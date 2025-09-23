@@ -33,12 +33,12 @@ def sdpa_forward_prefill(
 ) -> torch.Tensor:
     batch_size, num_attention_heads, sequence_length, head_dim = query.shape
 
-    with Profiler().trace_with_timer("padding", level=3, args={"class": "sdpa_forward_prefill"}):
+    with Profiler().trace_with_timer("padding", level=4, args={"class": "sdpa_forward_prefill"}):
         query = ttnn.to_memory_config(_explicit_pad(query, 0.0), memory_config=ttnn.DRAM_MEMORY_CONFIG)
         key = ttnn.to_memory_config(_explicit_pad(key, 0.0), memory_config=ttnn.DRAM_MEMORY_CONFIG)
         value = ttnn.to_memory_config(_explicit_pad(value, 0.0), memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
-    with Profiler().trace_with_timer("attention", level=3, args={"class": "sdpa_forward_prefill"}):
+    with Profiler().trace_with_timer("attention", level=4, args={"class": "sdpa_forward_prefill"}):
         attn_output = ttnn.transformer.scaled_dot_product_attention(
             query,
             key,
@@ -53,14 +53,14 @@ def sdpa_forward_prefill(
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-    # with Profiler().trace_with_timer("to_layout", level=3, args={"class": "sdpa_forward_prefill"}):
+    # with Profiler().trace_with_timer("to_layout", level=4, args={"class": "sdpa_forward_prefill"}):
     #     attn_output = ttnn.to_layout(
     #         ttnn.permute(attn_output, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG),
     #         layout=ttnn.TILE_LAYOUT,
     #         memory_config=ttnn.L1_MEMORY_CONFIG,
     #     )
 
-    with Profiler().trace_with_timer("slicing", level=3, args={"class": "sdpa_forward_prefill"}):
+    with Profiler().trace_with_timer("slicing", level=4, args={"class": "sdpa_forward_prefill"}):
         start_index = (0, 0, 0, 0)
         # end_index = (batch_size, sequence_length, num_attention_heads, head_dim)
         end_index = (batch_size, num_attention_heads, sequence_length, head_dim)
@@ -82,13 +82,13 @@ def sdpa_forward_decode(
     dropout: float = 0.0,
     scaling: Optional[float] = None,
 ) -> torch.Tensor:
-    with Profiler().trace_with_timer("permute", level=3):
+    with Profiler().trace_with_timer("permute", level=4):
         query = ttnn.permute(query, dims=(2, 0, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
 
-    with Profiler().trace_with_timer("padding", level=3, args={"class": "sdpa_forward_decode"}):
+    with Profiler().trace_with_timer("padding", level=4, args={"class": "sdpa_forward_decode"}):
         key = _explicit_pad(key, 0.0)
 
-    with Profiler().trace_with_timer("to_layout", level=3, args={"class": "sdpa_forward_decode"}):
+    with Profiler().trace_with_timer("to_layout", level=4, args={"class": "sdpa_forward_decode"}):
         query = ttnn.to_memory_config(
             ttnn.to_layout(query, layout=ttnn.TILE_LAYOUT), memory_config=ttnn.DRAM_MEMORY_CONFIG
         )
@@ -97,7 +97,7 @@ def sdpa_forward_decode(
             ttnn.to_layout(value, layout=ttnn.TILE_LAYOUT), memory_config=ttnn.DRAM_MEMORY_CONFIG
         )
 
-    with Profiler().trace_with_timer("attention", level=3, args={"class": "sdpa_forward_decode"}):
+    with Profiler().trace_with_timer("attention", level=4, args={"class": "sdpa_forward_decode"}):
         attn_output = ttnn.transformer.scaled_dot_product_attention_decode(
             query,
             key,
@@ -112,11 +112,11 @@ def sdpa_forward_decode(
             # memory_config=ttnn.L1_MEMORY_CONFIG,  # Incorrect Results!
         )
 
-    with Profiler().trace_with_timer("permute", level=3):
+    with Profiler().trace_with_timer("permute", level=4):
         # [S=1, B, n, h] -> [B, n, S=1, h]
         attn_output = ttnn.permute(attn_output, dims=(1, 2, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
 
-    with Profiler().trace_with_timer("to_layout", level=3, args={"class": "sdpa_forward_decode"}):
+    with Profiler().trace_with_timer("to_layout", level=4, args={"class": "sdpa_forward_decode"}):
         attn_output = ttnn.to_layout(attn_output, layout=ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
 
     return attn_output

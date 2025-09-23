@@ -39,7 +39,7 @@ def load(ckpt_dir: str, model: nn.Module, io_workers: int = 4, blas_workers: int
 
     torch.set_num_threads(num_threads)
 
-@profile_trace("load-model", level=0)
+@profile_trace("load-model", level=1)
 def materialize(model: nn.Module) -> None:
     seen_param_map = dict()
 
