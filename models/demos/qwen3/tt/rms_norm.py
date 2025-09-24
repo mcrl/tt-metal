@@ -22,7 +22,7 @@ class Qwen3MoeRMSNorm(nn.Module):
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            cache_file_name=Path.home() / ".cache/weights" / f"rmsnorm_{id(self)}_weight",
+            # cache_file_name=Path.home() / ".cache/weights" / f"rmsnorm_{id(self)}_weight",
         )
         self.is_tt_setup = True
 
