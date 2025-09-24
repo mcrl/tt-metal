@@ -245,6 +245,9 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
 
+        with Profiler().trace_with_timer("reshape", level=3):
+            output = ttnn.reshape(linear_output_ttnn_gathered, (batch_size, sequence_length, hidden_size))
+
         return output
 
 

@@ -328,6 +328,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 (batch_size, sequence_length, hidden_dim),
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
+            ttnn.synchronize_device(self.mesh_device)
 
         return final_hidden_states
 

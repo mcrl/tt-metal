@@ -177,7 +177,6 @@ class Qwen3MoETT:
         input_text_mask = torch.ne(tokens, pad_id)
 
         """ Warmup """
-
         # disable_profiler()
         with Profiler().trace_with_timer("Warmup", level=0):
             warmup = True
