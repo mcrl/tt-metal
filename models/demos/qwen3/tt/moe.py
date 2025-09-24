@@ -228,13 +228,20 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         with Profiler().trace_with_timer("expert-compute", level=4):
             gate_proj_output = ttnn.matmul(hidden_states, self.gate_proj, memory_config=ttnn.L1_MEMORY_CONFIG)
             up_proj_output = ttnn.matmul(hidden_states, self.up_proj, memory_config=ttnn.L1_MEMORY_CONFIG)
+            ttnn.deallocate(hidden_states)
+
             glu_output = ttnn.mul(
                 gate_proj_output,
                 up_proj_output,
                 memory_config=ttnn.L1_MEMORY_CONFIG,
                 input_tensor_a_activations=[ttnn.UnaryOpType.SILU],
             )
+            ttnn.deallocate(gate_proj_output)
+            ttnn.deallocate(up_proj_output)
+
             experts_output = ttnn.matmul(glu_output, self.down_proj, memory_config=ttnn.L1_MEMORY_CONFIG)
+            ttnn.deallocate(glu_output)
+
             experts_output = ttnn.to_layout(experts_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
             experts_output = ttnn.reshape(
                 experts_output,

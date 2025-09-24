@@ -2,6 +2,22 @@ import os
 import ttnn
 import time
 
+
+def sync(device=None):
+    if device is not None:
+        ttnn.synchronize_device(device)
+    else:
+        ttnn.synchronize_device()
+
+
+def sync_and_time(device=None):
+    if device is not None:
+        ttnn.synchronize_device(device)
+    else:
+        ttnn.synchronize_device()
+    return time.time()
+
+
 TIMER = {}
 DEVICE_CACHE = None
 
@@ -30,7 +46,7 @@ def start_timer(key: str, device=None):
 
     device = set_and_get_device_cache(device)
 
-    now = time.time()
+    now = sync_and_time(device)
     entry = TIMER.get(key)
     if entry is None:
         TIMER[key] = {"total": 0.0, "start": now, "count": 0, "samples": []}
@@ -44,7 +60,7 @@ def stop_timer(key: str, device=None):
 
     device = set_and_get_device_cache(device)
 
-    now = time.time()
+    now = sync_and_time(device)
     entry = TIMER.get(key)
     if entry is None:
         return 0.0
@@ -78,7 +94,9 @@ def print_timer_all():
         max_sample = max(entry.get("samples", []))
         samples = entry.get("samples", [])
         samples_str = ", ".join(f"{sample * 1000:.2f}ms" for sample in samples)
-        print(f"\n[{key}] total={total * 1000:.3f}ms, count={count}, avg={avg * 1000:.3f}ms, min={min_sample * 1000:.2f}ms, max={max_sample * 1000:.2f}ms")
+        print(
+            f"\n[{key}] total={total * 1000:.3f}ms, count={count}, avg={avg * 1000:.3f}ms, min={min_sample * 1000:.2f}ms, max={max_sample * 1000:.2f}ms"
+        )
         print(f"{samples_str}")
 
 
@@ -95,7 +113,9 @@ def timed(name: str | None = None):
                 return func(*args, **kwargs)
             finally:
                 stop_timer(key, device=device)
+
         return wrapper
+
     return decorator
 
 
