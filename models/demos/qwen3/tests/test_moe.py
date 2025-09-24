@@ -4,8 +4,8 @@ import json
 import os
 from torch import nn
 
-import ttnn
 import tt_lock
+import ttnn
 
 from transformers import AutoConfig
 from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeDecoderLayer
@@ -18,7 +18,7 @@ from models.demos.qwen3.utils.timer import set_and_get_device_cache
 
 def create_test_config():
     config_path = "/shared/models/Qwen3-30B-A3B/config.json"
-    
+
     with open(config_path, "r") as f:
         data = json.load(f)
     return Qwen3MoeConfig.from_dict(data)
@@ -32,7 +32,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
     config._attn_implementation = "sdpa"
 
     layer = Qwen3MoeDecoderLayer(config, layer_idx)
-    
+
     weight_path = f"/shared/models/Qwen3-30B-A3B/layer_{layer_idx}.pt"
     if os.path.exists(weight_path):
         layer.load_state_dict(torch.load(weight_path)["state_dict"])
@@ -58,17 +58,15 @@ def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
-    
     # Load reference layer
     ref_layer = load_reference_layer(seq_len=seq_len)
     ref_mlp = ref_layer.mlp
-    
     # Create TT MoE
     config = create_test_config()
     layer_idx = 0
     start_pos = 0
     tt_mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device)
-    
+
     # Copy gate weights from reference
     tt_mlp.gate.weight.data = ref_mlp.gate.weight.data.clone()
 
@@ -80,7 +78,7 @@ def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
             tt_expert.up_proj.weight.data = ref_expert.up_proj.weight.data.clone()
             tt_expert.down_proj.weight.data = ref_expert.down_proj.weight.data.clone()
     tt_mlp.setup_tt()
-    
+
     hidden_states = torch.randn(batch_size, seq_len, config.hidden_size, dtype=torch.bfloat16)
     ref_output = ref_mlp(hidden_states)
 
@@ -94,12 +92,11 @@ def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
     )
     output_tt = tt_mlp(hidden_states_tt)
     tt_output = ttnn.to_torch(
-        output_tt,
-        dtype=torch.bfloat16,
-        mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
+        output_tt, dtype=torch.bfloat16, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
     )
-    
+
     compare_tensor_pcc(ref_output, tt_output[:batch_size, :, :])
+
 
 if __name__ == "__main__":
     pytest.main([__file__])
