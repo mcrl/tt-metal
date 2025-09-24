@@ -135,72 +135,36 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             )
         self.is_tt_setup = True
 
-    CACHED_KEY = None
-    CACHED_TENSORS = [None, None, None]
-
-    @classmethod
-    def moe_tensor_caches(cls, batch_size, sequence_length, hidden_dim, top_k, mesh_device):
-        key = (batch_size, sequence_length, hidden_dim, top_k)
-
-        if key == cls.CACHED_KEY:
-            for i in range(len(cls.CACHED_TENSORS)):
-                ttnn.full_like(cls.CACHED_TENSORS[i], 0, optional_tensor=cls.CACHED_TENSORS[i])
-            return cls.CACHED_TENSORS
-
-        cls.CACHED_KEY = key
-        cls.CACHED_TENSORS[0] = ttnn.zeros(
-            (1, batch_size, sequence_length, hidden_dim),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=mesh_device,
-            memory_config=ttnn.L1_MEMORY_CONFIG,
-        )
-        cls.CACHED_TENSORS[1] = ttnn.zeros(
-            (1, batch_size, sequence_length, top_k),
-            dtype=ttnn.uint16,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=mesh_device,
-            memory_config=ttnn.L1_MEMORY_CONFIG,
-        )
-        cls.CACHED_TENSORS[2] = ttnn.zeros(
-            (top_k, batch_size, sequence_length, hidden_dim),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=mesh_device,
-            memory_config=ttnn.L1_MEMORY_CONFIG,
-        )
-
-        return cls.moe_tensor_caches(batch_size, sequence_length, hidden_dim, top_k, mesh_device)
-
     @profile_trace("Qwen3MoeSparseMoeBlock", level=3)
     def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
+
+        mem_cfg = ttnn.L1_MEMORY_CONFIG if sequence_length == 1 else ttnn.DRAM_MEMORY_CONFIG
+
         with Profiler().trace_with_timer("reshape", level=4):
-            hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=ttnn.L1_MEMORY_CONFIG)
+            hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("moe-router", level=4):
-            router_logits = ttnn.linear(
-                hidden_states, self.gate_weight, dtype=ttnn.bfloat16, memory_config=ttnn.L1_MEMORY_CONFIG
-            )
+            router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("softmax-topk-div", level=4):
-            routing_weights = ttnn.softmax(router_logits, dim=1, memory_config=ttnn.L1_MEMORY_CONFIG)
+            routing_weights = ttnn.softmax(router_logits, dim=1, memory_config=mem_cfg)
             routing_weights, selected_experts = ttnn.topk(
-                routing_weights, self.top_k, dim=1, largest=True, memory_config=ttnn.L1_MEMORY_CONFIG
+                routing_weights, self.top_k, dim=1, largest=True, memory_config=mem_cfg
             )
             if self.norm_topk_prob:
                 routing_weights = ttnn.div(
                     routing_weights,
-                    ttnn.sum(routing_weights, dim=1, keepdim=True, memory_config=ttnn.L1_MEMORY_CONFIG),
-                    memory_config=ttnn.L1_MEMORY_CONFIG,
+                    ttnn.sum(routing_weights, dim=1, keepdim=True, memory_config=mem_cfg),
+                    memory_config=mem_cfg,
                 )
 
         with Profiler().trace_with_timer("to-layout", level=4):
             selected_experts = ttnn.to_layout(
-                selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
+                selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG
             )
             selected_experts = ttnn.reshape(
-                selected_experts, (1, batch_size, sequence_length, self.top_k), memory_config=ttnn.L1_MEMORY_CONFIG
+                selected_experts, (1, batch_size, sequence_length, self.top_k), memory_config=ttnn.DRAM_MEMORY_CONFIG
             )
 
         with Profiler().trace_with_timer("prepare-all-to-all", level=4):
@@ -209,44 +173,44 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat16,
                 layout=ttnn.ROW_MAJOR_LAYOUT,
                 device=self.mesh_device,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
 
         with Profiler().trace_with_timer("repeat-hidden", level=4):
             hidden_states = ttnn.reshape(
                 hidden_states,
                 shape=(1, 1, batch_size * sequence_length, hidden_dim),
-                memory_config=ttnn.L1_MEMORY_CONFIG,
+                memory_config=mem_cfg,
             )
             hidden_states = ttnn.repeat(
                 hidden_states,
                 ttnn.Shape((1, self.num_experts_per_device, 1, 1)),
-                memory_config=ttnn.L1_MEMORY_CONFIG,
+                memory_config=mem_cfg,
             )
-            hidden_states = ttnn.to_layout(hidden_states, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
+            hidden_states = ttnn.to_layout(hidden_states, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("expert-compute", level=4):
-            gate_proj_output = ttnn.matmul(hidden_states, self.gate_proj, memory_config=ttnn.L1_MEMORY_CONFIG)
-            up_proj_output = ttnn.matmul(hidden_states, self.up_proj, memory_config=ttnn.L1_MEMORY_CONFIG)
+            gate_proj_output = ttnn.matmul(hidden_states, self.gate_proj, memory_config=mem_cfg)
+            up_proj_output = ttnn.matmul(hidden_states, self.up_proj, memory_config=mem_cfg)
             ttnn.deallocate(hidden_states)
 
             glu_output = ttnn.mul(
                 gate_proj_output,
                 up_proj_output,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
+                memory_config=mem_cfg,
                 input_tensor_a_activations=[ttnn.UnaryOpType.SILU],
             )
             ttnn.deallocate(gate_proj_output)
             ttnn.deallocate(up_proj_output)
 
-            experts_output = ttnn.matmul(glu_output, self.down_proj, memory_config=ttnn.L1_MEMORY_CONFIG)
+            experts_output = ttnn.matmul(glu_output, self.down_proj, memory_config=mem_cfg)
             ttnn.deallocate(glu_output)
 
-            experts_output = ttnn.to_layout(experts_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
+            experts_output = ttnn.to_layout(experts_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
             experts_output = ttnn.reshape(
                 experts_output,
                 (self.num_experts_per_device, batch_size, sequence_length, hidden_dim),
-                memory_config=ttnn.L1_MEMORY_CONFIG,
+                memory_config=mem_cfg,
             )
 
         with Profiler().trace_with_timer("all-to-all-combine", level=4):
@@ -256,7 +220,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 selected_experts,
                 optional_output_tensor=all_to_all_combine_output_tensors,
                 axis=0,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
                 global_semaphore=self.ccl.get_semaphore(0),
                 init_semaphore=self.ccl.get_semaphore(0),
@@ -265,32 +229,33 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             combined_output = ttnn.reshape(
                 all_to_all_combine_output_tensors,
                 shape=(self.top_k, 1, batch_size * sequence_length, hidden_dim),
-                memory_config=ttnn.L1_MEMORY_CONFIG,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
 
         with Profiler().trace_with_timer("to-layout", level=4):
-            routing_weights = ttnn.to_layout(
-                routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
-            )
-            routing_weights = ttnn.repeat(
-                routing_weights, ttnn.Shape((hidden_dim, 1, 1, 1)), memory_config=ttnn.L1_MEMORY_CONFIG
-            )
-            routing_weights = ttnn.permute(routing_weights, (3, 1, 2, 0), memory_config=ttnn.L1_MEMORY_CONFIG)
-            routing_weights = ttnn.to_layout(routing_weights, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
+            routing_weights = ttnn.to_layout(routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
+            routing_weights = ttnn.repeat(routing_weights, ttnn.Shape((hidden_dim, 1, 1, 1)), memory_config=mem_cfg)
+            routing_weights = ttnn.permute(routing_weights, (3, 1, 2, 0), memory_config=mem_cfg)
+            routing_weights = ttnn.to_layout(routing_weights, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("moe-post", level=4):
-            combined_output = ttnn.mul(combined_output, routing_weights, memory_config=ttnn.L1_MEMORY_CONFIG)
-            combined_output = ttnn.sum(combined_output, dim=0, keepdim=True, memory_config=ttnn.L1_MEMORY_CONFIG)
+            combined_output_2 = ttnn.mul(combined_output, routing_weights, memory_config=mem_cfg)
+            ttnn.deallocate(routing_weights)
+            ttnn.deallocate(combined_output)
+
+            combined_output_3 = ttnn.sum(combined_output_2, dim=0, keepdim=True, memory_config=mem_cfg)
+            ttnn.deallocate(combined_output_2)
 
         with Profiler().trace_with_timer("all-reduce", level=4):
-            combined_output = ttnn.reshape(
-                combined_output,
+            combined_output_4 = ttnn.reshape(
+                combined_output_3,
                 shape=(1, 1, batch_size * sequence_length * hidden_dim // 256, 256),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
             combined_output_g = ttnn.experimental.all_reduce(
-                combined_output,
+                combined_output_4,
                 math_op=ttnn.ReduceType.Sum,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 topology=ttnn.Topology.Ring,
             )
 
@@ -298,6 +263,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             final_hidden_states = ttnn.reshape(
                 combined_output_g,
                 (batch_size, sequence_length, hidden_dim),
+                memory_config=mem_cfg,
             )
 
         return final_hidden_states

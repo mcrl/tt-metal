@@ -240,6 +240,7 @@ class Qwen3MoETT:
                 #         trace_execute_end_time = time.time()
                 #         print(f"Trace execute time: {(trace_execute_end_time - trace_execute_start_time) * 1000:.3f}ms")
                 #     ttnn.release_trace(self.mesh_device, trace_id)
+                #     exit(0)
 
                 logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
 

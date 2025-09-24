@@ -27,8 +27,9 @@ class Qwen3MoeRMSNorm(nn.Module):
         self.is_tt_setup = True
 
     def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
+        mem_cfg = ttnn.L1_MEMORY_CONFIG if hidden_states.shape[1] == 1 else ttnn.DRAM_MEMORY_CONFIG
         return ttnn.rms_norm(
-            hidden_states, epsilon=self.variance_epsilon, weight=self.weight_tensor, memory_config=ttnn.L1_MEMORY_CONFIG
+            hidden_states, epsilon=self.variance_epsilon, weight=self.weight_tensor, memory_config=mem_cfg
         )
 
 
