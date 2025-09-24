@@ -177,14 +177,12 @@ class Qwen3MoeAttention(nn.Module):
         with Profiler().trace_with_timer("kv-cache-store", level=4):
             if mode == InferenceMode.PREFILL:
                 for b in range(batch_size):
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b: b + 1], b)
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b: b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b : b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b : b + 1], b)
             elif mode == InferenceMode.DECODE:
                 key_states = ttnn.permute(key_states, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
                 value_states = ttnn.permute(value_states, dims=(2, 1, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
-                ttnn.kv_cache.update_cache_for_token_(
-                    self.cache_k, key_states, update_index=start_pos, batch_offset=0
-                )
+                ttnn.kv_cache.update_cache_for_token_(self.cache_k, key_states, update_index=start_pos, batch_offset=0)
                 ttnn.kv_cache.update_cache_for_token_(
                     self.cache_v, value_states, update_index=start_pos, batch_offset=0
                 )
@@ -223,34 +221,26 @@ class Qwen3MoeAttention(nn.Module):
                 transpose_a=False,
                 transpose_b=True,
                 dtype=ttnn.bfloat16,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,  # Inefficient Here!
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
 
         with Profiler().trace_with_timer("all-reduce", level=4):
             B, S, H = linear_output.shape
             linear_output = ttnn.reshape(
-                linear_output, shape=(B, S, 1, H), memory_config=ttnn.L1_MEMORY_CONFIG
+                linear_output, shape=(1, 1, B * S * H // 256, 256), memory_config=ttnn.DRAM_MEMORY_CONFIG
             )
-            linear_output_ttnn_reduced = ttnn.reduce_scatter(
+            linear_output = ttnn.experimental.all_reduce(
                 linear_output,
-                dim=-1,
                 math_op=ttnn.ReduceType.Sum,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                topology=ttnn.Topology.Linear,
+                memory_config=ttnn.L1_MEMORY_CONFIG,
+                topology=ttnn.Topology.Ring,
             )
             ttnn.synchronize_device(self.mesh_device)
-            linear_output_gathered = ttnn.all_gather(
-                linear_output_ttnn_reduced,
-                dim=-1,
-                cluster_axis=1,
-                topology=ttnn.Topology.Linear,
-                mesh_device=self.mesh_device,
-            )
-            ttnn.synchronize_device(self.mesh_device)
+            linear_output = ttnn.reshape(linear_output, shape=(B, S, H), memory_config=ttnn.L1_MEMORY_CONFIG)
 
         with Profiler().trace_with_timer("reshape", level=4):
             output = ttnn.reshape(
-                linear_output_gathered,
+                linear_output,
                 (batch_size, sequence_length, hidden_size),
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
