@@ -27,7 +27,6 @@ def sdpa_forward_prefill(
     query: ttnn.Tensor,
     key: ttnn.Tensor,
     value: ttnn.Tensor,
-    attention_mask: Optional[ttnn.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
 ) -> torch.Tensor:
@@ -43,7 +42,7 @@ def sdpa_forward_prefill(
             query,
             key,
             value,
-            attn_mask=attention_mask,
+            attn_mask=None,
             is_causal=True,
             scale=scaling,
             compute_kernel_config=ttnn.WormholeComputeKernelConfig(
@@ -78,7 +77,6 @@ def sdpa_forward_decode(
     query: ttnn.Tensor,
     key: ttnn.Tensor,
     value: ttnn.Tensor,
-    attention_mask: Optional[ttnn.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
 ) -> torch.Tensor:
@@ -126,14 +124,13 @@ def sdpa_forward(
     query: ttnn.Tensor,
     key: ttnn.Tensor,
     value: ttnn.Tensor,
-    attention_mask: Optional[ttnn.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
     mode: InferenceMode = InferenceMode.PREFILL,
 ) -> torch.Tensor:
     if mode == InferenceMode.PREFILL:
-        return sdpa_forward_prefill(query, key, value, attention_mask, dropout, scaling)
+        return sdpa_forward_prefill(query, key, value, dropout, scaling)
     elif mode == InferenceMode.DECODE:
-        return sdpa_forward_decode(query, key, value, attention_mask, dropout, scaling)
+        return sdpa_forward_decode(query, key, value, dropout, scaling)
     else:
         raise ValueError(f"Unsupported mode: {mode}")

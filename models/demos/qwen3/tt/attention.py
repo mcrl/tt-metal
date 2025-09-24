@@ -138,7 +138,6 @@ class Qwen3MoeAttention(nn.Module):
         hidden_states: torch.Tensor,
         start_pos: int,
         position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
-        attention_mask: ttnn.Tensor,
         mode: InferenceMode = InferenceMode.PREFILL,
     ) -> torch.Tensor:
         batch_size, sequence_length, hidden_size = hidden_states.shape
@@ -204,7 +203,6 @@ class Qwen3MoeAttention(nn.Module):
             query_states,
             key_states,
             value_states,
-            attention_mask=attention_mask if mode == InferenceMode.DECODE else None,
             dropout=0.0,
             scaling=self.scaling,
             mode=mode,

@@ -53,7 +53,6 @@ class Qwen3MoeDecoderLayer(nn.Module):
         hidden_states: ttnn.Tensor,
         start_pos: int,
         position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
-        attention_mask: ttnn.Tensor,
         mode: InferenceMode = InferenceMode.PREFILL,
     ) -> ttnn.Tensor:
 
@@ -65,8 +64,6 @@ class Qwen3MoeDecoderLayer(nn.Module):
             hidden_states=attn_input,
             start_pos=start_pos,
             position_embeddings=position_embeddings,
-            position_embeddings_tt=position_embeddings_tt,
-            attention_mask=attention_mask,
             mode=mode,
         )
 
@@ -130,62 +127,34 @@ class Qwen3MoeModel(nn.Module):
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=Path.home() / ".cache/weights/lm_head_weight",
         )
+
+        self.position_embeddings_v2_cos = ttnn.from_torch(
+            self.position_embeddings_v2_cpu[0],
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
+        self.position_embeddings_v2_sin = ttnn.from_torch(
+            self.position_embeddings_v2_cpu[1],
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
+
         self.is_tt_setup = True
 
     @profile_trace("Qwen3MoeModel", level=1)
-    def forward(
-        self, input_ids: torch.LongTensor, start_pos: int = 0, mode: InferenceMode = InferenceMode.PREFILL
-    ) -> torch.Tensor:
-        # Normalize mode to InferenceMode enum (caller may pass a string)
+    def forward(self, ids: ttnn.Tensor, start_pos: int = 0, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
         if isinstance(mode, str):
             mode = InferenceMode(mode)
 
-        batch_size, sequence_length = input_ids.shape
-        input_ids_cpu = input_ids
-
-        pos_embs_cos_cpu = self.position_embeddings_v2_cpu[0][start_pos: start_pos + sequence_length]
-        pos_embs_sin_cpu = self.position_embeddings_v2_cpu[1][start_pos: start_pos + sequence_length]
-
-        with Profiler().trace_with_timer("input-transfer", level=4, args={"class": "Qwen3MoeModel"}):
-            cos = ttnn.from_torch(
-                pos_embs_cos_cpu,
-                dtype=ttnn.bfloat16,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
-                device=self.mesh_device,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            )
-            sin = ttnn.from_torch(
-                pos_embs_sin_cpu,
-                dtype=ttnn.bfloat16,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
-                device=self.mesh_device,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            )
-
-            attention_mask_cpu = (
-                torch.full(size=(1, 1, sequence_length, start_pos + sequence_length), fill_value=True, dtype=torch.bool)
-                .triu_(diagonal=start_pos + 1)
-                .logical_not_()
-            )
-
-            attention_mask = ttnn.from_torch(
-                attention_mask_cpu.repeat(batch_size, self.mesh_device.shape[1], 1, 1),
-                device=self.mesh_device,
-                mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                dtype=ttnn.bfloat16,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            )
-
-            ids = ttnn.from_torch(
-                input_ids_cpu,
-                device=self.mesh_device,
-                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                dtype=ttnn.uint32,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
-            )
+        batch_size, sequence_length = ids.shape
+        cos = self.position_embeddings_v2_cos[start_pos : start_pos + sequence_length]
+        sin = self.position_embeddings_v2_sin[start_pos : start_pos + sequence_length]
 
         with Profiler().trace_with_timer("embedding", level=4, args={"class": "Qwen3MoeModel"}):
             hidden_states = ttnn.embedding(ids, self.embedding_weight, dtype=ttnn.bfloat16)
@@ -196,7 +165,6 @@ class Qwen3MoeModel(nn.Module):
                 hidden_states=hidden_states,
                 start_pos=start_pos,
                 position_embeddings=position_embeddings,
-                attention_mask=attention_mask,
                 mode=mode,
             )
 
@@ -206,12 +174,7 @@ class Qwen3MoeModel(nn.Module):
         with Profiler().trace_with_timer("LMhead", level=4, args={"class": "Qwen3MoeModel"}):
             logits = ttnn.linear(hidden_states, self.lm_head_weight, dtype=ttnn.bfloat16)
 
-        with Profiler().trace_with_timer("output-transfer", level=4, args={"class": "Qwen3MoeModel"}):
-            logits_cpu = ttnn.to_torch(
-                logits, dtype=self.config.dtype, mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2)
-            )
-
-        return logits_cpu
+        return logits
 
 
 __all__ = ["Qwen3MoeModel"]

@@ -185,7 +185,20 @@ class Qwen3MoETT:
                 for curr_pos in range(min_prompt_len, total_len):
                     with torch.inference_mode():
                         mode = "prefill" if prev_pos == 0 else "decode"
-                        logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
+                        ids = ttnn.from_torch(
+                            tokens[:, prev_pos:curr_pos],
+                            device=self.mesh_device,
+                            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                            dtype=ttnn.uint32,
+                            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                            layout=ttnn.ROW_MAJOR_LAYOUT,
+                        )
+                        logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
+                        logits = ttnn.to_torch(
+                            logits_tt,
+                            dtype=self.config.dtype,
+                            mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
+                        )
                     prev_pos = curr_pos
         # enable_profiler()
 
@@ -198,9 +211,21 @@ class Qwen3MoETT:
         with Profiler().trace_with_timer("Generate", level=0):
             for curr_pos in range(min_prompt_len, total_len):
                 iter_start_time = time.time()
-                with torch.inference_mode():
-                    mode = "prefill" if prev_pos == 0 else "decode"
-                    logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
+                mode = "prefill" if prev_pos == 0 else "decode"
+                ids = ttnn.from_torch(
+                    tokens[:, prev_pos:curr_pos],
+                    device=self.mesh_device,
+                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                    dtype=ttnn.uint32,
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    layout=ttnn.ROW_MAJOR_LAYOUT,
+                )
+                logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
+                logits = ttnn.to_torch(
+                    logits_tt,
+                    dtype=self.config.dtype,
+                    mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
+                )
                 iter_times.append(time.time() - iter_start_time)
 
                 if temperature > 0:
@@ -218,7 +243,7 @@ class Qwen3MoETT:
                     torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
                 )
                 prev_pos = curr_pos
-                print_memory_state(self.mesh_device)
+                # print_memory_state(self.mesh_device)
                 if all(eos_reached):
                     break
 
