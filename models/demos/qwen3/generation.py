@@ -220,7 +220,29 @@ class Qwen3MoETT:
                     memory_config=ttnn.DRAM_MEMORY_CONFIG,
                     layout=ttnn.ROW_MAJOR_LAYOUT,
                 )
+
+                # if curr_pos > min_prompt_len:
+                #     print("Begin trace capture")
+                #     ttnn.synchronize_device(self.mesh_device)
+                #     trace_capture_start_time = time.time()
+                #     trace_id = ttnn.begin_trace_capture(self.mesh_device, cq_id=0)
+                #     logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
+                #     ttnn.end_trace_capture(self.mesh_device, trace_id)
+                #     ttnn.synchronize_device(self.mesh_device)
+                #     trace_capture_end_time = time.time()
+                #     print(f"Trace capture time: {(trace_capture_end_time - trace_capture_start_time) * 1000:.3f}ms")
+
+                #     for i in range(10):
+                #         ttnn.synchronize_device(self.mesh_device)
+                #         trace_execute_start_time = time.time()
+                #         ttnn.execute_trace(self.mesh_device, trace_id, cq_id=0, blocking=False)
+                #         ttnn.synchronize_device(self.mesh_device)
+                #         trace_execute_end_time = time.time()
+                #         print(f"Trace execute time: {(trace_execute_end_time - trace_execute_start_time) * 1000:.3f}ms")
+                #     ttnn.release_trace(self.mesh_device, trace_id)
+
                 logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
+
                 logits = ttnn.to_torch(
                     logits_tt,
                     dtype=self.config.dtype,

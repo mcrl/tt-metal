@@ -233,7 +233,6 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.L1_MEMORY_CONFIG,
                 topology=ttnn.Topology.Ring,
             )
-            ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.reshape(linear_output, shape=(B, S, H), memory_config=ttnn.L1_MEMORY_CONFIG)
 
         with Profiler().trace_with_timer("reshape", level=4):

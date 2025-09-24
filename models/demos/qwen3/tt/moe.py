@@ -261,7 +261,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 global_semaphore=self.ccl.get_semaphore(0),
                 init_semaphore=self.ccl.get_semaphore(0),
             )
-            ttnn.synchronize_device(self.mesh_device)
 
             combined_output = ttnn.reshape(
                 all_to_all_combine_output_tensors,
@@ -294,7 +293,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 memory_config=ttnn.L1_MEMORY_CONFIG,
                 topology=ttnn.Topology.Ring,
             )
-            ttnn.synchronize_device(self.mesh_device)
 
         with Profiler().trace_with_timer("reshape", level=4):
             final_hidden_states = ttnn.reshape(
