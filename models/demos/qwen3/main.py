@@ -23,7 +23,9 @@ def perftest_tt(
     tokenizer_path: str,
     config_path: str,
 ):
-    mesh_device = create_mesh_device()
+    # Create device with trace region size for trace capture
+    device_params = {"trace_region_size": 128 * 1024 * 1024}  # 256MB
+    mesh_device = create_mesh_device(device_params)
     set_and_get_device_cache(mesh_device)
 
     qwen3_moe = Qwen3MoETT(
