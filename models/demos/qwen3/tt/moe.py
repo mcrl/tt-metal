@@ -196,70 +196,45 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 )
 
         with Profiler().trace_with_timer("to-layout", level=4):
-            hidden_states = ttnn.to_layout(hidden_states, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
-            hidden_states = ttnn.reshape(
-                hidden_states, (batch_size, 1, sequence_length, hidden_dim), memory_config=ttnn.L1_MEMORY_CONFIG
-            )
-
             selected_experts = ttnn.to_layout(
                 selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
             )
             selected_experts = ttnn.reshape(
-                selected_experts, (batch_size, 1, sequence_length, self.top_k), memory_config=ttnn.L1_MEMORY_CONFIG
+                selected_experts, (1, batch_size, sequence_length, self.top_k), memory_config=ttnn.L1_MEMORY_CONFIG
             )
 
         with Profiler().trace_with_timer("prepare-all-to-all", level=4):
-            (
-                all_to_all_dispatch_output_tensors,
-                all_to_all_dispatch_metadata_tensors,
-                all_to_all_combine_output_tensors,
-            ) = self.moe_tensor_caches(batch_size, sequence_length, hidden_dim, self.top_k, self.mesh_device)
-
-        with Profiler().trace_with_timer("all-to-all-dispatch", level=4):
-            ttnn.all_to_all_dispatch(
-                hidden_states,
-                selected_experts,
-                self.expert_mapping_tensors,
-                output_tensors=[all_to_all_dispatch_output_tensors, all_to_all_dispatch_metadata_tensors],
-                cluster_axis=0,
+            all_to_all_combine_output_tensors = ttnn.zeros(
+                (self.top_k, batch_size, sequence_length, hidden_dim),
+                dtype=ttnn.bfloat16,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+                device=self.mesh_device,
                 memory_config=ttnn.L1_MEMORY_CONFIG,
-                num_links=1,
-                topology=ttnn.Topology.Linear,
-                global_semaphore=self.ccl.get_semaphore(0),
-                init_semaphore=self.ccl.get_semaphore(0),
             )
 
-            post_all_to_all_dispatch_output = ttnn.reshape(
-                all_to_all_dispatch_output_tensors,
+        with Profiler().trace_with_timer("repeat-hidden", level=4):
+            hidden_states = ttnn.reshape(
+                hidden_states,
                 shape=(1, 1, batch_size * sequence_length, hidden_dim),
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
-            post_all_to_all_dispatch_output = ttnn.repeat(
-                post_all_to_all_dispatch_output,
+            hidden_states = ttnn.repeat(
+                hidden_states,
                 ttnn.Shape((1, self.num_experts_per_device, 1, 1)),
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
-            post_all_to_all_dispatch_output = ttnn.to_layout(
-                post_all_to_all_dispatch_output, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
-            )
+            hidden_states = ttnn.to_layout(hidden_states, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         with Profiler().trace_with_timer("expert-compute", level=4):
-            gate_proj_output = ttnn.matmul(
-                post_all_to_all_dispatch_output, self.gate_proj, memory_config=ttnn.L1_MEMORY_CONFIG
-            )
-            up_proj_output = ttnn.matmul(
-                post_all_to_all_dispatch_output, self.up_proj, memory_config=ttnn.L1_MEMORY_CONFIG
-            )
-
+            gate_proj_output = ttnn.matmul(hidden_states, self.gate_proj, memory_config=ttnn.L1_MEMORY_CONFIG)
+            up_proj_output = ttnn.matmul(hidden_states, self.up_proj, memory_config=ttnn.L1_MEMORY_CONFIG)
             glu_output = ttnn.mul(
                 gate_proj_output,
                 up_proj_output,
                 memory_config=ttnn.L1_MEMORY_CONFIG,
                 input_tensor_a_activations=[ttnn.UnaryOpType.SILU],
             )
-
             experts_output = ttnn.matmul(glu_output, self.down_proj, memory_config=ttnn.L1_MEMORY_CONFIG)
-
             experts_output = ttnn.to_layout(experts_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
             experts_output = ttnn.reshape(
                 experts_output,
@@ -271,7 +246,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             ttnn.all_to_all_combine(
                 experts_output,
                 self.expert_mapping_tensors,
-                all_to_all_dispatch_metadata_tensors,
+                selected_experts,
                 optional_output_tensor=all_to_all_combine_output_tensors,
                 axis=0,
                 memory_config=ttnn.L1_MEMORY_CONFIG,
@@ -281,41 +256,33 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             )
             ttnn.synchronize_device(self.mesh_device)
 
-            post_combine_output_tensor = ttnn.reshape(
+            combined_output = ttnn.reshape(
                 all_to_all_combine_output_tensors,
                 shape=(self.top_k, 1, batch_size * sequence_length, hidden_dim),
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             )
-            # post_combine_output_tensor = ttnn.to_layout(
-            #     post_combine_output_tensor, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
-            # )
 
         with Profiler().trace_with_timer("to-layout", level=4):
-            routing_weights_rm = ttnn.to_layout(
+            routing_weights = ttnn.to_layout(
                 routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG
             )
-            routing_weights_rm = ttnn.repeat(
-                routing_weights_rm, ttnn.Shape((hidden_dim, 1, 1, 1)), memory_config=ttnn.L1_MEMORY_CONFIG
+            routing_weights = ttnn.repeat(
+                routing_weights, ttnn.Shape((hidden_dim, 1, 1, 1)), memory_config=ttnn.L1_MEMORY_CONFIG
             )
-            routing_weights_rm = ttnn.permute(routing_weights_rm, (3, 1, 2, 0), memory_config=ttnn.L1_MEMORY_CONFIG)
-            routing_weights = ttnn.to_layout(routing_weights_rm, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
+            routing_weights = ttnn.permute(routing_weights, (3, 1, 2, 0), memory_config=ttnn.L1_MEMORY_CONFIG)
+            routing_weights = ttnn.to_layout(routing_weights, ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         with Profiler().trace_with_timer("moe-post", level=4):
-            post_combine_output_tensor = ttnn.mul(
-                post_combine_output_tensor, routing_weights, memory_config=ttnn.L1_MEMORY_CONFIG
-            )
-            post_combine_output_tensor = ttnn.sum(
-                post_combine_output_tensor, dim=0, keepdim=True, memory_config=ttnn.L1_MEMORY_CONFIG
-            )
+            combined_output = ttnn.mul(combined_output, routing_weights, memory_config=ttnn.L1_MEMORY_CONFIG)
+            combined_output = ttnn.sum(combined_output, dim=0, keepdim=True, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         with Profiler().trace_with_timer("all-reduce", level=4):
-            post_combine_output_tensor = ttnn.reshape(
-                post_combine_output_tensor,
+            combined_output = ttnn.reshape(
+                combined_output,
                 shape=(1, 1, batch_size * sequence_length * hidden_dim // 256, 256),
-                memory_config=ttnn.L1_MEMORY_CONFIG,
             )
-            post_combine_output_tensor_g = ttnn.experimental.all_reduce(
-                post_combine_output_tensor,
+            combined_output_g = ttnn.experimental.all_reduce(
+                combined_output,
                 math_op=ttnn.ReduceType.Sum,
                 memory_config=ttnn.L1_MEMORY_CONFIG,
                 topology=ttnn.Topology.Ring,
@@ -324,9 +291,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("reshape", level=4):
             final_hidden_states = ttnn.reshape(
-                post_combine_output_tensor_g,
+                combined_output_g,
                 (batch_size, sequence_length, hidden_dim),
-                memory_config=ttnn.L1_MEMORY_CONFIG,
             )
 
         return final_hidden_states
