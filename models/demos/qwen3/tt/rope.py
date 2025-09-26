@@ -4,7 +4,7 @@ import ttnn
 from models.demos.qwen3.utils.profiler import profile_trace
 
 
-def precompute_freqs_cis(config) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
+def precompute_freqs_cis(config) -> Tuple[torch.Tensor, torch.Tensor]:
     theta = config.rope_theta
     dim = config.head_dim
     max_seq_len = config.max_seq_len
@@ -33,7 +33,7 @@ def apply_rotary_emb(
     xq: ttnn.Tensor,
     xk: ttnn.Tensor,
     freqs_cis: Tuple[ttnn.Tensor, ttnn.Tensor],
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
     xq = ttnn.to_layout(xq, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
     xk = ttnn.to_layout(xk, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
 
@@ -70,7 +70,7 @@ def apply_rotary_emb(
     return yq, yk
 
 
-def precompute_freqs_cis_v2(config) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
+def precompute_freqs_cis_v2(config) -> Tuple[torch.Tensor, torch.Tensor]:
     theta = config.rope_theta
     dim = config.head_dim
     max_seq_len = config.max_seq_len

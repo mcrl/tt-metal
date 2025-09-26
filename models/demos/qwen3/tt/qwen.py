@@ -1,4 +1,3 @@
-import torch
 from torch import nn
 from typing import Tuple
 from pathlib import Path
@@ -12,7 +11,6 @@ from models.demos.qwen3.tt.rope import (
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
-from models.demos.qwen3.utils.timer import profile_time, start_timer, stop_timer
 from models.demos.qwen3.utils.profiler import Profiler, profile_trace
 
 
@@ -153,8 +151,8 @@ class Qwen3MoeModel(nn.Module):
             mode = InferenceMode(mode)
 
         batch_size, sequence_length = ids.shape
-        cos = self.position_embeddings_v2_cos[start_pos : start_pos + sequence_length]
-        sin = self.position_embeddings_v2_sin[start_pos : start_pos + sequence_length]
+        cos = self.position_embeddings_v2_cos[start_pos: start_pos + sequence_length]
+        sin = self.position_embeddings_v2_sin[start_pos: start_pos + sequence_length]
 
         with Profiler().trace_with_timer("embedding", level=4, args={"class": "Qwen3MoeModel"}):
             hidden_states = ttnn.embedding(ids, self.embedding_weight, dtype=ttnn.bfloat16)
