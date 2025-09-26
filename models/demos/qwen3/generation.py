@@ -185,7 +185,20 @@ class Qwen3MoETT:
                 for curr_pos in range(min_prompt_len, total_len):
                     with torch.inference_mode():
                         mode = "prefill" if prev_pos == 0 else "decode"
-                        logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
+                        ids = ttnn.from_torch(
+                            tokens[:, prev_pos:curr_pos],
+                            device=self.mesh_device,
+                            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                            dtype=ttnn.uint32,
+                            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                            layout=ttnn.ROW_MAJOR_LAYOUT,
+                        )
+                        logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
+                        logits = ttnn.to_torch(
+                            logits_tt,
+                            dtype=self.config.dtype,
+                            mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
+                        )
                     prev_pos = curr_pos
         # enable_profiler()
 
@@ -198,9 +211,44 @@ class Qwen3MoETT:
         with Profiler().trace_with_timer("Generate", level=0):
             for curr_pos in range(min_prompt_len, total_len):
                 iter_start_time = time.time()
-                with torch.inference_mode():
-                    mode = "prefill" if prev_pos == 0 else "decode"
-                    logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
+                mode = "prefill" if prev_pos == 0 else "decode"
+                ids = ttnn.from_torch(
+                    tokens[:, prev_pos:curr_pos],
+                    device=self.mesh_device,
+                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                    dtype=ttnn.uint32,
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    layout=ttnn.ROW_MAJOR_LAYOUT,
+                )
+
+                # if curr_pos > min_prompt_len:
+                #     print("Begin trace capture")
+                #     ttnn.synchronize_device(self.mesh_device)
+                #     trace_capture_start_time = time.time()
+                #     trace_id = ttnn.begin_trace_capture(self.mesh_device, cq_id=0)
+                #     logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
+                #     ttnn.end_trace_capture(self.mesh_device, trace_id)
+                #     ttnn.synchronize_device(self.mesh_device)
+                #     trace_capture_end_time = time.time()
+                #     print(f"Trace capture time: {(trace_capture_end_time - trace_capture_start_time) * 1000:.3f}ms")
+
+                #     for i in range(10):
+                #         ttnn.synchronize_device(self.mesh_device)
+                #         trace_execute_start_time = time.time()
+                #         ttnn.execute_trace(self.mesh_device, trace_id, cq_id=0, blocking=False)
+                #         ttnn.synchronize_device(self.mesh_device)
+                #         trace_execute_end_time = time.time()
+                #         print(f"Trace execute time: {(trace_execute_end_time - trace_execute_start_time) * 1000:.3f}ms")
+                #     ttnn.release_trace(self.mesh_device, trace_id)
+                #     exit(0)
+
+                logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
+
+                logits = ttnn.to_torch(
+                    logits_tt,
+                    dtype=self.config.dtype,
+                    mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
+                )
                 iter_times.append(time.time() - iter_start_time)
 
                 if temperature > 0:
@@ -218,7 +266,7 @@ class Qwen3MoETT:
                     torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
                 )
                 prev_pos = curr_pos
-                print_memory_state(self.mesh_device)
+                # print_memory_state(self.mesh_device)
                 if all(eos_reached):
                     break
 

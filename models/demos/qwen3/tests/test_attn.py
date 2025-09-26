@@ -54,9 +54,13 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (1, 32),
+        (8, 64),
+        (8, 1),
         # (2, 64),
     ],
+)
+@pytest.mark.parametrize(
+    "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
 )
 def test_tt_attn_matches_reference(batch_size, seq_len, mesh_device):
     """Compare TT Attention implementation with PyTorch reference."""
@@ -101,8 +105,8 @@ def test_tt_attn_matches_reference(batch_size, seq_len, mesh_device):
 
     position_embeddings_tt = precompute_freqs_cis_v2(Qwen3MoeConfig(head_dim=config.head_dim, max_seq_len=seq_len))
 
-    pos_embs_cos = position_embeddings_tt[0][start_pos : start_pos + seq_len]
-    pos_embs_sin = position_embeddings_tt[1][start_pos : start_pos + seq_len]
+    pos_embs_cos = position_embeddings_tt[0][start_pos: start_pos + seq_len]
+    pos_embs_sin = position_embeddings_tt[1][start_pos: start_pos + seq_len]
 
     cos_tt = ttnn.from_torch(
         pos_embs_cos,
@@ -122,19 +126,10 @@ def test_tt_attn_matches_reference(batch_size, seq_len, mesh_device):
     )
     position_embeddings_tt = cos_tt, sin_tt
 
-    attention_mask_tt = ttnn.from_torch(
-        attention_mask.repeat(batch_size, mesh_device.shape[1], 1, 1),
-        device=mesh_device,
-        mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=1),
-        dtype=ttnn.bfloat16,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-
     output_tt = tt_attention(
         hidden_states=hidden_states_tt,
         start_pos=0,
         position_embeddings=position_embeddings_tt,
-        attention_mask=attention_mask_tt,
         mode=InferenceMode.PREFILL,
     )
 

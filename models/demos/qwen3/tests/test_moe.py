@@ -47,11 +47,14 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (1, 32),
-        (2, 64),
-        (1, 1),
-        (4, 1),
+        (8, 32),
+        (16, 64),
+        (8, 1),
+        (16, 1),
     ],
+)
+@pytest.mark.parametrize(
+    "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
 )
 def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
     """Compare TT Sparse MoE implementation with PyTorch reference."""

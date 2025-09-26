@@ -1,5 +1,4 @@
 import ttnn
-import torch
 from typing import Optional, Union
 from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
@@ -27,10 +26,9 @@ def sdpa_forward_prefill(
     query: ttnn.Tensor,
     key: ttnn.Tensor,
     value: ttnn.Tensor,
-    attention_mask: Optional[ttnn.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
-) -> torch.Tensor:
+) -> ttnn.Tensor:
     batch_size, num_attention_heads, sequence_length, head_dim = query.shape
 
     with Profiler().trace_with_timer("padding", level=4, args={"class": "sdpa_forward_prefill"}):
@@ -43,7 +41,7 @@ def sdpa_forward_prefill(
             query,
             key,
             value,
-            attn_mask=attention_mask,
+            attn_mask=None,
             is_causal=True,
             scale=scaling,
             compute_kernel_config=ttnn.WormholeComputeKernelConfig(
@@ -78,10 +76,9 @@ def sdpa_forward_decode(
     query: ttnn.Tensor,
     key: ttnn.Tensor,
     value: ttnn.Tensor,
-    attention_mask: Optional[ttnn.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
-) -> torch.Tensor:
+) -> ttnn.Tensor:
     with Profiler().trace_with_timer("permute", level=4):
         query = ttnn.permute(query, dims=(2, 0, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
 
@@ -126,14 +123,13 @@ def sdpa_forward(
     query: ttnn.Tensor,
     key: ttnn.Tensor,
     value: ttnn.Tensor,
-    attention_mask: Optional[ttnn.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
     mode: InferenceMode = InferenceMode.PREFILL,
-) -> torch.Tensor:
+) -> ttnn.Tensor:
     if mode == InferenceMode.PREFILL:
-        return sdpa_forward_prefill(query, key, value, attention_mask, dropout, scaling)
+        return sdpa_forward_prefill(query, key, value, dropout, scaling)
     elif mode == InferenceMode.DECODE:
-        return sdpa_forward_decode(query, key, value, attention_mask, dropout, scaling)
+        return sdpa_forward_decode(query, key, value, dropout, scaling)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
