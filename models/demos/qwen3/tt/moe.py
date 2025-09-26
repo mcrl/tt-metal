@@ -1,11 +1,11 @@
 import torch
 from torch import nn
 import ttnn
-from pathlib import Path
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
+from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 
 
 class Qwen3MoeMLP(nn.Module):
@@ -69,7 +69,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_moe_gate",
+                cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_moe_gate"),
             )
 
         self.num_devices = self.mesh_device.get_num_devices()
@@ -110,7 +110,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=Path.home() / ".cache/weights" / f"gate_proj_{self.layer_idx}",
+                cache_file_name=ttnn_model_cache_path(f"gate_proj_{self.layer_idx}"),
             )
 
             self.up_proj = ttnn.as_tensor(
@@ -120,7 +120,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=Path.home() / ".cache/weights" / f"up_proj_{self.layer_idx}",
+                cache_file_name=ttnn_model_cache_path(f"up_proj_{self.layer_idx}"),
             )
 
             self.down_proj = ttnn.as_tensor(
@@ -130,7 +130,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=Path.home() / ".cache/weights" / f"down_proj_{self.layer_idx}",
+                cache_file_name=ttnn_model_cache_path(f"down_proj_{self.layer_idx}"),
             )
         self.is_tt_setup = True
 
