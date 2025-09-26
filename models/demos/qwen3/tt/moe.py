@@ -214,18 +214,29 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             )
 
         with Profiler().trace_with_timer("all-to-all-combine", level=4):
-            ttnn.all_to_all_combine(
+            all_to_all_combine_output_tensors = ttnn.all_to_all_combine(
                 experts_output,
                 self.expert_mapping_tensors,
                 selected_experts,
-                optional_output_tensor=all_to_all_combine_output_tensors,
-                axis=0,
+                # optional_output_tensor=all_to_all_combine_output_tensors,
+                axis=1,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
                 global_semaphore=self.ccl.get_semaphore(0),
                 init_semaphore=self.ccl.get_semaphore(0),
             )
 
+            all_to_all_combine_output_tensors = ttnn.experimental.all_gather_async(
+                all_to_all_combine_output_tensors,
+                dim=1,
+                cluster_axis=1,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                num_links=1,
+                multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                barrier_semaphore=self.ccl.get_semaphore(1),
+            )
             combined_output = ttnn.reshape(
                 all_to_all_combine_output_tensors,
                 shape=(self.top_k, 1, batch_size * sequence_length, hidden_dim),
@@ -246,22 +257,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             combined_output_3 = ttnn.sum(combined_output_2, dim=0, keepdim=True, memory_config=mem_cfg)
             ttnn.deallocate(combined_output_2)
 
-        with Profiler().trace_with_timer("all-reduce", level=4):
-            combined_output_4 = ttnn.reshape(
-                combined_output_3,
-                shape=(1, 1, batch_size * sequence_length * hidden_dim // 256, 256),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            )
-            combined_output_g = ttnn.experimental.all_reduce(
-                combined_output_4,
-                math_op=ttnn.ReduceType.Sum,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                topology=ttnn.Topology.Ring,
-            )
-
         with Profiler().trace_with_timer("reshape", level=4):
             final_hidden_states = ttnn.reshape(
-                combined_output_g,
+                combined_output_3,
                 (batch_size, sequence_length, hidden_dim),
                 memory_config=mem_cfg,
             )

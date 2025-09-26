@@ -18,6 +18,9 @@ from models.demos.qwen3.tt.ccl_1d import CCL1D
         [1, 1, 64, 512],
     ],
 )
+@pytest.mark.parametrize(
+    "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
+)
 def test_allreduce_ring_sum(per_chip_output_shape, mesh_device):
     torch.manual_seed(0)
 
