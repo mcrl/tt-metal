@@ -5,7 +5,6 @@ from pathlib import Path
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.ccl_1d import CCL1D
-from models.demos.qwen3.utils.timer import profile_time
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 
 

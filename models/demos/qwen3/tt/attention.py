@@ -1,7 +1,6 @@
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.tt_transformers.tt.common import get_rot_transformation_mat
-import torch
 from torch import nn
 from typing import Tuple
 from pathlib import Path
@@ -138,11 +137,11 @@ class Qwen3MoeAttention(nn.Module):
     @profile_trace("Qwen3MoeAttention", level=3)
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        hidden_states: ttnn.Tensor,
         start_pos: int,
         position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
         mode: InferenceMode = InferenceMode.PREFILL,
-    ) -> torch.Tensor:
+    ) -> ttnn.Tensor:
         batch_size, sequence_length, hidden_size = hidden_states.shape
         mem_cfg = ttnn.L1_MEMORY_CONFIG if sequence_length == 1 else ttnn.DRAM_MEMORY_CONFIG
         hidden_shape = (batch_size, sequence_length, -1, self.head_dim)
