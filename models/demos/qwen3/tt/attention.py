@@ -1,4 +1,5 @@
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
+from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.tt_transformers.tt.common import get_rot_transformation_mat
 import torch
 from torch import nn
@@ -56,6 +57,8 @@ class Qwen3MoeAttention(nn.Module):
     def setup_tt(self):
         if self.is_tt_setup:
             return
+
+        self.ccl = CCL1D(self.mesh_device)
 
         self.q_proj_weight = ttnn.as_tensor(
             self.q_proj.weight.transpose(0, 1),
@@ -171,8 +174,8 @@ class Qwen3MoeAttention(nn.Module):
         with Profiler().trace_with_timer("kv-cache-store", level=4):
             if mode == InferenceMode.PREFILL:
                 for b in range(batch_size):
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b : b + 1], b)
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b : b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b: b + 1], b)
+                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b: b + 1], b)
             elif mode == InferenceMode.DECODE:
                 key_states = ttnn.permute(key_states, dims=(2, 1, 0, 3), memory_config=mem_cfg)
                 value_states = ttnn.permute(value_states, dims=(2, 1, 0, 3), memory_config=mem_cfg)
@@ -218,11 +221,15 @@ class Qwen3MoeAttention(nn.Module):
             linear_output = ttnn.reshape(
                 linear_output, shape=(1, 1, B * S * H // 256, 256), memory_config=ttnn.DRAM_MEMORY_CONFIG
             )
-            linear_output = ttnn.experimental.all_reduce(
+            linear_output = ttnn.experimental.all_reduce_async(
                 linear_output,
                 math_op=ttnn.ReduceType.Sum,
                 memory_config=mem_cfg,
-                topology=ttnn.Topology.Ring,
+                topology=ttnn.Topology.Linear,
+                from_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                to_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                num_links=1,
             )
             linear_output = ttnn.reshape(linear_output, shape=(B, S, H), memory_config=mem_cfg)
 
