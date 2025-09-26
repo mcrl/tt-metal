@@ -1,6 +1,5 @@
 from torch import nn
 from typing import Tuple
-from pathlib import Path
 
 import ttnn
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
@@ -12,6 +11,7 @@ from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
 from models.demos.qwen3.utils.profiler import Profiler, profile_trace
+from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 
 
 class Qwen3MoeDecoderLayer(nn.Module):
@@ -113,7 +113,7 @@ class Qwen3MoeModel(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights/embedding_weight",
+            cache_file_name=ttnn_model_cache_path("embedding_weight"),
         )
         self.norm.setup_tt()
         self.lm_head_weight = ttnn.as_tensor(
@@ -123,7 +123,7 @@ class Qwen3MoeModel(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights/lm_head_weight",
+            cache_file_name=ttnn_model_cache_path("lm_head_weight"),
         )
 
         self.position_embeddings_v2_cos = ttnn.from_torch(

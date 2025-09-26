@@ -3,7 +3,6 @@ from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.tt_transformers.tt.common import get_rot_transformation_mat
 from torch import nn
 from typing import Tuple
-from pathlib import Path
 
 import ttnn
 
@@ -11,6 +10,7 @@ from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, In
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
 from models.demos.qwen3.tt.rope import apply_rotary_emb_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
+from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 
 
 class Qwen3MoeAttention(nn.Module):
@@ -66,7 +66,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_q_proj",
+            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_q_proj"),
         )
 
         def reshape_weight(x, head_dim, repeats):
@@ -99,7 +99,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_k_proj",
+            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_k_proj"),
         )
         self.v_proj_weight = ttnn.as_tensor(
             reshape_weight(self.v_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF),
@@ -108,7 +108,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_v_proj",
+            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_v_proj"),
         )
 
         self.q_norm.setup_tt()
@@ -121,7 +121,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_o_proj",
+            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_o_proj"),
         )
         self.trans_mat = ttnn.as_tensor(
             get_rot_transformation_mat(dhead=ttnn.TILE_SIZE),
@@ -130,7 +130,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=Path.home() / ".cache/weights" / f"decoder_{self.layer_idx}_rot_trans_mat",
+            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_rot_trans_mat"),
         )
         self.is_tt_setup = True
 
