@@ -23,7 +23,12 @@ def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     unflattened = x.reshape([bsz, seqlen, num_heads, -1, 2])
     x_half1 = unflattened[..., 0]
     x_half2 = unflattened[..., 1]
-    return ttnn.concat([x_half1, x_half2], dim=-1)
+    x_out = ttnn.concat([x_half1, x_half2], dim=-1)
+
+    ttnn.deallocate(unflattened)
+    ttnn.deallocate(x_half1)
+    ttnn.deallocate(x_half2)
+    return x_out
 
 class Qwen3MoeAttention(nn.Module):
     @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeAttention"})
