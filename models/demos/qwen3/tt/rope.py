@@ -4,7 +4,7 @@ import ttnn
 from models.demos.qwen3.utils.profiler import profile_trace
 
 
-def precompute_freqs_cis(config) -> Tuple[torch.Tensor, torch.Tensor]:
+def precompute_freqs_cis(config) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
     theta = config.rope_theta
     dim = config.head_dim
     max_seq_len = config.max_seq_len
@@ -33,7 +33,7 @@ def apply_rotary_emb(
     xq: ttnn.Tensor,
     xk: ttnn.Tensor,
     freqs_cis: Tuple[ttnn.Tensor, ttnn.Tensor],
-) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     xq = ttnn.to_layout(xq, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
     xk = ttnn.to_layout(xk, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16)
 
@@ -70,7 +70,7 @@ def apply_rotary_emb(
     return yq, yk
 
 
-def precompute_freqs_cis_v2(config) -> Tuple[torch.Tensor, torch.Tensor]:
+def precompute_freqs_cis_v2(config) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
     theta = config.rope_theta
     dim = config.head_dim
     max_seq_len = config.max_seq_len
@@ -82,7 +82,7 @@ def precompute_freqs_cis_v2(config) -> Tuple[torch.Tensor, torch.Tensor]:
         freqs = torch.reciprocal(torch.pow(theta, indices)).to(dtype=torch.float32)
         t = torch.arange(start=0, end=max_seq_len, step=1, dtype=torch.int64).to(dtype=torch.float32)
         freqs = torch.outer(t, freqs).to(dtype=torch.float32)
-        freqs_cis = torch.polar(abs=torch.ones_like(input=freqs, dtype=torch.float32), angle=torch.neg(freqs))
+        freqs_cis = torch.polar(abs=torch.ones_like(input=freqs, dtype=torch.float32), angle=freqs)
 
         cos = freqs_cis.real
         sin = freqs_cis.imag
@@ -110,8 +110,5 @@ def apply_rotary_emb_v2(
 
     yq_bnsh = ttnn.experimental.rotary_embedding_llama(xq_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False)
     yk_bnsh = ttnn.experimental.rotary_embedding_llama(xk_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False)
-
-    # yq = ttnn.to_layout(ttnn.permute(yq_bnsh, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
-    # yk = ttnn.to_layout(ttnn.permute(yk_bnsh, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG), layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16)
 
     return yq_bnsh, yk_bnsh
