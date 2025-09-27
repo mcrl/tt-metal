@@ -10,8 +10,10 @@ import tt_lock
 from transformers import AutoConfig
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 
-from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeDecoderLayer
-from models.demos.qwen3.reference.rope import precompute_freqs_cis
+# from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeDecoderLayer
+# from models.demos.qwen3.reference.rope import precompute_freqs_cis
+
+from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeRotaryEmbedding
 
 from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 from models.demos.qwen3.tt.rope import precompute_freqs_cis_v2
@@ -42,13 +44,11 @@ def load_reference_layer(layer_idx=0, seq_len=32):
         layer.load_state_dict(torch.load(weight_path)["state_dict"])
     else:
         print(f"Warning: Weight file {weight_path} not found, using random weights")
-
     layer.to(torch.bfloat16)
 
-    position_embeddings = precompute_freqs_cis(config)
-    position_embeddings = position_embeddings[:seq_len]
+    rotary_emb = Qwen3MoeRotaryEmbedding(config=config)
 
-    return layer, position_embeddings
+    return layer, rotary_emb
 
 
 @pytest.mark.parametrize(
@@ -68,7 +68,7 @@ def test_tt_attn_matches_reference(batch_size, seq_len, mesh_device):
 
     set_and_get_device_cache(mesh_device)
 
-    ref_layer, ref_position_embeddings = load_reference_layer(seq_len=seq_len)
+    ref_layer, ref_rope = load_reference_layer(seq_len=seq_len)
     ref_attention = ref_layer.self_attn
 
     config = create_test_config()
@@ -90,9 +90,13 @@ def test_tt_attn_matches_reference(batch_size, seq_len, mesh_device):
         .triu_(diagonal=start_pos + 1)
         .logical_not_()
     )
+    position_ids = torch.arange(start_pos, start_pos + seq_len, dtype=torch.long).unsqueeze(0)
+    ref_position_embeddings = ref_rope(hidden_states, position_ids)
     ref_output = ref_attention(
-        hidden_states, start_pos=start_pos, position_embeddings=ref_position_embeddings, attention_mask=attention_mask
-    )
+        hidden_states, 
+        position_embeddings=ref_position_embeddings, 
+        attention_mask=attention_mask
+    )[0]
 
     hidden_states_tt = ttnn.from_torch(
         hidden_states,
@@ -132,6 +136,7 @@ def test_tt_attn_matches_reference(batch_size, seq_len, mesh_device):
         position_embeddings=position_embeddings_tt,
         mode=InferenceMode.PREFILL,
     )
+    output_tt = ttnn.to_layout(output_tt, ttnn.ROW_MAJOR_LAYOUT)
 
     tt_output = ttnn.to_torch(
         output_tt, dtype=torch.bfloat16, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)

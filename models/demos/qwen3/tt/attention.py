@@ -5,6 +5,7 @@ from torch import nn
 from typing import Tuple
 
 import ttnn
+import torch
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
@@ -12,6 +13,17 @@ from models.demos.qwen3.tt.rope import apply_rotary_emb_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 
+def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
+    x_half1, x_half2 = x.chunk(2, dim=-1)
+    stacked = torch.stack([x_half1, x_half2], dim=-1)
+    return stacked.flatten(start_dim=-2)
+
+def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
+    bsz, seqlen, num_heads, head_dim = x.shape
+    unflattened = x.reshape([bsz, seqlen, num_heads, -1, 2])
+    x_half1 = unflattened[..., 0]
+    x_half2 = unflattened[..., 1]
+    return ttnn.concat([x_half1, x_half2], dim=-1)
 
 class Qwen3MoeAttention(nn.Module):
     @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeAttention"})
@@ -21,6 +33,7 @@ class Qwen3MoeAttention(nn.Module):
         self.layer_idx = layer_idx
         self.mesh_device = mesh_device
         self.is_tt_setup = False
+        self.hidden_size = config.hidden_size
         self.head_dim = config.head_dim
         self.num_attention_heads = config.num_attention_heads
         self.num_key_value_heads = config.num_key_value_heads
@@ -33,8 +46,8 @@ class Qwen3MoeAttention(nn.Module):
         self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
 
-        self.q_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device)
-        self.k_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device)
+        self.q_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device, interleaved=True)
+        self.k_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device, interleaved=True)
 
         self.sliding_window = None
 
@@ -50,7 +63,7 @@ class Qwen3MoeAttention(nn.Module):
 
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
-        assert config.sliding_window is None
+        assert config.sliding_window is None        
 
     @profile_trace("setup-tt", level=3, args={"class": "Qwen3MoeAttention"})
     def setup_tt(self):
@@ -59,8 +72,12 @@ class Qwen3MoeAttention(nn.Module):
 
         self.ccl = CCL1D(self.mesh_device)
 
+        q = self.q_proj.weight.transpose(0, 1)
+        interleaved_q = q.reshape(self.hidden_size, -1, self.head_dim)
+        interleaved_q = reshape_to_interleaved(interleaved_q).reshape(q.shape)
+
         self.q_proj_weight = ttnn.as_tensor(
-            self.q_proj.weight.transpose(0, 1),
+            interleaved_q,
             device=self.mesh_device,
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
@@ -92,8 +109,12 @@ class Qwen3MoeAttention(nn.Module):
             layout=ttnn.TILE_LAYOUT,
         )
 
+        k = reshape_weight(self.k_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF)
+        interleaved_k = k.reshape(self.hidden_size, -1, self.head_dim)
+        interleaved_k = reshape_to_interleaved(interleaved_k).reshape(k.shape)
+
         self.k_proj_weight = ttnn.as_tensor(
-            reshape_weight(self.k_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF),
+            interleaved_k,
             device=self.mesh_device,
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
@@ -164,6 +185,8 @@ class Qwen3MoeAttention(nn.Module):
             query_states, key_states = apply_rotary_emb_v2(
                 query_states, key_states, position_embeddings, self.trans_mat
             )
+            query_states = reshape_from_interleaved(query_states)
+            key_states = reshape_from_interleaved(key_states)
 
         with Profiler().trace_with_timer("permute", level=4):
             value_states = ttnn.permute(value_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
