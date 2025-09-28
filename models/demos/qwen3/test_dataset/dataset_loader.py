@@ -18,7 +18,7 @@ def load_prompts(batch_size, prompt_len):
         FileNotFoundError: If dataset file not found
     """
     # Get the JSON file path (assuming it's in the same directory)
-    json_path = os.path.join(os.path.dirname(__file__), "test_dataset_HuggingFaceFW_fineweb_train.json")
+    json_path = os.path.join(os.path.dirname(__file__), "test_dataset_HuggingFaceFW_fineweb-edu_train.json")
 
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
