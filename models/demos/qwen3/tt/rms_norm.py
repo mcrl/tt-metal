@@ -48,10 +48,16 @@ class Qwen3MoeRMSNorm(nn.Module):
         self.is_tt_setup = True
 
     def forward(self, hidden_states: ttnn.Tensor, mode: InferenceMode) -> ttnn.Tensor:
-        mem_cfg = ttnn.L1_MEMORY_CONFIG if mode == InferenceMode.DECODE else ttnn.DRAM_MEMORY_CONFIG
-        return ttnn.rms_norm(
-            hidden_states, epsilon=self.variance_epsilon, weight=self.weight_tensor, memory_config=mem_cfg
-        )
+        if mode == InferenceMode.DECODE:
+            mem_cfg = hidden_states.memory_config()
+            hidden_states = ttnn.to_memory_config(hidden_states, ttnn.L1_MEMORY_CONFIG, dtype=hidden_states.dtype)
+        
+        hidden_states = ttnn.rms_norm(hidden_states, epsilon=self.variance_epsilon, weight=self.weight_tensor)
+
+        if mode == InferenceMode.DECODE:
+            hidden_states = ttnn.to_memory_config(hidden_states, mem_cfg, dtype=hidden_states.dtype)
+
+        return hidden_states
 
 
 __all__ = ["Qwen3MoeRMSNorm"]
