@@ -13,10 +13,12 @@ from models.demos.qwen3.tt.rope import apply_rotary_emb_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 
+
 def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
     x_half1, x_half2 = x.chunk(2, dim=-1)
     stacked = torch.stack([x_half1, x_half2], dim=-1)
     return stacked.flatten(start_dim=-2)
+
 
 def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     bsz, seqlen, num_heads, head_dim = x.shape
@@ -29,6 +31,7 @@ def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     ttnn.deallocate(x_half1)
     ttnn.deallocate(x_half2)
     return x_out
+
 
 class Qwen3MoeAttention(nn.Module):
     @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeAttention"})
@@ -68,7 +71,7 @@ class Qwen3MoeAttention(nn.Module):
 
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
-        assert config.sliding_window is None        
+        assert config.sliding_window is None
 
     @profile_trace("setup-tt", level=3, args={"class": "Qwen3MoeAttention"})
     def setup_tt(self):
@@ -160,14 +163,11 @@ class Qwen3MoeAttention(nn.Module):
         )
         self.is_tt_setup = True
 
-    @profile_trace("Qwen3MoeAttention", level=3)
-    def forward(
-        self,
-        hidden_states: ttnn.Tensor,
-        start_pos: int,
-        position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
-        mode: InferenceMode = InferenceMode.PREFILL,
+    def forward_prefill(
+        self, hidden_states: ttnn.Tensor, start_pos: int, position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor]
     ) -> ttnn.Tensor:
+        """Prefill starts. Hidden stats: [1, B=1, S, H]"""
+
         batch_size, sequence_length, hidden_size = hidden_states.shape
         mem_cfg = ttnn.L1_MEMORY_CONFIG if sequence_length == 1 else ttnn.DRAM_MEMORY_CONFIG
         hidden_shape = (batch_size, sequence_length, -1, self.head_dim)
@@ -183,8 +183,8 @@ class Qwen3MoeAttention(nn.Module):
             value_states = ttnn.reshape(value_states, hidden_shape, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("rmsnorm", level=4):
-            query_states = self.q_norm(query_states)
-            key_states = self.k_norm(key_states)
+            query_states = self.q_norm(query_states, mode=InferenceMode.PREFILL)
+            key_states = self.k_norm(key_states, mode=InferenceMode.PREFILL)
 
         with Profiler().trace_with_timer("rope", level=4):
             query_states, key_states = apply_rotary_emb_v2(
@@ -197,19 +197,12 @@ class Qwen3MoeAttention(nn.Module):
             value_states = ttnn.permute(value_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
 
         # Q, K, V: [B n S H]
-
         with Profiler().trace_with_timer("kv-cache-store", level=4):
-            if mode == InferenceMode.PREFILL:
-                for b in range(batch_size):
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b: b + 1], b)
-                    ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b: b + 1], b)
-            elif mode == InferenceMode.DECODE:
-                key_states = ttnn.permute(key_states, dims=(2, 1, 0, 3), memory_config=mem_cfg)
-                value_states = ttnn.permute(value_states, dims=(2, 1, 0, 3), memory_config=mem_cfg)
-                ttnn.kv_cache.update_cache_for_token_(self.cache_k, key_states, update_index=start_pos, batch_offset=0)
-                ttnn.kv_cache.update_cache_for_token_(
-                    self.cache_v, value_states, update_index=start_pos, batch_offset=0
-                )
+            for b in range(batch_size):
+                # ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b : b + 1], b)
+                # ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b : b + 1], b)
+                ttnn.fill_cache(self.cache_k, key_states[b : b + 1], b)
+                ttnn.fill_cache(self.cache_v, value_states[b : b + 1], b)
 
         with Profiler().trace_with_timer("kv-cache-load", level=4):
             start_index = (0, 0, 0, 0)
@@ -226,7 +219,7 @@ class Qwen3MoeAttention(nn.Module):
             value_states,
             dropout=0.0,
             scaling=self.scaling,
-            mode=mode,
+            mode=InferenceMode.PREFILL,
         )
 
         with Profiler().trace_with_timer("reshape", level=4):
@@ -260,14 +253,121 @@ class Qwen3MoeAttention(nn.Module):
             )
             linear_output = ttnn.reshape(linear_output, shape=(B, S, H), memory_config=mem_cfg)
 
+        return linear_output
+
+    def forward_decode(
+        self, hidden_states: ttnn.Tensor, start_pos: int, position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor]
+    ) -> ttnn.Tensor:
+        mem_cfg = ttnn.L1_MEMORY_CONFIG
+
+        """Hidden state: [1, S=1, B, H]"""
+        _, sequence_length, batch_size, hidden_size = hidden_states.shape
+        hidden_shape = (1, batch_size, -1, self.head_dim)
+
+        with Profiler().trace_with_timer("qkv-proj-linear", level=4):
+            query_states = ttnn.linear(hidden_states, self.q_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+            key_states = ttnn.linear(hidden_states, self.k_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+            value_states = ttnn.linear(hidden_states, self.v_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+        """ QKV: [1, 1, B, H] """
+
+        with Profiler().trace_with_timer("qkv-proj-reshape", level=4):
+            query_states = ttnn.reshape(query_states, hidden_shape, memory_config=mem_cfg)
+            key_states = ttnn.reshape(key_states, hidden_shape, memory_config=mem_cfg)
+            value_states = ttnn.reshape(value_states, hidden_shape, memory_config=mem_cfg)
+        """ QKV: [1, B, n, H] """
+
+        with Profiler().trace_with_timer("rmsnorm", level=4):
+            query_states = self.q_norm(query_states, mode=InferenceMode.DECODE)
+            key_states = self.k_norm(key_states, mode=InferenceMode.DECODE)
+        """ QKV: [1, B, n, H] """
+
+        with Profiler().trace_with_timer("rope", level=4):
+            query_states, key_states = apply_rotary_emb_v2(
+                query_states, key_states, position_embeddings, self.trans_mat, mode=InferenceMode.DECODE
+            )
+            query_states = reshape_from_interleaved(query_states)
+            key_states = reshape_from_interleaved(key_states)
+        """ QK: [B, n, S=1, H], V: [S=1, B, n, H] """
+
+        with Profiler().trace_with_timer("kv-cache-store", level=4):
+            key_states = ttnn.permute(key_states, dims=(2, 1, 0, 3), memory_config=mem_cfg)
+            value_states = ttnn.permute(value_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
+            """ KV: [S=1, n, B, H] """
+            ttnn.kv_cache.update_cache_for_token_(self.cache_k, key_states, update_index=start_pos, batch_offset=0)
+            ttnn.kv_cache.update_cache_for_token_(self.cache_v, value_states, update_index=start_pos, batch_offset=0)
+
+        with Profiler().trace_with_timer("kv-cache-load", level=4):
+            start_index = (0, 0, 0, 0)
+            end_index = (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim)
+
+            ttnn.deallocate(key_states)
+            ttnn.deallocate(value_states)
+            key_states = ttnn.slice(self.cache_k, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
+            value_states = ttnn.slice(self.cache_v, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
+        """ QKV: [B, n, S=1, H]"""
+
+        attn_output = tt_sdpa_forward(
+            query_states,
+            key_states,
+            value_states,
+            dropout=0.0,
+            scaling=self.scaling,
+            mode=InferenceMode.DECODE,
+        )
+        """ Output O: [S=1, B, n, H]"""
+
+        # FIXME: Maybe we can try ttnn.experimental.nlp_concat_heads_decode to reshape.
         with Profiler().trace_with_timer("reshape", level=4):
-            output = ttnn.reshape(
-                linear_output,
-                (batch_size, sequence_length, hidden_size),
+            batch_size, hidden_dim_per_device = attn_output.shape[1], attn_output.shape[2] * attn_output.shape[3]
+            attn_output = ttnn.reshape(
+                attn_output, shape=(1, 1, batch_size, hidden_dim_per_device), memory_config=mem_cfg
+            )
+        """ O: [1, 1, B, H] """
+
+        with Profiler().trace_with_timer("output-proj", level=4):
+            linear_output = ttnn.linear(
+                attn_output,
+                self.o_proj_weight,
+                transpose_a=False,
+                transpose_b=True,
+                dtype=ttnn.bfloat16,
                 memory_config=mem_cfg,
             )
+        """ O: [1, 1, B, H] """
 
-        return output
+        with Profiler().trace_with_timer("all-reduce", level=4):
+            _, _, B, H = linear_output.shape
+            linear_output = ttnn.reshape(linear_output, shape=(1, 1, B * H // 256, 256), memory_config=mem_cfg)
+            linear_output = ttnn.experimental.all_reduce_async(
+                linear_output,
+                math_op=ttnn.ReduceType.Sum,
+                memory_config=mem_cfg,
+                topology=ttnn.Topology.Linear,
+                from_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                to_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                num_links=1,
+            )
+            linear_output = ttnn.reshape(linear_output, shape=(1, 1, B, H), memory_config=mem_cfg)
+        """ O: [1, 1, B, H] """
+
+        return linear_output
+
+    @profile_trace("Qwen3MoeAttention", level=3)
+    def forward(
+        self,
+        hidden_states: ttnn.Tensor,
+        start_pos: int,
+        position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
+        mode: InferenceMode = InferenceMode.PREFILL,
+    ) -> ttnn.Tensor:
+
+        if mode == InferenceMode.PREFILL:
+            return self.forward_prefill(hidden_states, start_pos, position_embeddings)
+        elif mode == InferenceMode.DECODE:
+            return self.forward_decode(hidden_states, start_pos, position_embeddings)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
 
 
 __all__ = ["Qwen3MoeAttention"]

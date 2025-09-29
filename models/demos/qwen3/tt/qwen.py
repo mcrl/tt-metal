@@ -45,6 +45,64 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self.post_attention_layernorm.setup_tt()
         self.is_tt_setup = True
 
+    def forward_prefill(
+        self, hidden_states: ttnn.Tensor, start_pos: int, position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor]
+    ) -> ttnn.Tensor:
+        hidden_states_0 = hidden_states
+        """Hidden states: [B, S, H]"""
+
+        with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
+            attn_input = self.input_layernorm(hidden_states_0, mode=InferenceMode.PREFILL)
+        attn_result = self.self_attn(
+            hidden_states=attn_input,
+            start_pos=start_pos,
+            position_embeddings=position_embeddings,
+            mode=InferenceMode.PREFILL,
+        )
+
+        with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
+            hidden_states_1 = ttnn.add(attn_result, hidden_states_0)
+
+        with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
+            mlp_input = self.post_attention_layernorm(hidden_states_1, mode=InferenceMode.PREFILL)
+        mlp_result = self.mlp(mlp_input, mode=InferenceMode.PREFILL)
+
+        with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
+            output = ttnn.add(hidden_states_1, mlp_result)
+
+        return output
+
+    def forward_decode(
+        self, hidden_states: ttnn.Tensor, start_pos: int, position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor]
+    ) -> ttnn.Tensor:
+        """Hidden states: [1, 1, B, H]"""
+
+        with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
+            attn_input = self.input_layernorm(hidden_states, mode=InferenceMode.DECODE)
+
+        attn_result = self.self_attn(
+            hidden_states=attn_input,
+            start_pos=start_pos,
+            position_embeddings=position_embeddings,
+            mode=InferenceMode.DECODE,
+        )
+        """attn result: [1, 1, B, H]"""
+
+        with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
+            hidden_states = ttnn.add(attn_result, hidden_states)
+        """Hidden states: [1, 1, B, H]"""
+
+        with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
+            mlp_input = self.post_attention_layernorm(hidden_states, mode=InferenceMode.DECODE)
+        mlp_result = self.mlp(mlp_input, mode=InferenceMode.DECODE)
+        """mlp_result: [1, 1, B, H]"""
+
+        with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
+            output = ttnn.add(hidden_states, mlp_result)
+        """output: [1, 1, B, H]"""
+
+        return output
+
     @profile_trace("Qwen3MoeDecoderLayer", level=2)
     def forward(
         self,
@@ -53,29 +111,12 @@ class Qwen3MoeDecoderLayer(nn.Module):
         position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
         mode: InferenceMode = InferenceMode.PREFILL,
     ) -> ttnn.Tensor:
-
-        hidden_states_0 = hidden_states
-
-        with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
-            attn_input = self.input_layernorm(hidden_states_0)
-        attn_result = self.self_attn(
-            hidden_states=attn_input,
-            start_pos=start_pos,
-            position_embeddings=position_embeddings,
-            mode=mode,
-        )
-
-        with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
-            hidden_states_1 = ttnn.add(attn_result, hidden_states_0)
-
-        with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
-            mlp_input = self.post_attention_layernorm(hidden_states_1)
-        mlp_result = self.mlp(mlp_input)
-
-        with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
-            output = ttnn.add(hidden_states_1, mlp_result)
-
-        return output
+        if mode == InferenceMode.PREFILL:
+            return self.forward_prefill(hidden_states, start_pos, position_embeddings)
+        elif mode == InferenceMode.DECODE:
+            return self.forward_decode(hidden_states, start_pos, position_embeddings)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
 
 
 class Qwen3MoeModel(nn.Module):
@@ -151,11 +192,16 @@ class Qwen3MoeModel(nn.Module):
             mode = InferenceMode(mode)
 
         batch_size, sequence_length = ids.shape
-        cos = self.position_embeddings_v2_cos[start_pos: start_pos + sequence_length]
-        sin = self.position_embeddings_v2_sin[start_pos: start_pos + sequence_length]
+        cos = self.position_embeddings_v2_cos[start_pos : start_pos + sequence_length]
+        sin = self.position_embeddings_v2_sin[start_pos : start_pos + sequence_length]
 
         with Profiler().trace_with_timer("embedding", level=4, args={"class": "Qwen3MoeModel"}):
             hidden_states = ttnn.embedding(ids, self.embedding_weight, dtype=ttnn.bfloat16)
+
+        if mode == InferenceMode.PREFILL:
+            pass
+        elif mode == InferenceMode.DECODE:
+            hidden_states = ttnn.reshape(hidden_states, (1, 1, batch_size, self.config.hidden_size))
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             position_embeddings = cos, sin
@@ -166,8 +212,13 @@ class Qwen3MoeModel(nn.Module):
                 mode=mode,
             )
 
+        if mode == InferenceMode.PREFILL:
+            pass
+        elif mode == InferenceMode.DECODE:
+            hidden_states = ttnn.reshape(hidden_states, (batch_size, sequence_length, self.config.hidden_size))
+
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeModel"}):
-            hidden_states = self.norm(hidden_states)
+            hidden_states = self.norm(hidden_states, mode=InferenceMode.PREFILL)
 
         with Profiler().trace_with_timer("LMhead", level=4, args={"class": "Qwen3MoeModel"}):
             logits = ttnn.linear(hidden_states, self.lm_head_weight, dtype=ttnn.bfloat16)
