@@ -30,6 +30,14 @@ def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     ttnn.deallocate(x_half2)
     return x_out
 
+def reshape_weight(x, head_dim, repeats):
+    x = x.transpose(0, 1)
+    hidden_size, _ = x.shape
+    x = x.view(hidden_size, -1, head_dim)
+    x = x.repeat_interleave(repeats=repeats, dim=1)
+    x = x.view(hidden_size, -1)
+    return x.contiguous()
+
 
 class Qwen3MoeAttention(nn.Module):
     @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeAttention"})
@@ -80,27 +88,38 @@ class Qwen3MoeAttention(nn.Module):
 
         self.ccl = CCL1D(self.mesh_device)
 
-        q = self.q_proj.weight.transpose(0, 1)
-        interleaved_q = q.reshape(self.hidden_size, -1, self.head_dim)
-        interleaved_q = reshape_to_interleaved(interleaved_q).reshape(q.shape)
+        weight_shape = (self.hidden_size, -1)
 
-        self.q_proj_weight = ttnn.as_tensor(
-            interleaved_q,
+        q_weight = self.q_proj.weight.transpose(0, 1)
+        q_weight = q_weight.reshape(self.hidden_size, -1, self.head_dim)
+        q_weight = reshape_to_interleaved(q_weight).reshape(weight_shape)
+
+        k_weight = reshape_weight(self.k_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF)
+        k_weight = k_weight.reshape(self.hidden_size, -1, self.head_dim)
+        k_weight = reshape_to_interleaved(k_weight).reshape(weight_shape)
+
+        v_weight = reshape_weight(self.v_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF).reshape(weight_shape)
+
+        qkv_list = []
+        wq = torch.chunk(q_weight, self.mesh_device.shape[1], dim=1)
+        wk = torch.chunk(k_weight, self.mesh_device.shape[1], dim=1)
+        wv = torch.chunk(v_weight, self.mesh_device.shape[1], dim=1)
+
+        for i in range(self.mesh_device.shape[1]):
+            qkv_list.append(torch.cat([wq[i], wk[i], wv[i]], dim=1))
+
+        self.qkv_proj_weight = ttnn.as_tensor(
+            torch.cat(qkv_list, dim=1),
             device=self.mesh_device,
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_q_proj"),
+            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_qkv_proj"),
         )
 
-        def reshape_weight(x, head_dim, repeats):
-            x = x.transpose(0, 1)
-            hidden_size, _ = x.shape
-            x = x.view(hidden_size, -1, head_dim)
-            x = x.repeat_interleave(repeats=repeats, dim=1)
-            x = x.view(hidden_size, -1)
-            return x.contiguous()
+        self.q_norm.setup_tt()
+        self.k_norm.setup_tt()
 
         self.cache_k = ttnn.zeros(
             self.cache_shape,
@@ -116,32 +135,6 @@ class Qwen3MoeAttention(nn.Module):
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
         )
-
-        k = reshape_weight(self.k_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF)
-        interleaved_k = k.reshape(self.hidden_size, -1, self.head_dim)
-        interleaved_k = reshape_to_interleaved(interleaved_k).reshape(k.shape)
-
-        self.k_proj_weight = ttnn.as_tensor(
-            interleaved_k,
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_k_proj"),
-        )
-        self.v_proj_weight = ttnn.as_tensor(
-            reshape_weight(self.v_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF),
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_v_proj"),
-        )
-
-        self.q_norm.setup_tt()
-        self.k_norm.setup_tt()
 
         self.o_proj_weight = ttnn.as_tensor(
             self.o_proj.weight,
@@ -161,26 +154,31 @@ class Qwen3MoeAttention(nn.Module):
 
         batch_size, sequence_length, hidden_size = hidden_states.shape
         mem_cfg = ttnn.L1_MEMORY_CONFIG if sequence_length == 1 else ttnn.DRAM_MEMORY_CONFIG
-        hidden_shape = (batch_size, sequence_length, -1, self.head_dim)
+        hidden_shape = (batch_size, 1, sequence_length, -1)
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
-            query_states = ttnn.linear(hidden_states, self.q_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
-            key_states = ttnn.linear(hidden_states, self.k_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
-            value_states = ttnn.linear(hidden_states, self.v_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("qkv-proj-reshape", level=4):
-            query_states = ttnn.reshape(query_states, hidden_shape, memory_config=mem_cfg)
-            key_states = ttnn.reshape(key_states, hidden_shape, memory_config=mem_cfg)
-            value_states = ttnn.reshape(value_states, hidden_shape, memory_config=mem_cfg)
+            qkv_states = ttnn.reshape(qkv_states, hidden_shape, memory_config=mem_cfg)
+        
+        with Profiler().trace_with_timer("qkv-split", level=4):
+            query_states, key_states, value_states = ttnn.experimental.nlp_create_qkv_heads(
+                qkv_states,
+                num_heads=self.q_heads_per_device,
+                num_kv_heads=self.kv_heads_per_device,
+                memory_config=mem_cfg
+            )
+            # B n S H
+
+        with Profiler().trace_with_timer("permute", level=4):
+            key_states = ttnn.permute(key_states, dims=(0, 1, 3, 2), memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states = self.q_norm(query_states, mode=InferenceMode.PREFILL)
             key_states = self.k_norm(key_states, mode=InferenceMode.PREFILL)
 
         with Profiler().trace_with_timer("rope", level=4):
-            query_states = ttnn.permute(query_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
-            key_states = ttnn.permute(key_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
-
             query_states = ttnn.experimental.rotary_embedding_llama(
                 query_states,
                 rot_mats[0],
@@ -198,9 +196,6 @@ class Qwen3MoeAttention(nn.Module):
 
             query_states = reshape_from_interleaved(query_states)
             key_states = reshape_from_interleaved(key_states)
-
-        with Profiler().trace_with_timer("permute", level=4):
-            value_states = ttnn.permute(value_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
 
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("kv-cache-store", level=4):
@@ -268,47 +263,40 @@ class Qwen3MoeAttention(nn.Module):
 
         """Hidden state: [1, S=1, B, H]"""
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
-        hidden_shape = (1, batch_size, -1, self.head_dim)
+        hidden_shape = (1, 1, batch_size, -1)
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
-            query_states = ttnn.linear(hidden_states, self.q_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
-            key_states = ttnn.linear(hidden_states, self.k_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
-            value_states = ttnn.linear(hidden_states, self.v_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
         """ QKV: [1, 1, B, H] """
 
         with Profiler().trace_with_timer("qkv-proj-reshape", level=4):
-            query_states = ttnn.reshape(query_states, hidden_shape, memory_config=mem_cfg)
-            key_states = ttnn.reshape(key_states, hidden_shape, memory_config=mem_cfg)
-            value_states = ttnn.reshape(value_states, hidden_shape, memory_config=mem_cfg)
+            qkv_states = ttnn.reshape(qkv_states, hidden_shape, memory_config=mem_cfg)
         """ QKV: [1, B, n, H] """
+
+        with Profiler().trace_with_timer("qkv-split", level=4):
+            query_states, key_states, value_states = ttnn.experimental.nlp_create_qkv_heads_decode(
+                qkv_states,
+                num_heads=self.q_heads_per_device,
+                num_kv_heads=self.kv_heads_per_device,
+                memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
+            )
 
         with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states = self.q_norm(query_states, mode=InferenceMode.DECODE)
             key_states = self.k_norm(key_states, mode=InferenceMode.DECODE)
         """ QKV: [1, B, n, H] """
-
-        qkv = ttnn.concat([query_states, key_states, value_states], dim=-2)
-        qkv_reshaped = ttnn.reshape(qkv, (1, 1, batch_size, -1))
-        ttnn.deallocate(qkv)
-
-        q, k, v = ttnn.experimental.nlp_create_qkv_heads_decode(
-            qkv_reshaped,
-            num_heads=self.q_heads_per_device,
-            num_kv_heads=self.kv_heads_per_device,
-            memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
-        )
-        ttnn.deallocate(qkv_reshaped)
-
+        
         with Profiler().trace_with_timer("rope", level=4):
-            q = ttnn.experimental.rotary_embedding_llama(
-                q, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
+            query_states = ttnn.experimental.rotary_embedding_llama(
+                query_states, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
             )
-            k = ttnn.experimental.rotary_embedding_llama(
-                k, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
+            key_states = ttnn.experimental.rotary_embedding_llama(
+                key_states, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
             )
 
-            query_states = ttnn.sharded_to_interleaved(q, memory_config=mem_cfg)
-            key_states = ttnn.sharded_to_interleaved(k, memory_config=mem_cfg)
+            query_states = ttnn.sharded_to_interleaved(query_states, memory_config=mem_cfg)
+            key_states = ttnn.sharded_to_interleaved(key_states, memory_config=mem_cfg)
+            value_states = ttnn.sharded_to_interleaved(value_states, memory_config=mem_cfg)
 
             query_states = reshape_from_interleaved(query_states)
             key_states = reshape_from_interleaved(key_states)
