@@ -13,10 +13,14 @@ from models.demos.qwen3.tt.rope import apply_rotary_emb_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 
+from models.tt_transformers.tt.rope import RotarySetup
+
+
 def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
     x_half1, x_half2 = x.chunk(2, dim=-1)
     stacked = torch.stack([x_half1, x_half2], dim=-1)
     return stacked.flatten(start_dim=-2)
+
 
 def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     bsz, seqlen, num_heads, head_dim = x.shape
@@ -76,7 +80,7 @@ class Qwen3MoeAttention(nn.Module):
             config.max_seq_len,
             self.head_dim,
         )
-        
+
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
         assert config.sliding_window is None
@@ -202,8 +206,8 @@ class Qwen3MoeAttention(nn.Module):
             for b in range(batch_size):
                 # ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b : b + 1], b)
                 # ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b : b + 1], b)
-                ttnn.fill_cache(self.cache_k, key_states[b : b + 1], b)
-                ttnn.fill_cache(self.cache_v, value_states[b : b + 1], b)
+                ttnn.fill_cache(self.cache_k, key_states[b: b + 1], b)
+                ttnn.fill_cache(self.cache_v, value_states[b: b + 1], b)
 
         with Profiler().trace_with_timer("kv-cache-load", level=4):
             start_index = (0, 0, 0, 0)
@@ -315,7 +319,7 @@ class Qwen3MoeAttention(nn.Module):
             key_states = ttnn.slice(self.cache_k, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
             value_states = ttnn.slice(self.cache_v, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
         """ Q: [S=1, B, n, H], KV: [B, n, S=1, H]"""
-        
+
         attn_output = tt_sdpa_forward(
             query_states,
             key_states,

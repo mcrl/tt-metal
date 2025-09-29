@@ -16,6 +16,7 @@ from utils.memory_state import print_memory_state
 
 from models.tt_transformers.tt.rope import RotarySetup
 
+
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
     probs_sum = torch.cumsum(probs_sort, dim=-1)
@@ -161,6 +162,77 @@ class Qwen3MoETT:
 
         enable_persistent_kernel_cache()
 
+    def measure_prefill_time(self, batch_size: int, input_length: int):
+        input_tokens = torch.randint(0, self.config.vocab_size, (batch_size, input_length), dtype=torch.int64)
+        input_tokens_tt = ttnn.from_torch(
+            input_tokens,
+            device=self.mesh_device,
+            dtype=ttnn.uint32,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
+
+        for i in range(5):
+            self.model(input_tokens_tt, start_pos=0, mode="prefill")
+        ttnn.synchronize_device(self.mesh_device)
+
+        trace_id = ttnn.begin_trace_capture(self.mesh_device, cq_id=0)
+        self.model(input_tokens_tt, start_pos=0, mode="prefill")
+        ttnn.end_trace_capture(self.mesh_device, trace_id)
+
+        trace_execute_start_time = time.time()
+        ttnn.execute_trace(self.mesh_device, trace_id, cq_id=0, blocking=False)
+        ttnn.synchronize_device(self.mesh_device)
+        trace_execute_end_time = time.time()
+
+        times = []
+        for i in range(10):
+            trace_execute_start_time = time.time()
+            ttnn.execute_trace(self.mesh_device, trace_id, cq_id=0, blocking=False)
+            ttnn.synchronize_device(self.mesh_device)
+            trace_execute_end_time = time.time()
+            times.append(trace_execute_end_time - trace_execute_start_time)
+
+        ttnn.release_trace(self.mesh_device, trace_id)
+        return times
+
+    def measure_decode_time(self, batch_size: int, input_length: int, output_length: int):
+        input_tokens = torch.randint(0, self.config.vocab_size, (batch_size, 1), dtype=torch.int64)
+        input_tokens_tt = ttnn.from_torch(
+            input_tokens,
+            device=self.mesh_device,
+            dtype=ttnn.uint32,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
+        ttnn.synchronize_device(self.mesh_device)
+
+        for i in range(5):
+            self.model(input_tokens_tt, start_pos=input_length, mode="decode")
+        ttnn.synchronize_device(self.mesh_device)
+
+        trace_id = ttnn.begin_trace_capture(self.mesh_device, cq_id=0)
+        self.model(input_tokens_tt, start_pos=input_length, mode="decode")
+        ttnn.end_trace_capture(self.mesh_device, trace_id)
+
+        trace_execute_start_time = time.time()
+        ttnn.execute_trace(self.mesh_device, trace_id, cq_id=0, blocking=False)
+        ttnn.synchronize_device(self.mesh_device)
+        trace_execute_end_time = time.time()
+
+        times = []
+        for i in range(10):
+            trace_execute_start_time = time.time()
+            ttnn.execute_trace(self.mesh_device, trace_id, cq_id=0, blocking=False)
+            ttnn.synchronize_device(self.mesh_device)
+            trace_execute_end_time = time.time()
+            times.append(trace_execute_end_time - trace_execute_start_time)
+
+        ttnn.release_trace(self.mesh_device, trace_id)
+        return times
+
     def generate(
         self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9
     ) -> List[List[str]]:
@@ -185,43 +257,6 @@ class Qwen3MoETT:
         eos_reached = torch.tensor([False] * batch_size)
         input_text_mask = torch.ne(tokens, pad_id)
 
-        """ Warmup """
-
-        disable_profiler()
-        with Profiler().trace_with_timer("Warmup", level=0):
-            warmup = True
-            if warmup is True:
-                for curr_pos in range(min_prompt_len, total_len):
-                    print(f"curr_pos: {curr_pos}")
-                    with torch.inference_mode():
-                        mode = "prefill" if prev_pos == 0 else "decode"
-
-                        ids = ttnn.from_torch(
-                            tokens[:, prev_pos:curr_pos],
-                            device=self.mesh_device,
-                            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                            dtype=ttnn.uint32,
-                            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                            layout=ttnn.ROW_MAJOR_LAYOUT,
-                        )
-
-                        if mode == "prefill":
-                            rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
-                            trans_mat = self.rope.transformation_mat_prefill
-                        else:
-                            position_idxs = torch.full((batch_size,), prev_pos, dtype=torch.long)
-                            rot_mats = self.rope.get_rot_mats(position_idxs)
-                            trans_mat = self.rope.transformation_mat
-
-                        logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=prev_pos, mode=mode)
-                        logits = ttnn.to_torch(
-                            logits_tt,
-                            dtype=self.config.dtype,
-                            mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
-                        )
-                    prev_pos = curr_pos
-        enable_profiler()
-
         ttnn.synchronize_device(self.mesh_device)
         prev_pos = 0
 
@@ -233,27 +268,6 @@ class Qwen3MoETT:
                 print(f"curr_pos: {curr_pos}")
                 iter_start_time = time.time()
                 mode = "prefill" if prev_pos == 0 else "decode"
-
-                # if curr_pos > min_prompt_len:
-                #     print("Begin trace capture")
-                #     ttnn.synchronize_device(self.mesh_device)
-                #     trace_capture_start_time = time.time()
-                #     trace_id = ttnn.begin_trace_capture(self.mesh_device, cq_id=0)
-                #     logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
-                #     ttnn.end_trace_capture(self.mesh_device, trace_id)
-                #     ttnn.synchronize_device(self.mesh_device)
-                #     trace_capture_end_time = time.time()
-                #     print(f"Trace capture time: {(trace_capture_end_time - trace_capture_start_time) * 1000:.3f}ms")
-
-                #     for i in range(10):
-                #         ttnn.synchronize_device(self.mesh_device)
-                #         trace_execute_start_time = time.time()
-                #         ttnn.execute_trace(self.mesh_device, trace_id, cq_id=0, blocking=False)
-                #         ttnn.synchronize_device(self.mesh_device)
-                #         trace_execute_end_time = time.time()
-                #         print(f"Trace execute time: {(trace_execute_end_time - trace_execute_start_time) * 1000:.3f}ms")
-                #     ttnn.release_trace(self.mesh_device, trace_id)
-                #     exit(0)
 
                 ids = ttnn.from_torch(
                     tokens[:, prev_pos:curr_pos],
