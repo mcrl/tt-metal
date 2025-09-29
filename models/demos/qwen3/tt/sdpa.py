@@ -79,8 +79,10 @@ def sdpa_forward_decode(
     dropout: float = 0.0,
     scaling: Optional[float] = None,
 ) -> ttnn.Tensor:
+    """Input QKV: [B, n, S=1, H]"""
     with Profiler().trace_with_timer("permute", level=4):
         query = ttnn.permute(query, dims=(2, 0, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+    """Q: [S=1, B, n, H], KV: [B, n, S=1, H]"""
 
     with Profiler().trace_with_timer("padding", level=4, args={"class": "sdpa_forward_decode"}):
         key = _explicit_pad(key, 0.0)
@@ -94,6 +96,7 @@ def sdpa_forward_decode(
             ttnn.to_layout(value, layout=ttnn.TILE_LAYOUT), memory_config=ttnn.DRAM_MEMORY_CONFIG
         )
 
+    """ Input Q: [S=1, B, n, H], KV: [B, n, S=1, H]"""
     with Profiler().trace_with_timer("attention", level=4, args={"class": "sdpa_forward_decode"}):
         attn_output = ttnn.transformer.scaled_dot_product_attention_decode(
             query,
@@ -106,15 +109,8 @@ def sdpa_forward_decode(
                 math_fidelity=ttnn.MathFidelity.HiFi4,
                 math_approx_mode=False,
             ),
-            # memory_config=ttnn.L1_MEMORY_CONFIG,  # Incorrect Results!
         )
-
-    with Profiler().trace_with_timer("permute", level=4):
-        # [S=1, B, n, h] -> [B, n, S=1, h]
-        attn_output = ttnn.permute(attn_output, dims=(1, 2, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
-
-    with Profiler().trace_with_timer("to_layout", level=4, args={"class": "sdpa_forward_decode"}):
-        attn_output = ttnn.to_layout(attn_output, layout=ttnn.TILE_LAYOUT, memory_config=ttnn.L1_MEMORY_CONFIG)
+    """ Output O: [S=1, B, n, H]"""
 
     return attn_output
 
