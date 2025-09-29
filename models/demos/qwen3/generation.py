@@ -116,7 +116,7 @@ class Qwen3MoEReference:
 
 class Qwen3MoETT:
     def __init__(
-        self, mesh_device: ttnn.Device, ckpt_dir: str, tokenizer_path: str, config_path: Optional[str] = None
+        self, mesh_device: ttnn.Device, ckpt_dir: str, tokenizer_path: str, batch_size: int, config_path: Optional[str] = None
     ) -> None:
         torch.manual_seed(42)
         torch.set_default_device(torch.device("cpu"))
@@ -132,6 +132,7 @@ class Qwen3MoETT:
         self.config = Qwen3MoeConfig.from_dict(data)
 
         # FIXME: ad-hoc for reducing KV cache memory
+        self.config.batch_size = batch_size
         self.config.max_batch_size = 32
         self.config.max_seq_len = 512
 

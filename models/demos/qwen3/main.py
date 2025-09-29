@@ -29,7 +29,7 @@ def perftest_tt(
     set_and_get_device_cache(mesh_device)
 
     qwen3_moe = Qwen3MoETT(
-        mesh_device=mesh_device, ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path
+        mesh_device=mesh_device, ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, batch_size=batch_size, config_path=config_path
     )
 
     prompts = load_prompts(batch_size, prompt_len)
