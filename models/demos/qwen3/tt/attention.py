@@ -13,6 +13,7 @@ from models.demos.qwen3.tt.rope import apply_rotary_emb_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 
+from models.tt_transformers.tt.rope import RotarySetup
 
 def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
     x_half1, x_half2 = x.chunk(2, dim=-1)
@@ -69,6 +70,14 @@ class Qwen3MoeAttention(nn.Module):
             self.head_dim,
         )
 
+        self.rope = RotarySetup(
+            device=self.mesh_device,
+            batch_size=8,
+            head_dim=self.head_dim,
+            max_seq_len=config.max_seq_len,
+            rope_theta=config.rope_theta,
+        )
+        
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
         assert config.sliding_window is None
@@ -281,17 +290,41 @@ class Qwen3MoeAttention(nn.Module):
             key_states = self.k_norm(key_states, mode=InferenceMode.DECODE)
         """ QKV: [1, B, n, H] """
 
+        qkv = ttnn.concat([query_states, key_states, value_states], dim=-2)
+        qkv_reshaped = ttnn.reshape(qkv, (1, 1, batch_size, -1))
+        ttnn.deallocate(qkv)
+
+        q, k, v = ttnn.experimental.nlp_create_qkv_heads_decode(
+            qkv_reshaped,
+            num_heads=4,
+            num_kv_heads=1,
+            memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
+        )
+        ttnn.deallocate(qkv_reshaped)
+
         with Profiler().trace_with_timer("rope", level=4):
-            query_states, key_states = apply_rotary_emb_v2(
-                query_states, key_states, position_embeddings, self.trans_mat, mode=InferenceMode.DECODE
+            position_idxs = torch.full((batch_size,), start_pos, dtype=torch.long)
+            rot_mats = self.rope.get_rot_mats(position_idxs)
+            trans_mat = self.rope.transformation_mat
+
+            q = ttnn.experimental.rotary_embedding_llama(
+                q, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
             )
+            k = ttnn.experimental.rotary_embedding_llama(
+                k, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
+            )
+
+            query_states = ttnn.sharded_to_interleaved(q, memory_config=mem_cfg)
+            key_states = ttnn.sharded_to_interleaved(k, memory_config=mem_cfg)
+
             query_states = reshape_from_interleaved(query_states)
             key_states = reshape_from_interleaved(key_states)
-        """ QK: [B, n, S=1, H], V: [S=1, B, n, H] """
+        """ Q: [S=1, B, n, H], K: [S=1, B, n, H], V: [S=1, B, n, H] """
 
         with Profiler().trace_with_timer("kv-cache-store", level=4):
-            key_states = ttnn.permute(key_states, dims=(2, 1, 0, 3), memory_config=mem_cfg)
+            key_states = ttnn.permute(key_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
             value_states = ttnn.permute(value_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
+
             """ KV: [S=1, n, B, H] """
             ttnn.kv_cache.update_cache_for_token_(self.cache_k, key_states, update_index=start_pos, batch_offset=0)
             ttnn.kv_cache.update_cache_for_token_(self.cache_v, value_states, update_index=start_pos, batch_offset=0)
@@ -304,8 +337,8 @@ class Qwen3MoeAttention(nn.Module):
             ttnn.deallocate(value_states)
             key_states = ttnn.slice(self.cache_k, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
             value_states = ttnn.slice(self.cache_v, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
-        """ QKV: [B, n, S=1, H]"""
-
+        """ Q: [S=1, B, n, H], KV: [B, n, S=1, H]"""
+        
         attn_output = tt_sdpa_forward(
             query_states,
             key_states,
