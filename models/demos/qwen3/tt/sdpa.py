@@ -79,9 +79,6 @@ def sdpa_forward_decode(
     dropout: float = 0.0,
     scaling: Optional[float] = None,
 ) -> ttnn.Tensor:
-    """Input QKV: [B, n, S=1, H]"""
-    with Profiler().trace_with_timer("permute", level=4):
-        query = ttnn.permute(query, dims=(2, 0, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
     """Q: [S=1, B, n, H], KV: [B, n, S=1, H]"""
 
     with Profiler().trace_with_timer("padding", level=4, args={"class": "sdpa_forward_decode"}):
