@@ -6,6 +6,7 @@ from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
+from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
 
 
 class Qwen3MoeMLP(nn.Module):
@@ -135,10 +136,13 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.is_tt_setup = True
 
     @profile_trace("Qwen3MoeSparseMoeBlock", level=3)
-    def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
-        batch_size, sequence_length, hidden_dim = hidden_states.shape
-
-        mem_cfg = ttnn.L1_MEMORY_CONFIG if sequence_length == 1 else ttnn.DRAM_MEMORY_CONFIG
+    def forward(self, hidden_states: ttnn.Tensor, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
+        if mode == InferenceMode.PREFILL:
+            batch_size, sequence_length, hidden_dim = hidden_states.shape
+            mem_cfg = ttnn.DRAM_MEMORY_CONFIG
+        elif mode == InferenceMode.DECODE:
+            _, sequence_length, batch_size, hidden_dim = hidden_states.shape
+            mem_cfg = ttnn.L1_MEMORY_CONFIG
 
         with Profiler().trace_with_timer("reshape", level=4):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
@@ -166,14 +170,14 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 selected_experts, (1, batch_size, sequence_length, self.top_k), memory_config=ttnn.DRAM_MEMORY_CONFIG
             )
 
-        with Profiler().trace_with_timer("prepare-all-to-all", level=4):
-            all_to_all_combine_output_tensors = ttnn.zeros(
-                (self.top_k, batch_size, sequence_length, hidden_dim),
-                dtype=ttnn.bfloat16,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
-                device=self.mesh_device,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            )
+        # with Profiler().trace_with_timer("prepare-all-to-all", level=4):
+        #     all_to_all_combine_output_tensors = ttnn.zeros(
+        #         (self.top_k, batch_size, sequence_length, hidden_dim),
+        #         dtype=ttnn.bfloat16,
+        #         layout=ttnn.ROW_MAJOR_LAYOUT,
+        #         device=self.mesh_device,
+        #         memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        #     )
 
         with Profiler().trace_with_timer("repeat-hidden", level=4):
             hidden_states = ttnn.reshape(
@@ -217,7 +221,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 experts_output,
                 self.expert_mapping_tensors,
                 selected_experts,
-                # optional_output_tensor=all_to_all_combine_output_tensors,
                 axis=1,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
@@ -257,11 +260,18 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             ttnn.deallocate(combined_output_2)
 
         with Profiler().trace_with_timer("reshape", level=4):
-            final_hidden_states = ttnn.reshape(
-                combined_output_3,
-                (batch_size, sequence_length, hidden_dim),
-                memory_config=mem_cfg,
-            )
+            if mode == InferenceMode.PREFILL:
+                final_hidden_states = ttnn.reshape(
+                    combined_output_3,
+                    (batch_size, sequence_length, hidden_dim),
+                    memory_config=mem_cfg,
+                )
+            elif mode == InferenceMode.DECODE:
+                final_hidden_states = ttnn.reshape(
+                    combined_output_3,
+                    (1, 1, batch_size, hidden_dim),
+                    memory_config=mem_cfg,
+                )
 
         return final_hidden_states
 

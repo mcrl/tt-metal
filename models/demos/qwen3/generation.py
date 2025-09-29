@@ -178,11 +178,12 @@ class Qwen3MoETT:
 
         """ Warmup """
 
-        # disable_profiler()
+        disable_profiler()
         with Profiler().trace_with_timer("Warmup", level=0):
             warmup = True
             if warmup is True:
                 for curr_pos in range(min_prompt_len, total_len):
+                    print(f"curr_pos: {curr_pos}")
                     with torch.inference_mode():
                         mode = "prefill" if prev_pos == 0 else "decode"
                         ids = ttnn.from_torch(
@@ -200,7 +201,7 @@ class Qwen3MoETT:
                             mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
                         )
                     prev_pos = curr_pos
-        # enable_profiler()
+        enable_profiler()
 
         ttnn.synchronize_device(self.mesh_device)
         prev_pos = 0
@@ -210,6 +211,7 @@ class Qwen3MoETT:
 
         with Profiler().trace_with_timer("Generate", level=0):
             for curr_pos in range(min_prompt_len, total_len):
+                print(f"curr_pos: {curr_pos}")
                 iter_start_time = time.time()
                 mode = "prefill" if prev_pos == 0 else "decode"
                 ids = ttnn.from_torch(

@@ -75,11 +75,10 @@ def main(
         prompt_and_responses_tt, iter_times_tt = perftest_tt(
             batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path
         )
-        print(f"TT Results:")
+        print(f"TT Generation Results:")
         for i in range(batch_size):
             print("\033[31m" + prompt_and_responses_tt[i][0] + "\033[0m" + prompt_and_responses_tt[i][1] + "\n")
 
-        print(f"TT Time: {sum(iter_times_tt)}")
     if run_tt:
         ttft_ms = iter_times_tt[0] * 1000
         decode_times = iter_times_tt[1:] if len(iter_times_tt) > 1 else []
@@ -88,6 +87,7 @@ def main(
 
         print(f"TT TTFT: {ttft_ms:.2f} ms")
         print(f"TT T/S/U: {tokens_per_second_per_user:.2f}")
+        print(f"TT Output Tokens/s: {tokens_per_second_per_user * batch_size:.2f}")
 
     if run_reference:
         ran_any = True

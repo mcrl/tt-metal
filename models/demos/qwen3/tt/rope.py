@@ -2,6 +2,7 @@ from typing import Tuple
 import torch
 import ttnn
 from models.demos.qwen3.utils.profiler import profile_trace
+from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
 
 
 def precompute_freqs_cis(config) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
@@ -98,17 +99,40 @@ def apply_rotary_emb_v2(
     xk: ttnn.Tensor,
     freqs_cis: Tuple[ttnn.Tensor, ttnn.Tensor],
     trans_mat: ttnn.Tensor,
+    mode: InferenceMode = InferenceMode.PREFILL,
 ) -> Tuple[ttnn.Tensor, ttnn.Tensor]:
-    batch_size, seq_len, num_heads, head_dim = xq.shape
+    if mode == InferenceMode.PREFILL:
+        batch_size, seq_len, num_heads, head_dim = xq.shape
+        cos, sin = freqs_cis
+        cos_full = ttnn.reshape(cos, [1, 1, seq_len, head_dim], memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        sin_full = ttnn.reshape(sin, [1, 1, seq_len, head_dim], memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
-    cos, sin = freqs_cis
-    cos_full = ttnn.reshape(cos, [1, 1, seq_len, head_dim], memory_config=ttnn.L1_MEMORY_CONFIG)
-    sin_full = ttnn.reshape(sin, [1, 1, seq_len, head_dim], memory_config=ttnn.L1_MEMORY_CONFIG)
+        xq_bnsh = ttnn.permute(xq, dims=(0, 2, 1, 3), memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        xk_bnsh = ttnn.permute(xk, dims=(0, 2, 1, 3), memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
-    xq_bnsh = ttnn.permute(xq, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
-    xk_bnsh = ttnn.permute(xk, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+        yq_bnsh = ttnn.experimental.rotary_embedding_llama(
+            xq_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False, memory_config=ttnn.DRAM_MEMORY_CONFIG
+        )
+        yk_bnsh = ttnn.experimental.rotary_embedding_llama(
+            xk_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False, memory_config=ttnn.DRAM_MEMORY_CONFIG
+        )
 
-    yq_bnsh = ttnn.experimental.rotary_embedding_llama(xq_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False)
-    yk_bnsh = ttnn.experimental.rotary_embedding_llama(xk_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False)
+        return yq_bnsh, yk_bnsh
 
-    return yq_bnsh, yk_bnsh
+    elif mode == InferenceMode.DECODE:
+        seq_len, batch_size, num_heads, head_dim = xq.shape
+        cos, sin = freqs_cis
+        cos_full = ttnn.reshape(cos, [1, 1, seq_len, head_dim], memory_config=ttnn.L1_MEMORY_CONFIG)
+        sin_full = ttnn.reshape(sin, [1, 1, seq_len, head_dim], memory_config=ttnn.L1_MEMORY_CONFIG)
+
+        xq_bnsh = ttnn.permute(xq, dims=(1, 2, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+        xk_bnsh = ttnn.permute(xk, dims=(1, 2, 0, 3), memory_config=ttnn.L1_MEMORY_CONFIG)
+
+        yq_bnsh = ttnn.experimental.rotary_embedding_llama(
+            xq_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False, memory_config=ttnn.L1_MEMORY_CONFIG
+        )
+        yk_bnsh = ttnn.experimental.rotary_embedding_llama(
+            xk_bnsh, cos_full, sin_full, trans_mat, is_decode_mode=False, memory_config=ttnn.L1_MEMORY_CONFIG
+        )
+
+        return yq_bnsh, yk_bnsh

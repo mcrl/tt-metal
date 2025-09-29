@@ -2,11 +2,14 @@ import torch
 from torch import nn
 import ttnn
 from pathlib import Path
+from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
+
 
 def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
     x_half1, x_half2 = x.chunk(2, dim=-1)
     stacked = torch.stack([x_half1, x_half2], dim=-1)
     return stacked.flatten(start_dim=-2)
+
 
 class Qwen3MoeRMSNorm(nn.Module):
     def __init__(self, hidden_size: int, eps: float = 1e-6, mesh_device: ttnn.Device = None, interleaved: bool = False):
@@ -41,11 +44,11 @@ class Qwen3MoeRMSNorm(nn.Module):
                 mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
                 # cache_file_name=Path.home() / ".cache/weights" / f"rmsnorm_{id(self)}_weight",
             )
-            
+
         self.is_tt_setup = True
 
-    def forward(self, hidden_states: ttnn.Tensor) -> ttnn.Tensor:
-        mem_cfg = ttnn.L1_MEMORY_CONFIG if hidden_states.shape[1] == 1 else ttnn.DRAM_MEMORY_CONFIG
+    def forward(self, hidden_states: ttnn.Tensor, mode: InferenceMode) -> ttnn.Tensor:
+        mem_cfg = ttnn.L1_MEMORY_CONFIG if mode == InferenceMode.DECODE else ttnn.DRAM_MEMORY_CONFIG
         return ttnn.rms_norm(
             hidden_states, epsilon=self.variance_epsilon, weight=self.weight_tensor, memory_config=mem_cfg
         )
