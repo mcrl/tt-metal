@@ -60,6 +60,8 @@ class Qwen3MoeAttention(nn.Module):
 
         self.sliding_window = None
 
+        self.q_heads_per_device = self.num_attention_heads // self.mesh_device.shape[1]
+
         self.KV_REPEAT_COEF = 2
         self.kv_heads_per_device = self.num_key_value_heads * self.KV_REPEAT_COEF // self.mesh_device.shape[1]
 
@@ -72,7 +74,7 @@ class Qwen3MoeAttention(nn.Module):
 
         self.rope = RotarySetup(
             device=self.mesh_device,
-            batch_size=8,
+            batch_size=config.batch_size,
             head_dim=self.head_dim,
             max_seq_len=config.max_seq_len,
             rope_theta=config.rope_theta,
@@ -296,8 +298,8 @@ class Qwen3MoeAttention(nn.Module):
 
         q, k, v = ttnn.experimental.nlp_create_qkv_heads_decode(
             qkv_reshaped,
-            num_heads=4,
-            num_kv_heads=1,
+            num_heads=self.q_heads_per_device,
+            num_kv_heads=self.kv_heads_per_device,
             memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
         )
         ttnn.deallocate(qkv_reshaped)
