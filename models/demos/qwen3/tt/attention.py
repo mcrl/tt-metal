@@ -13,13 +13,10 @@ from models.demos.qwen3.tt.rope import apply_rotary_emb_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 
-from models.tt_transformers.tt.rope import RotarySetup
-
 def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
     x_half1, x_half2 = x.chunk(2, dim=-1)
     stacked = torch.stack([x_half1, x_half2], dim=-1)
     return stacked.flatten(start_dim=-2)
-
 
 def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     bsz, seqlen, num_heads, head_dim = x.shape
@@ -70,14 +67,6 @@ class Qwen3MoeAttention(nn.Module):
             self.num_key_value_heads * self.KV_REPEAT_COEF // self.mesh_device.shape[1],
             config.max_seq_len,
             self.head_dim,
-        )
-
-        self.rope = RotarySetup(
-            device=self.mesh_device,
-            batch_size=config.batch_size,
-            head_dim=self.head_dim,
-            max_seq_len=config.max_seq_len,
-            rope_theta=config.rope_theta,
         )
         
         assert config._attn_implementation == "sdpa"
@@ -163,19 +152,10 @@ class Qwen3MoeAttention(nn.Module):
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_o_proj"),
         )
-        self.trans_mat = ttnn.as_tensor(
-            get_rot_transformation_mat(dhead=ttnn.TILE_SIZE),
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_rot_trans_mat"),
-        )
         self.is_tt_setup = True
 
     def forward_prefill(
-        self, hidden_states: ttnn.Tensor, start_pos: int, position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor]
+        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor
     ) -> ttnn.Tensor:
         """Prefill starts. Hidden stats: [1, B=1, S, H]"""
 
@@ -198,9 +178,24 @@ class Qwen3MoeAttention(nn.Module):
             key_states = self.k_norm(key_states, mode=InferenceMode.PREFILL)
 
         with Profiler().trace_with_timer("rope", level=4):
-            query_states, key_states = apply_rotary_emb_v2(
-                query_states, key_states, position_embeddings, self.trans_mat
+            query_states = ttnn.permute(query_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
+            key_states = ttnn.permute(key_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
+
+            query_states = ttnn.experimental.rotary_embedding_llama(
+                query_states,
+                rot_mats[0],
+                rot_mats[1],
+                trans_mat,
+                is_decode_mode=False
             )
+            key_states = ttnn.experimental.rotary_embedding_llama(
+                key_states,
+                rot_mats[0],
+                rot_mats[1],
+                trans_mat,
+                is_decode_mode=False
+            )
+
             query_states = reshape_from_interleaved(query_states)
             key_states = reshape_from_interleaved(key_states)
 
@@ -267,7 +262,7 @@ class Qwen3MoeAttention(nn.Module):
         return linear_output
 
     def forward_decode(
-        self, hidden_states: ttnn.Tensor, start_pos: int, position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor]
+        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor
     ) -> ttnn.Tensor:
         mem_cfg = ttnn.L1_MEMORY_CONFIG
 
@@ -305,10 +300,6 @@ class Qwen3MoeAttention(nn.Module):
         ttnn.deallocate(qkv_reshaped)
 
         with Profiler().trace_with_timer("rope", level=4):
-            position_idxs = torch.full((batch_size,), start_pos, dtype=torch.long)
-            rot_mats = self.rope.get_rot_mats(position_idxs)
-            trans_mat = self.rope.transformation_mat
-
             q = ttnn.experimental.rotary_embedding_llama(
                 q, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
             )
@@ -392,15 +383,16 @@ class Qwen3MoeAttention(nn.Module):
     def forward(
         self,
         hidden_states: ttnn.Tensor,
+        rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor],
+        trans_mat: ttnn.Tensor,
         start_pos: int,
-        position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
-        mode: InferenceMode = InferenceMode.PREFILL,
+        mode: InferenceMode = InferenceMode.PREFILL
     ) -> ttnn.Tensor:
 
         if mode == InferenceMode.PREFILL:
-            return self.forward_prefill(hidden_states, start_pos, position_embeddings)
+            return self.forward_prefill(hidden_states, start_pos, rot_mats, trans_mat)
         elif mode == InferenceMode.DECODE:
-            return self.forward_decode(hidden_states, start_pos, position_embeddings)
+            return self.forward_decode(hidden_states, start_pos, rot_mats, trans_mat)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
