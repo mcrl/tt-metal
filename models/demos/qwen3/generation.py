@@ -14,6 +14,7 @@ from models.demos.qwen3.common.loader import load, materialize
 from models.utility_functions import enable_persistent_kernel_cache
 from utils.memory_state import print_memory_state
 
+from models.tt_transformers.tt.rope import RotarySetup
 
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
@@ -132,13 +133,20 @@ class Qwen3MoETT:
         self.config = Qwen3MoeConfig.from_dict(data)
 
         # FIXME: ad-hoc for reducing KV cache memory
-        self.config.batch_size = batch_size
         self.config.max_batch_size = 32
         self.config.max_seq_len = 512
 
         with Profiler().trace_with_timer("Create-Model", level=0):
             with torch.device("meta"):
                 self.model = Qwen3MoeModelTT(self.config, self.mesh_device)
+
+            self.rope = RotarySetup(
+                device=self.mesh_device,
+                batch_size=batch_size,
+                head_dim=self.config.head_dim,
+                max_seq_len=self.config.max_seq_len,
+                rope_theta=self.config.rope_theta,
+            )
 
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
 
@@ -187,6 +195,7 @@ class Qwen3MoETT:
                     print(f"curr_pos: {curr_pos}")
                     with torch.inference_mode():
                         mode = "prefill" if prev_pos == 0 else "decode"
+
                         ids = ttnn.from_torch(
                             tokens[:, prev_pos:curr_pos],
                             device=self.mesh_device,
@@ -195,7 +204,16 @@ class Qwen3MoETT:
                             memory_config=ttnn.DRAM_MEMORY_CONFIG,
                             layout=ttnn.ROW_MAJOR_LAYOUT,
                         )
-                        logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
+
+                        if mode == "prefill":
+                            rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
+                            trans_mat = self.rope.transformation_mat_prefill
+                        else:
+                            position_idxs = torch.full((batch_size,), prev_pos, dtype=torch.long)
+                            rot_mats = self.rope.get_rot_mats(position_idxs)
+                            trans_mat = self.rope.transformation_mat
+
+                        logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=prev_pos, mode=mode)
                         logits = ttnn.to_torch(
                             logits_tt,
                             dtype=self.config.dtype,
@@ -215,14 +233,6 @@ class Qwen3MoETT:
                 print(f"curr_pos: {curr_pos}")
                 iter_start_time = time.time()
                 mode = "prefill" if prev_pos == 0 else "decode"
-                ids = ttnn.from_torch(
-                    tokens[:, prev_pos:curr_pos],
-                    device=self.mesh_device,
-                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                    dtype=ttnn.uint32,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    layout=ttnn.ROW_MAJOR_LAYOUT,
-                )
 
                 # if curr_pos > min_prompt_len:
                 #     print("Begin trace capture")
@@ -245,7 +255,24 @@ class Qwen3MoETT:
                 #     ttnn.release_trace(self.mesh_device, trace_id)
                 #     exit(0)
 
-                logits_tt = self.model(ids, start_pos=prev_pos, mode=mode)
+                ids = ttnn.from_torch(
+                    tokens[:, prev_pos:curr_pos],
+                    device=self.mesh_device,
+                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                    dtype=ttnn.uint32,
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    layout=ttnn.ROW_MAJOR_LAYOUT,
+                )
+
+                if mode == "prefill":
+                    rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
+                    trans_mat = self.rope.transformation_mat_prefill
+                else:
+                    position_idxs = torch.full((batch_size,), prev_pos, dtype=torch.long)
+                    rot_mats = self.rope.get_rot_mats(position_idxs)
+                    trans_mat = self.rope.transformation_mat
+
+                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=prev_pos, mode=mode)
 
                 logits = ttnn.to_torch(
                     logits_tt,
