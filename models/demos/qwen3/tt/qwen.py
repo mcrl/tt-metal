@@ -46,18 +46,20 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self.is_tt_setup = True
 
     def forward_prefill(
-        self, hidden_states: ttnn.Tensor, start_pos: int, position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor]
+        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor
     ) -> ttnn.Tensor:
         hidden_states_0 = hidden_states
         """Hidden states: [B, S, H]"""
 
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             attn_input = self.input_layernorm(hidden_states_0, mode=InferenceMode.PREFILL)
+
         attn_result = self.self_attn(
             hidden_states=attn_input,
+            rot_mats=rot_mats,
+            trans_mat=trans_mat,
             start_pos=start_pos,
-            position_embeddings=position_embeddings,
-            mode=InferenceMode.PREFILL,
+            mode=InferenceMode.PREFILL
         )
 
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
@@ -73,7 +75,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         return output
 
     def forward_decode(
-        self, hidden_states: ttnn.Tensor, start_pos: int, position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor]
+        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor
     ) -> ttnn.Tensor:
         """Hidden states: [1, 1, B, H]"""
 
@@ -82,9 +84,10 @@ class Qwen3MoeDecoderLayer(nn.Module):
 
         attn_result = self.self_attn(
             hidden_states=attn_input,
+            rot_mats=rot_mats,
+            trans_mat=trans_mat,
             start_pos=start_pos,
-            position_embeddings=position_embeddings,
-            mode=InferenceMode.DECODE,
+            mode=InferenceMode.DECODE
         )
         """attn result: [1, 1, B, H]"""
 
@@ -108,13 +111,14 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self,
         hidden_states: ttnn.Tensor,
         start_pos: int,
-        position_embeddings: Tuple[ttnn.Tensor, ttnn.Tensor],
-        mode: InferenceMode = InferenceMode.PREFILL,
+        mode: InferenceMode,
+        rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor],
+        trans_mat: ttnn.Tensor
     ) -> ttnn.Tensor:
         if mode == InferenceMode.PREFILL:
-            return self.forward_prefill(hidden_states, start_pos, position_embeddings)
+            return self.forward_prefill(hidden_states, start_pos, rot_mats, trans_mat)
         elif mode == InferenceMode.DECODE:
-            return self.forward_decode(hidden_states, start_pos, position_embeddings)
+            return self.forward_decode(hidden_states, start_pos, rot_mats, trans_mat)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -136,8 +140,6 @@ class Qwen3MoeModel(nn.Module):
         )
         self.norm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-
-        self.position_embeddings_v2_cpu = precompute_freqs_cis_tt_v2(config)
 
         assert config.sliding_window is None
 
@@ -167,33 +169,15 @@ class Qwen3MoeModel(nn.Module):
             cache_file_name=ttnn_model_cache_path("lm_head_weight"),
         )
 
-        self.position_embeddings_v2_cos = ttnn.from_torch(
-            self.position_embeddings_v2_cpu[0],
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-        )
-        self.position_embeddings_v2_sin = ttnn.from_torch(
-            self.position_embeddings_v2_cpu[1],
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-        )
-
         self.is_tt_setup = True
 
     @profile_trace("Qwen3MoeModel", level=1)
-    def forward(self, ids: ttnn.Tensor, start_pos: int = 0, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
+    def forward(self, ids: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor,
+                start_pos: int = 0, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
         if isinstance(mode, str):
             mode = InferenceMode(mode)
 
         batch_size, sequence_length = ids.shape
-        cos = self.position_embeddings_v2_cos[start_pos : start_pos + sequence_length]
-        sin = self.position_embeddings_v2_sin[start_pos : start_pos + sequence_length]
 
         with Profiler().trace_with_timer("embedding", level=4, args={"class": "Qwen3MoeModel"}):
             hidden_states = ttnn.embedding(ids, self.embedding_weight, dtype=ttnn.bfloat16)
@@ -204,12 +188,12 @@ class Qwen3MoeModel(nn.Module):
             hidden_states = ttnn.reshape(hidden_states, (1, 1, batch_size, self.config.hidden_size))
 
         for layer_idx, decoder_layer in enumerate(self.layers):
-            position_embeddings = cos, sin
             hidden_states = decoder_layer(
                 hidden_states=hidden_states,
                 start_pos=start_pos,
-                position_embeddings=position_embeddings,
                 mode=mode,
+                rot_mats=rot_mats,
+                trans_mat=trans_mat,
             )
 
         if mode == InferenceMode.PREFILL:
