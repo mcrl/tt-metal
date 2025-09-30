@@ -239,6 +239,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 multi_device_global_semaphore=self.ccl.get_semaphore(0),
                 barrier_semaphore=self.ccl.get_semaphore(1),
             )
+            ttnn.synchronize_device(self.mesh_device)
             combined_output = ttnn.reshape(
                 all_to_all_combine_output_tensors,
                 shape=(self.top_k, 1, batch_size * sequence_length, hidden_dim),
