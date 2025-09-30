@@ -45,7 +45,11 @@ def main(
     set_and_get_device_cache(mesh_device)
 
     qwen3_moe = Qwen3MoETT(
-        mesh_device=mesh_device, ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path, batch_size=max(batch_sizes)
+        mesh_device=mesh_device,
+        ckpt_dir=ckpt_dir,
+        tokenizer_path=tokenizer_path,
+        config_path=config_path,
+        batch_size=max(batch_sizes),
     )
 
     for batch_size in batch_sizes:
@@ -57,7 +61,9 @@ def main(
                 ttft_ms = prefill_time * 1000
                 tpot_ms = decode_time * 1000
                 output_token_per_s = batch_size / decode_time
-                print(f"{batch_size},{input_length},{output_length},{ttft_ms:.2f},{tpot_ms:.2f},{output_token_per_s:.2f}")
+                print(
+                    f"{batch_size},{input_length},{output_length},{ttft_ms:.2f},{tpot_ms:.2f},{output_token_per_s:.2f}"
+                )
 
                 with open(log_file, "a") as f:
                     f.write(
