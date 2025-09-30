@@ -263,15 +263,10 @@ class Qwen3MoeAttention(nn.Module):
 
         """Hidden state: [1, S=1, B, H]"""
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
-        hidden_shape = (1, 1, batch_size, -1)
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
         """ QKV: [1, 1, B, H] """
-
-        with Profiler().trace_with_timer("qkv-proj-reshape", level=4):
-            qkv_states = ttnn.reshape(qkv_states, hidden_shape, memory_config=mem_cfg)
-        """ QKV: [1, B, n, H] """
 
         with Profiler().trace_with_timer("qkv-split", level=4):
             query_states, key_states, value_states = ttnn.experimental.nlp_create_qkv_heads_decode(
@@ -280,6 +275,7 @@ class Qwen3MoeAttention(nn.Module):
                 num_kv_heads=self.kv_heads_per_device,
                 memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
             )
+        """ QKV: [S=1, B, n, H] """
 
         with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states = self.q_norm(query_states, mode=InferenceMode.DECODE)
