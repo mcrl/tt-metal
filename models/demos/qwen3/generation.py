@@ -173,12 +173,15 @@ class Qwen3MoETT:
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
         )
 
+        rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
+        trans_mat = self.rope.transformation_mat_prefill
+
         for i in range(5):
-            self.model(input_tokens_tt, start_pos=0, mode="prefill")
+            self.model(input_tokens_tt, start_pos=0, mode="prefill", rot_mats=rot_mats, trans_mat=trans_mat)
         ttnn.synchronize_device(self.mesh_device)
 
         trace_id = ttnn.begin_trace_capture(self.mesh_device, cq_id=0)
-        self.model(input_tokens_tt, start_pos=0, mode="prefill")
+        self.model(input_tokens_tt, start_pos=0, mode="prefill", rot_mats=rot_mats, trans_mat=trans_mat)
         ttnn.end_trace_capture(self.mesh_device, trace_id)
 
         trace_execute_start_time = time.time()
@@ -209,12 +212,16 @@ class Qwen3MoETT:
         )
         ttnn.synchronize_device(self.mesh_device)
 
+        position_idxs = torch.full((batch_size,), input_length, dtype=torch.long)
+        rot_mats = self.rope.get_rot_mats(position_idxs)
+        trans_mat = self.rope.transformation_mat
+
         for i in range(5):
-            self.model(input_tokens_tt, start_pos=input_length, mode="decode")
+            self.model(input_tokens_tt, start_pos=input_length, mode="decode", rot_mats=rot_mats, trans_mat=trans_mat)
         ttnn.synchronize_device(self.mesh_device)
 
         trace_id = ttnn.begin_trace_capture(self.mesh_device, cq_id=0)
-        self.model(input_tokens_tt, start_pos=input_length, mode="decode")
+        self.model(input_tokens_tt, start_pos=input_length, mode="decode", rot_mats=rot_mats, trans_mat=trans_mat)
         ttnn.end_trace_capture(self.mesh_device, trace_id)
 
         trace_execute_start_time = time.time()

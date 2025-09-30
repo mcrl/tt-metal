@@ -30,6 +30,10 @@ def level_enabled(level: int) -> bool:
     return level in enabled_levels
 
 
+def trace_log_enabled() -> bool:
+    return os.getenv("PROFILE_ENABLE_TRACE_LOG", "0") == "1"
+
+
 def get_trace_file() -> str:
     return os.getenv("PROFILE_TRACE_FILENAME", "trace.json")
 
@@ -146,6 +150,9 @@ class ProfilerTimerContext:
             sync(self.device)
             self.start_time = time.perf_counter() * 1e6
 
+        if trace_log_enabled():
+            print(f"[TRACE ENTER] {self.name} (level={self.level}, cat={CATEGORIES.get(self.level, 'Unknown')})")
+
         if timer_enabled():
             start_timer(self.name, device=self.device)
 
@@ -161,6 +168,8 @@ class ProfilerTimerContext:
             end_time = time.perf_counter() * 1e6
             tid = self.level
             pid = os.getpid()
+
+            duration_ms = (end_time - self.start_time) / 1000.0
 
             begin_event = {
                 "name": self.name,
@@ -186,6 +195,9 @@ class ProfilerTimerContext:
 
             add_event(begin_event)
             add_event(end_event)
+
+            if trace_log_enabled():
+                print(f"[TRACE EXIT] {self.name} (level={self.level}, duration={duration_ms:.3f}ms)")
 
 
 class Profiler:
