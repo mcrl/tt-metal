@@ -34,6 +34,7 @@ def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     ttnn.deallocate(x_half2)
     return x_out
 
+
 def reshape_weight(x, head_dim, repeats):
     x = x.transpose(0, 1)
     hidden_size, _ = x.shape
@@ -165,7 +166,7 @@ class Qwen3MoeAttention(nn.Module):
 
         with Profiler().trace_with_timer("qkv-proj-reshape", level=4):
             qkv_states = ttnn.reshape(qkv_states, hidden_shape, memory_config=mem_cfg)
-        
+
         with Profiler().trace_with_timer("qkv-split", level=4):
             query_states, key_states, value_states = ttnn.experimental.nlp_create_qkv_heads(
                 qkv_states,
@@ -256,6 +257,7 @@ class Qwen3MoeAttention(nn.Module):
                 gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
                 num_links=1,
             )
+            ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.reshape(linear_output, shape=(B, S, H), memory_config=mem_cfg)
 
         return linear_output
@@ -285,7 +287,7 @@ class Qwen3MoeAttention(nn.Module):
             query_states = self.q_norm(query_states, mode=InferenceMode.DECODE)
             key_states = self.k_norm(key_states, mode=InferenceMode.DECODE)
         """ QKV: [1, B, n, H] """
-        
+
         with Profiler().trace_with_timer("rope", level=4):
             query_states = ttnn.experimental.rotary_embedding_llama(
                 query_states, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
@@ -362,6 +364,7 @@ class Qwen3MoeAttention(nn.Module):
                 gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
                 num_links=1,
             )
+            ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.reshape(linear_output, shape=(1, 1, B, H), memory_config=mem_cfg)
         """ O: [1, 1, B, H] """
 
