@@ -326,6 +326,7 @@ class Qwen3MoeAttention(nn.Module):
             query_states,
             key_states,
             value_states,
+            cur_pos=[start_pos for _ in range(batch_size)],
             dropout=0.0,
             scaling=self.scaling,
             mode=InferenceMode.DECODE,
