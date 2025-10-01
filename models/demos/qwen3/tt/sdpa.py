@@ -76,10 +76,11 @@ def sdpa_forward_decode(
     query: ttnn.Tensor,
     key: ttnn.Tensor,
     value: ttnn.Tensor,
+    cur_pos: list,
     dropout: float = 0.0,
     scaling: Optional[float] = None,
 ) -> ttnn.Tensor:
-    """Q: [S=1, B, n, H], KV: [B, n, S=1, H]"""
+    """Q: [S=1, B, n, H], KV: [B, n, S, H]"""
 
     with Profiler().trace_with_timer("padding", level=4, args={"class": "sdpa_forward_decode"}):
         key = _explicit_pad(key, 0.0)
@@ -99,8 +100,8 @@ def sdpa_forward_decode(
             query,
             key,
             value,
-            attn_mask=None,
-            is_causal=False,
+            is_causal=True,
+            cur_pos=cur_pos,
             scale=scaling,
             compute_kernel_config=ttnn.WormholeComputeKernelConfig(
                 math_fidelity=ttnn.MathFidelity.HiFi4,
@@ -118,11 +119,12 @@ def sdpa_forward(
     value: ttnn.Tensor,
     dropout: float = 0.0,
     scaling: Optional[float] = None,
+    cur_pos: Optional[list] = None,
     mode: InferenceMode = InferenceMode.PREFILL,
 ) -> ttnn.Tensor:
     if mode == InferenceMode.PREFILL:
         return sdpa_forward_prefill(query, key, value, dropout, scaling)
     elif mode == InferenceMode.DECODE:
-        return sdpa_forward_decode(query, key, value, dropout, scaling)
+        return sdpa_forward_decode(query, key, value, cur_pos, dropout, scaling)
     else:
         raise ValueError(f"Unsupported mode: {mode}")

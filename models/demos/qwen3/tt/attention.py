@@ -13,10 +13,14 @@ from models.demos.qwen3.tt.rope import apply_rotary_emb_v2
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 
+from models.tt_transformers.tt.rope import RotarySetup
+
+
 def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
     x_half1, x_half2 = x.chunk(2, dim=-1)
     stacked = torch.stack([x_half1, x_half2], dim=-1)
     return stacked.flatten(start_dim=-2)
+
 
 def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     bsz, seqlen, num_heads, head_dim = x.shape
@@ -29,6 +33,7 @@ def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     ttnn.deallocate(x_half1)
     ttnn.deallocate(x_half2)
     return x_out
+
 
 def reshape_weight(x, head_dim, repeats):
     x = x.transpose(0, 1)
@@ -76,7 +81,7 @@ class Qwen3MoeAttention(nn.Module):
             config.max_seq_len,
             self.head_dim,
         )
-        
+
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
         assert config.sliding_window is None
@@ -161,7 +166,7 @@ class Qwen3MoeAttention(nn.Module):
 
         with Profiler().trace_with_timer("qkv-proj-reshape", level=4):
             qkv_states = ttnn.reshape(qkv_states, hidden_shape, memory_config=mem_cfg)
-        
+
         with Profiler().trace_with_timer("qkv-split", level=4):
             query_states, key_states, value_states = ttnn.experimental.nlp_create_qkv_heads(
                 qkv_states,
@@ -202,8 +207,8 @@ class Qwen3MoeAttention(nn.Module):
             for b in range(batch_size):
                 # ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b : b + 1], b)
                 # ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b : b + 1], b)
-                ttnn.fill_cache(self.cache_k, key_states[b : b + 1], b)
-                ttnn.fill_cache(self.cache_v, value_states[b : b + 1], b)
+                ttnn.fill_cache(self.cache_k, key_states[b: b + 1], b)
+                ttnn.fill_cache(self.cache_v, value_states[b: b + 1], b)
 
         with Profiler().trace_with_timer("kv-cache-load", level=4):
             start_index = (0, 0, 0, 0)
@@ -252,6 +257,7 @@ class Qwen3MoeAttention(nn.Module):
                 gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
                 num_links=1,
             )
+            ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.reshape(linear_output, shape=(B, S, H), memory_config=mem_cfg)
 
         return linear_output
@@ -263,15 +269,10 @@ class Qwen3MoeAttention(nn.Module):
 
         """Hidden state: [1, S=1, B, H]"""
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
-        hidden_shape = (1, 1, batch_size, -1)
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
         """ QKV: [1, 1, B, H] """
-
-        with Profiler().trace_with_timer("qkv-proj-reshape", level=4):
-            qkv_states = ttnn.reshape(qkv_states, hidden_shape, memory_config=mem_cfg)
-        """ QKV: [1, B, n, H] """
 
         with Profiler().trace_with_timer("qkv-split", level=4):
             query_states, key_states, value_states = ttnn.experimental.nlp_create_qkv_heads_decode(
@@ -280,12 +281,13 @@ class Qwen3MoeAttention(nn.Module):
                 num_kv_heads=self.kv_heads_per_device,
                 memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
             )
+        """ QKV: [S=1, B, n, H] """
 
         with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states = self.q_norm(query_states, mode=InferenceMode.DECODE)
             key_states = self.k_norm(key_states, mode=InferenceMode.DECODE)
         """ QKV: [1, B, n, H] """
-        
+
         with Profiler().trace_with_timer("rope", level=4):
             query_states = ttnn.experimental.rotary_embedding_llama(
                 query_states, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
@@ -319,11 +321,12 @@ class Qwen3MoeAttention(nn.Module):
             key_states = ttnn.slice(self.cache_k, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
             value_states = ttnn.slice(self.cache_v, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
         """ Q: [S=1, B, n, H], KV: [B, n, S=1, H]"""
-        
+
         attn_output = tt_sdpa_forward(
             query_states,
             key_states,
             value_states,
+            cur_pos=[start_pos for _ in range(batch_size)],
             dropout=0.0,
             scaling=self.scaling,
             mode=InferenceMode.DECODE,
@@ -362,6 +365,7 @@ class Qwen3MoeAttention(nn.Module):
                 gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
                 num_links=1,
             )
+            ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.reshape(linear_output, shape=(1, 1, B, H), memory_config=mem_cfg)
         """ O: [1, 1, B, H] """
 
