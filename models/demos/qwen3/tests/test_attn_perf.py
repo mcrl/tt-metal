@@ -49,7 +49,7 @@ def load_reference_layer(layer_idx=0):
     "batch_size,seq_len",
     [
         # (8, 64),
-        (8, 128),
+        (32, 128),
         # (2, 64),
     ],
 )
@@ -64,6 +64,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
     ref_attention = ref_layer.self_attn
     
     config = create_test_config()
+    config.max_batch_size = batch_size
     layer_idx = 0
     start_pos = 0
 
@@ -100,7 +101,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
     )
 
     tracy.signpost("Warmup")
-    for _ in range(3):
+    for _ in range(5):
         output_tt = tt_attention(
             hidden_states=hidden_states_tt,
             rot_mats=rot_mats,
@@ -121,7 +122,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (8, 128),
+        (32, 128),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -135,6 +136,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
     ref_attention = ref_layer.self_attn
 
     config = create_test_config()
+    config.max_batch_size = batch_size
     layer_idx = 0
     start_pos = seq_len
 
@@ -173,7 +175,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
     )
 
     tracy.signpost("Warmup")
-    for _ in range(3):
+    for _ in range(5):
         output_tt = tt_attention(
             hidden_states=hidden_states_tt,
             rot_mats=rot_mats,
