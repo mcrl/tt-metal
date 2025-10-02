@@ -1,39 +1,32 @@
-from models.demos.qwen3.utils.profiler import profile_trace, Profiler
-from models.demos.qwen3.tt.ccl_1d import CCL1D
-from models.tt_transformers.tt.common import get_rot_transformation_mat
-from torch import nn
 from typing import Tuple
 
-import ttnn
 import torch
+from torch import nn
+
+import ttnn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
-from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
-from models.demos.qwen3.tt.rope import apply_rotary_emb_v2
-from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
+from models.demos.qwen3.utils.profiler import profile_trace, Profiler
+
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
-
+from models.demos.qwen3.tt.ccl_1d import CCL1D
+from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
+from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.tt_transformers.tt.rope import RotarySetup
-
 
 def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
     x_half1, x_half2 = x.chunk(2, dim=-1)
     stacked = torch.stack([x_half1, x_half2], dim=-1)
     return stacked.flatten(start_dim=-2)
 
-
 def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
     bsz, seqlen, num_heads, head_dim = x.shape
-    unflattened = x.reshape([bsz, seqlen, num_heads, -1, 2])
-    x_half1 = unflattened[..., 0]
-    x_half2 = unflattened[..., 1]
-    x_out = ttnn.concat([x_half1, x_half2], dim=-1)
 
-    ttnn.deallocate(unflattened)
-    ttnn.deallocate(x_half1)
-    ttnn.deallocate(x_half2)
-    return x_out
+    x = ttnn.reshape(x, (bsz, seqlen, num_heads, head_dim // 2, 2))
+    x = ttnn.permute(x, (0, 1, 2, 4, 3))
+    x = ttnn.reshape(x, (bsz, seqlen, num_heads, head_dim))
 
+    return x
 
 def reshape_weight(x, head_dim, repeats):
     x = x.transpose(0, 1)
@@ -42,7 +35,6 @@ def reshape_weight(x, head_dim, repeats):
     x = x.repeat_interleave(repeats=repeats, dim=1)
     x = x.view(hidden_size, -1)
     return x.contiguous()
-
 
 class Qwen3MoeAttention(nn.Module):
     @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeAttention"})
@@ -205,8 +197,6 @@ class Qwen3MoeAttention(nn.Module):
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("kv-cache-store", level=4):
             for b in range(batch_size):
-                # ttnn.kv_cache.fill_cache_for_user_(self.cache_k, key_states[b : b + 1], b)
-                # ttnn.kv_cache.fill_cache_for_user_(self.cache_v, value_states[b : b + 1], b)
                 ttnn.fill_cache(self.cache_k, key_states[b: b + 1], b)
                 ttnn.fill_cache(self.cache_v, value_states[b: b + 1], b)
 
