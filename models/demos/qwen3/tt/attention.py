@@ -152,41 +152,41 @@ class Qwen3MoeAttention(nn.Module):
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
-
-        with Profiler().trace_with_timer("qkv-proj-reshape", level=4):
-            qkv_states = ttnn.reshape(qkv_states, hidden_shape, memory_config=mem_cfg)
+            # ttnn.deallocate(hidden_states)
+            qkv_states = ttnn.view(qkv_states, hidden_shape)
 
         with Profiler().trace_with_timer("qkv-split", level=4):
-            query_states, key_states, value_states = ttnn.experimental.nlp_create_qkv_heads(
+            query_states_pre_rot, key_states_pre_rot, value_states = ttnn.experimental.nlp_create_qkv_heads(
                 qkv_states,
                 num_heads=self.q_heads_per_device,
                 num_kv_heads=self.kv_heads_per_device,
+                transpose_k_heads=False,
                 memory_config=mem_cfg
             )
+            ttnn.deallocate(qkv_states)
             # B n S H
 
-        with Profiler().trace_with_timer("permute", level=4):
-            key_states = ttnn.permute(key_states, dims=(0, 1, 3, 2), memory_config=mem_cfg)
-
         with Profiler().trace_with_timer("rmsnorm", level=4):
-            query_states = self.q_norm(query_states, mode=InferenceMode.PREFILL)
-            key_states = self.k_norm(key_states, mode=InferenceMode.PREFILL)
+            query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.PREFILL)
+            key_states_pre_rot = self.k_norm(key_states_pre_rot, mode=InferenceMode.PREFILL)
 
         with Profiler().trace_with_timer("rope", level=4):
             query_states = ttnn.experimental.rotary_embedding_llama(
-                query_states,
+                query_states_pre_rot,
                 rot_mats[0],
                 rot_mats[1],
                 trans_mat,
                 is_decode_mode=False
             )
+            ttnn.deallocate(query_states_pre_rot)
             key_states = ttnn.experimental.rotary_embedding_llama(
-                key_states,
+                key_states_pre_rot,
                 rot_mats[0],
                 rot_mats[1],
                 trans_mat,
                 is_decode_mode=False
             )
+            ttnn.deallocate(key_states_pre_rot)
 
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("kv-cache-store", level=4):
@@ -211,26 +211,27 @@ class Qwen3MoeAttention(nn.Module):
             scaling=self.scaling,
             mode=InferenceMode.PREFILL,
         )
+        ttnn.deallocate(query_states)
+        ttnn.deallocate(key_states)
+        ttnn.deallocate(value_states)
 
         with Profiler().trace_with_timer("reshape", level=4):
             # [B, n, S, h] -> [B, S, n * h]
-            attn_out = ttnn.transformer.concatenate_heads(attn_out, memory_config=mem_cfg)
+            attn_out_cat = ttnn.experimental.nlp_concat_heads(attn_out, memory_config=mem_cfg)
+            ttnn.deallocate(attn_out)
 
         with Profiler().trace_with_timer("output-proj", level=4):
             linear_output = ttnn.linear(
-                attn_out,
+                attn_out_cat,
                 self.o_proj_weight,
                 transpose_a=False,
                 transpose_b=True,
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
+            ttnn.deallocate(attn_out_cat)
 
         with Profiler().trace_with_timer("all-reduce", level=4):
-            B, S, H = linear_output.shape
-            linear_output = ttnn.reshape(
-                linear_output, shape=(1, 1, B * S * H // 256, 256), memory_config=ttnn.DRAM_MEMORY_CONFIG
-            )
             linear_output = ttnn.experimental.all_reduce_async(
                 linear_output,
                 math_op=ttnn.ReduceType.Sum,
@@ -242,7 +243,9 @@ class Qwen3MoeAttention(nn.Module):
                 num_links=1,
             )
             ttnn.synchronize_device(self.mesh_device)
-            linear_output = ttnn.reshape(linear_output, shape=(B, S, H), memory_config=mem_cfg)
+
+            B, _, S, H = linear_output.shape
+            linear_output = ttnn.view(linear_output, (B, S, H))
 
         return linear_output
 
@@ -256,6 +259,7 @@ class Qwen3MoeAttention(nn.Module):
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+            # ttnn.deallocate(hidden_states)
         """ QKV: [1, 1, B, H] """
 
         with Profiler().trace_with_timer("qkv-split", level=4):
