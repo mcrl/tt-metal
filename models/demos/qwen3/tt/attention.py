@@ -232,6 +232,10 @@ class Qwen3MoeAttention(nn.Module):
             ttnn.deallocate(attn_out_cat)
 
         with Profiler().trace_with_timer("all-reduce", level=4):
+            B, _, S, H = linear_output.shape
+            linear_output = ttnn.reshape(
+                linear_output, shape=(1, 1, B * S * H // 256, 256), memory_config=ttnn.DRAM_MEMORY_CONFIG
+            )
             linear_output = ttnn.experimental.all_reduce_async(
                 linear_output,
                 math_op=ttnn.ReduceType.Sum,
@@ -244,8 +248,7 @@ class Qwen3MoeAttention(nn.Module):
             )
             ttnn.synchronize_device(self.mesh_device)
 
-            B, _, S, H = linear_output.shape
-            linear_output = ttnn.view(linear_output, (B, S, H))
+            linear_output = ttnn.reshape(linear_output, shape=(B, S, H), memory_config=mem_cfg)
 
         return linear_output
 
