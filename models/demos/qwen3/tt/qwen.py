@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 from typing import Tuple
 
@@ -46,7 +47,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self.is_tt_setup = True
 
     def forward_prefill(
-        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor
+        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
         hidden_states_0 = hidden_states
         """Hidden states: [B, S, H]"""
@@ -59,6 +60,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             rot_mats=rot_mats,
             trans_mat=trans_mat,
             start_pos=start_pos,
+            page_table=page_table,
             mode=InferenceMode.PREFILL
         )
 
@@ -75,7 +77,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         return output
 
     def forward_decode(
-        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor
+        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
         """Hidden states: [1, 1, B, H]"""
 
@@ -87,6 +89,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             rot_mats=rot_mats,
             trans_mat=trans_mat,
             start_pos=start_pos,
+            page_table=page_table,
             mode=InferenceMode.DECODE
         )
         """attn result: [1, 1, B, H]"""
@@ -113,12 +116,13 @@ class Qwen3MoeDecoderLayer(nn.Module):
         start_pos: int,
         mode: InferenceMode,
         rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor],
-        trans_mat: ttnn.Tensor
+        trans_mat: ttnn.Tensor,
+        page_table: ttnn.Tensor,
     ) -> ttnn.Tensor:
         if mode == InferenceMode.PREFILL:
-            return self.forward_prefill(hidden_states, start_pos, rot_mats, trans_mat)
+            return self.forward_prefill(hidden_states, start_pos, rot_mats, trans_mat, page_table)
         elif mode == InferenceMode.DECODE:
-            return self.forward_decode(hidden_states, start_pos, rot_mats, trans_mat)
+            return self.forward_decode(hidden_states, start_pos, rot_mats, trans_mat, page_table)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -172,7 +176,7 @@ class Qwen3MoeModel(nn.Module):
         self.is_tt_setup = True
 
     @profile_trace("Qwen3MoeModel", level=1)
-    def forward(self, ids: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor,
+    def forward(self, ids: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor,
                 start_pos: int = 0, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
         if isinstance(mode, str):
             mode = InferenceMode(mode)
@@ -194,6 +198,7 @@ class Qwen3MoeModel(nn.Module):
                 mode=mode,
                 rot_mats=rot_mats,
                 trans_mat=trans_mat,
+                page_table=page_table,
             )
 
         if mode == InferenceMode.PREFILL:
