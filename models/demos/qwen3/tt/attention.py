@@ -19,15 +19,6 @@ def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
     stacked = torch.stack([x_half1, x_half2], dim=-1)
     return stacked.flatten(start_dim=-2)
 
-def reshape_from_interleaved(x: ttnn.Tensor) -> ttnn.Tensor:
-    bsz, seqlen, num_heads, head_dim = x.shape
-
-    x = ttnn.reshape(x, (bsz, seqlen, num_heads, head_dim // 2, 2))
-    x = ttnn.permute(x, (0, 1, 2, 4, 3))
-    x = ttnn.reshape(x, (bsz, seqlen, num_heads, head_dim))
-
-    return x
-
 def reshape_weight(x, head_dim, repeats):
     x = x.transpose(0, 1)
     hidden_size, _ = x.shape
@@ -96,6 +87,8 @@ class Qwen3MoeAttention(nn.Module):
         k_weight = reshape_to_interleaved(k_weight).reshape(weight_shape)
 
         v_weight = reshape_weight(self.v_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF).reshape(weight_shape)
+        v_weight = v_weight.reshape(self.hidden_size, -1, self.head_dim)
+        v_weight = reshape_to_interleaved(v_weight).reshape(weight_shape)
 
         qkv_list = []
         wq = torch.chunk(q_weight, self.mesh_device.shape[1], dim=1)
@@ -133,8 +126,12 @@ class Qwen3MoeAttention(nn.Module):
             layout=ttnn.TILE_LAYOUT,
         )
 
+        o_weight = self.o_proj.weight
+        o_weight = o_weight.reshape(self.hidden_size, -1, self.head_dim)
+        o_weight = reshape_to_interleaved(o_weight).reshape(weight_shape)
+
         self.o_proj_weight = ttnn.as_tensor(
-            self.o_proj.weight,
+            o_weight,
             device=self.mesh_device,
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
@@ -190,9 +187,6 @@ class Qwen3MoeAttention(nn.Module):
                 trans_mat,
                 is_decode_mode=False
             )
-
-            query_states = reshape_from_interleaved(query_states)
-            key_states = reshape_from_interleaved(key_states)
 
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("kv-cache-store", level=4):
@@ -289,9 +283,6 @@ class Qwen3MoeAttention(nn.Module):
             query_states = ttnn.sharded_to_interleaved(query_states, memory_config=mem_cfg)
             key_states = ttnn.sharded_to_interleaved(key_states, memory_config=mem_cfg)
             value_states = ttnn.sharded_to_interleaved(value_states, memory_config=mem_cfg)
-
-            query_states = reshape_from_interleaved(query_states)
-            key_states = reshape_from_interleaved(key_states)
         """ Q: [S=1, B, n, H], K: [S=1, B, n, H], V: [S=1, B, n, H] """
 
         with Profiler().trace_with_timer("kv-cache-store", level=4):

@@ -56,7 +56,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
     "batch_size,seq_len",
     [
         # (8, 64),
-        (8, 4),
+        (32, 128),
         # (2, 64),
     ],
 )
@@ -71,6 +71,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
     ref_attention = ref_layer.self_attn
     
     config = create_test_config()
+    config.max_batch_size = batch_size
     layer_idx = 0
     start_pos = 0
 
@@ -135,7 +136,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (8, 1),
+        (32, 1),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -149,6 +150,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
     ref_attention = ref_layer.self_attn
 
     config = create_test_config()
+    config.max_batch_size = batch_size
     layer_idx = 0
     start_pos = 0
 
