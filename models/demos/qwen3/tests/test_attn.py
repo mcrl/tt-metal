@@ -72,6 +72,21 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
     
     config = create_test_config()
     config.max_batch_size = batch_size
+    config.block_size = 32
+    config.max_num_blocks = 1024
+
+    permutation = torch.randperm(config.max_num_blocks, device="cpu")
+    reverse_permutation = torch.argsort(permutation)
+    page_table = reverse_permutation.reshape(config.max_batch_size, config.max_num_blocks // config.max_batch_size)
+    page_table_tt = ttnn.as_tensor(
+        page_table,
+        dtype=ttnn.int32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+    )
+
     layer_idx = 0
     start_pos = 0
 
@@ -122,6 +137,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
         rot_mats=rot_mats,
         trans_mat=trans_mat,
         start_pos=start_pos,
+        page_table=page_table_tt,
         mode=InferenceMode.PREFILL,
     )
     output_tt = ttnn.to_layout(output_tt, ttnn.ROW_MAJOR_LAYOUT)
@@ -151,6 +167,21 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
 
     config = create_test_config()
     config.max_batch_size = batch_size
+    config.block_size = 32
+    config.max_num_blocks = 1024
+
+    permutation = torch.randperm(config.max_num_blocks, device="cpu")
+    reverse_permutation = torch.argsort(permutation)
+    page_table = reverse_permutation.reshape(config.max_batch_size, config.max_num_blocks // config.max_batch_size)
+    page_table_tt = ttnn.as_tensor(
+        page_table,
+        dtype=ttnn.int32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+    )
+
     layer_idx = 0
     start_pos = 0
 
@@ -203,6 +234,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         rot_mats=rot_mats,
         trans_mat=trans_mat,
         start_pos=start_pos,
+        page_table=page_table_tt,
         mode=InferenceMode.DECODE,
     )
     output_tt = ttnn.reshape(output_tt, (batch_size, 1, config.hidden_size))

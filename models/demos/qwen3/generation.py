@@ -137,6 +137,9 @@ class Qwen3MoETT:
         self.config.max_batch_size = 32
         self.config.max_seq_len = 512
 
+        self.config.block_size = 32
+        self.config.max_num_blocks = 1024
+
         with Profiler().trace_with_timer("Create-Model", level=0):
             with torch.device("meta"):
                 self.model = Qwen3MoeModelTT(self.config, self.mesh_device)
@@ -249,6 +252,18 @@ class Qwen3MoETT:
         batch_size = len(prompt_tokens)
         assert batch_size <= self.config.max_batch_size
 
+        permutation = torch.randperm(self.config.max_num_blocks, device="cpu")
+        reverse_permutation = torch.argsort(permutation)
+        page_table = reverse_permutation.reshape(batch_size, self.config.max_num_blocks // batch_size)
+        page_table_tt = ttnn.as_tensor(
+            page_table,
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
+        )
+
         min_prompt_len = min(len(t) for t in prompt_tokens)
         max_prompt_len = max(len(t) for t in prompt_tokens)
         assert max_prompt_len <= self.config.max_seq_len
@@ -293,7 +308,7 @@ class Qwen3MoETT:
                     rot_mats = self.rope.get_rot_mats(position_idxs)
                     trans_mat = self.rope.transformation_mat
 
-                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=prev_pos, mode=mode)
+                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=prev_pos, mode=mode, page_table=page_table_tt)
 
                 logits = ttnn.to_torch(
                     logits_tt,
