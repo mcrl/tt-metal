@@ -16,6 +16,12 @@ export PYTHONPATH=${pwd}:${pwd}/ttnn
 
 ```
 $ cd models/demos/qwen3
-$ pytest tests/test_lm_head.py
-$ pytest tests/test_embedding_1d.py
+$ pytest tests/test_attn.py
+$ pytest tests/test_moe.py
+
+$ python -m tracy -r -p -v -m pytest tests/test_attn_perf.py::test_attn_prefill
+$ python -m tracy -r -p -v -m pytest tests/test_attn_perf.py::test_attn_decode
+
+$ python -m tracy -r -p -v -m pytest tests/test_moe_perf.py::test_moe_prefill
+$ python -m tracy -r -p -v -m pytest tests/test_moe_perf.py::test_moe_decode
 ```
