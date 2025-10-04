@@ -24,7 +24,7 @@ def perftest_tt(
     config_path: str,
 ):
     # Create device with trace region size for trace capture
-    device_params = {"trace_region_size": 128 * 1024 * 1024, "fabric_config": ttnn.FabricConfig.FABRIC_1D}  # 256MB
+    device_params = {"fabric_config": ttnn.FabricConfig.FABRIC_1D}  # 256MB
     mesh_device = create_mesh_device(device_params)
     set_and_get_device_cache(mesh_device)
 
@@ -60,9 +60,9 @@ def main(
     ckpt_dir: str = "/shared/models/Qwen3-30B-A3B/",
     tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
     config_path: Optional[str] = "/shared/models/Qwen3-30B-A3B/config.json",
-    batch_size: int = 8,
-    prompt_len: int = 4,
-    gen_tokens: int = 4,
+    batch_size: int = 32,
+    prompt_len: int = 128,
+    gen_tokens: int = 32,
     run_tt: bool = True,
     run_reference: bool = False,
 ):
