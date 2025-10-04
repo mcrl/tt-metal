@@ -51,16 +51,8 @@ def sdpa_forward_prefill(
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-    # with Profiler().trace_with_timer("to_layout", level=4, args={"class": "sdpa_forward_prefill"}):
-    #     attn_output = ttnn.to_layout(
-    #         ttnn.permute(attn_output, dims=(0, 2, 1, 3), memory_config=ttnn.L1_MEMORY_CONFIG),
-    #         layout=ttnn.TILE_LAYOUT,
-    #         memory_config=ttnn.L1_MEMORY_CONFIG,
-    #     )
-
     with Profiler().trace_with_timer("slicing", level=4, args={"class": "sdpa_forward_prefill"}):
         start_index = (0, 0, 0, 0)
-        # end_index = (batch_size, sequence_length, num_attention_heads, head_dim)
         end_index = (batch_size, num_attention_heads, sequence_length, head_dim)
         attn_output = ttnn.slice(
             attn_output,
@@ -76,37 +68,35 @@ def sdpa_forward_decode(
     query: ttnn.Tensor,
     key: ttnn.Tensor,
     value: ttnn.Tensor,
-    cur_pos: list,
+    cur_pos: ttnn.Tensor,
+    page_table: ttnn.Tensor,
     dropout: float = 0.0,
     scaling: Optional[float] = None,
 ) -> ttnn.Tensor:
-    """Q: [S=1, B, n, H], KV: [B, n, S, H]"""
+    program_config = ttnn.SDPAProgramConfig(
+        compute_with_storage_grid_size=(8, 8),
+        q_chunk_size=32,
+        k_chunk_size=32,
+    )
+    compute_kernel_config = ttnn.WormholeComputeKernelConfig(
+        math_fidelity=ttnn.MathFidelity.HiFi4,
+        math_approx_mode=False,
+        fp32_dest_acc_en=False,
+        packer_l1_acc=False,
+    )
+    sdpa_out_mem_cfg = query.memory_config()
 
-    with Profiler().trace_with_timer("padding", level=4, args={"class": "sdpa_forward_decode"}):
-        key = _explicit_pad(key, 0.0)
-
-    with Profiler().trace_with_timer("to_layout", level=4, args={"class": "sdpa_forward_decode"}):
-        query = ttnn.to_memory_config(
-            ttnn.to_layout(query, layout=ttnn.TILE_LAYOUT), memory_config=ttnn.DRAM_MEMORY_CONFIG
-        )
-        key = ttnn.to_memory_config(ttnn.to_layout(key, layout=ttnn.TILE_LAYOUT), memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        value = ttnn.to_memory_config(
-            ttnn.to_layout(value, layout=ttnn.TILE_LAYOUT), memory_config=ttnn.DRAM_MEMORY_CONFIG
-        )
-
-    """ Input Q: [S=1, B, n, H], KV: [B, n, S=1, H]"""
     with Profiler().trace_with_timer("attention", level=4, args={"class": "sdpa_forward_decode"}):
-        attn_output = ttnn.transformer.scaled_dot_product_attention_decode(
+        attn_output = ttnn.transformer.paged_scaled_dot_product_attention_decode(
             query,
             key,
             value,
-            is_causal=True,
-            cur_pos=cur_pos,
+            cur_pos_tensor=cur_pos,
+            page_table_tensor=page_table,
             scale=scaling,
-            compute_kernel_config=ttnn.WormholeComputeKernelConfig(
-                math_fidelity=ttnn.MathFidelity.HiFi4,
-                math_approx_mode=False,
-            ),
+            program_config=program_config,
+            compute_kernel_config=compute_kernel_config,
+            memory_config=sdpa_out_mem_cfg
         )
     """ Output O: [S=1, B, n, H]"""
 
@@ -119,12 +109,13 @@ def sdpa_forward(
     value: ttnn.Tensor,
     dropout: float = 0.0,
     scaling: Optional[float] = None,
-    cur_pos: Optional[list] = None,
+    cur_pos: Optional[ttnn.Tensor] = None,
+    page_table: Optional[ttnn.Tensor] = None,
     mode: InferenceMode = InferenceMode.PREFILL,
 ) -> ttnn.Tensor:
     if mode == InferenceMode.PREFILL:
         return sdpa_forward_prefill(query, key, value, dropout, scaling)
     elif mode == InferenceMode.DECODE:
-        return sdpa_forward_decode(query, key, value, cur_pos, dropout, scaling)
+        return sdpa_forward_decode(query, key, value, cur_pos, page_table, dropout, scaling)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
