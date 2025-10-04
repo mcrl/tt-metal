@@ -24,7 +24,7 @@ def perftest_tt(
     config_path: str,
 ):
     # Create device with trace region size for trace capture
-    device_params = {"fabric_config": ttnn.FabricConfig.FABRIC_1D}  # 256MB
+    device_params = {"trace_region_size": 128 * 1024 * 1024, "fabric_config": ttnn.FabricConfig.FABRIC_1D}  # 256MB
     mesh_device = create_mesh_device(device_params)
     set_and_get_device_cache(mesh_device)
 
