@@ -150,7 +150,7 @@ class Qwen3MoeAttention(nn.Module):
         self.is_tt_setup = True
 
     def forward_prefill(
-        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
+        self, hidden_states: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
         """Prefill starts. Hidden stats: [1, B=1, S, H]"""
 
@@ -197,24 +197,13 @@ class Qwen3MoeAttention(nn.Module):
             ttnn.deallocate(key_states_pre_rot)
 
         # Q, K, V: [B n S H]
-        """
-        with Profiler().trace_with_timer("kv-cache-store", level=4):
+        with Profiler().trace_with_timer("fill-cache", level=4):
             for b in range(batch_size):
-                ttnn.fill_cache(self.cache_k, key_states[b: b + 1], b)
-                ttnn.fill_cache(self.cache_v, value_states[b: b + 1], b)
+                k_fill_sliced = key_states[b:b + 1]
+                v_fill_sliced = value_states[b:b + 1]
 
-        with Profiler().trace_with_timer("kv-cache-load", level=4):
-            start_index = (0, 0, 0, 0)
-            end_index = (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim)
-
-            ttnn.deallocate(key_states)
-            ttnn.deallocate(value_states)
-            key_states = ttnn.slice(self.cache_k, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
-            value_states = ttnn.slice(self.cache_v, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
-        """
-
-        ttnn.experimental.paged_fill_cache(self.cache_k, key_states, page_table)
-        ttnn.experimental.paged_fill_cache(self.cache_v, value_states, page_table)
+                ttnn.experimental.paged_fill_cache(self.cache_k, k_fill_sliced, page_table, batch_idx=b)
+                ttnn.experimental.paged_fill_cache(self.cache_v, v_fill_sliced, page_table, batch_idx=b)
 
         attn_out = tt_sdpa_forward(
             query_states,
@@ -266,7 +255,7 @@ class Qwen3MoeAttention(nn.Module):
         return linear_output
 
     def forward_decode(
-        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
+        self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
         mem_cfg = ttnn.L1_MEMORY_CONFIG
 
@@ -303,110 +292,32 @@ class Qwen3MoeAttention(nn.Module):
                 key_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
             )
             ttnn.deallocate(key_states_pre_rot)
-
-            # query_states = ttnn.sharded_to_interleaved(query_states, memory_config=mem_cfg)
-            # key_states = ttnn.sharded_to_interleaved(key_states, memory_config=mem_cfg)
-            # value_states = ttnn.sharded_to_interleaved(value_states, memory_config=mem_cfg)
         """ Q: [S=1, B, n, H], K: [S=1, B, n, H], V: [S=1, B, n, H] """
 
-        update_idxs = [start_pos for _ in range(batch_size)]
-        update_idxs_tt = ttnn.as_tensor(
-            torch.tensor(update_idxs),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=self.mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
-        )
-
-        ttnn.experimental.paged_update_cache(self.cache_k, key_states, update_idxs_tensor=update_idxs_tt, page_table=page_table)
-        ttnn.experimental.paged_update_cache(self.cache_v, value_states, update_idxs_tensor=update_idxs_tt, page_table=page_table)
+        ttnn.experimental.paged_update_cache(self.cache_k, key_states, update_idxs_tensor=start_pos, page_table=page_table)
+        ttnn.experimental.paged_update_cache(self.cache_v, value_states, update_idxs_tensor=start_pos, page_table=page_table)
+        ttnn.synchronize_device(self.mesh_device) # If not, cause hanging
 
         ttnn.deallocate(key_states)
         ttnn.deallocate(value_states)
-        """
-        with Profiler().trace_with_timer("kv-cache-store", level=4):
-            key_states = ttnn.permute(key_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
-            value_states = ttnn.permute(value_states, dims=(0, 2, 1, 3), memory_config=mem_cfg)
-
-            # KV: [S=1, n, B, H]
-            ttnn.kv_cache.update_cache_for_token_(self.cache_k, key_states, update_index=start_pos, batch_offset=0)
-            ttnn.kv_cache.update_cache_for_token_(self.cache_v, value_states, update_index=start_pos, batch_offset=0)
-
-        with Profiler().trace_with_timer("kv-cache-load", level=4):
-            start_index = (0, 0, 0, 0)
-            end_index = (batch_size, self.kv_heads_per_device, start_pos + sequence_length, self.head_dim)
-
-            ttnn.deallocate(key_states)
-            ttnn.deallocate(value_states)
-            key_states = ttnn.slice(self.cache_k, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
-            value_states = ttnn.slice(self.cache_v, slice_start=start_index, slice_end=end_index, memory_config=mem_cfg)
-        # Q: [S=1, B, n, H], KV: [B, n, S=1, H]
 
         attn_output = tt_sdpa_forward(
             query_states,
-            key_states,
-            value_states,
-            cur_pos=[start_pos for _ in range(batch_size)],
+            self.cache_k,
+            self.cache_v,
+            cur_pos=start_pos,
+            page_table=page_table,
             dropout=0.0,
             scaling=self.scaling,
             mode=InferenceMode.DECODE,
         )
-        """
-        """ Output O: [S=1, B, n, H]"""
-
-        program_config = ttnn.SDPAProgramConfig(
-            compute_with_storage_grid_size=(8, 8),
-            exp_approx_mode=False,
-            q_chunk_size=128,
-            k_chunk_size=128,
-        )
-        compute_kernel_config = ttnn.WormholeComputeKernelConfig(
-            math_fidelity=ttnn.MathFidelity.HiFi4,
-            math_approx_mode=False,
-            fp32_dest_acc_en=False,
-            packer_l1_acc=False,
-        )
-        def num_to_corerange(x):
-            assert x < 8 or x % 8 == 0
-            num_x = min(x, 8)
-            num_y = x // num_x
-            assert num_x * num_y == x
-            return ttnn.CoreRange(
-                ttnn.CoreCoord(0, 0),
-                ttnn.CoreCoord(num_x - 1, num_y - 1),
-            )
-
-        sdpa_out_mem_cfg = ttnn.create_sharded_memory_config(
-            shape=(math.ceil(self.q_heads_per_device / 32) * 32, self.head_dim),
-            core_grid=ttnn.CoreRangeSet({num_to_corerange(batch_size)}),
-            strategy=ttnn.ShardStrategy.HEIGHT,
-            orientation=ttnn.ShardOrientation.ROW_MAJOR,
-            use_height_and_width_as_shard_shape=True,
-        )
-
-        attn_output = ttnn.transformer.paged_scaled_dot_product_attention_decode(
-            query_states,
-            self.cache_k,
-            self.cache_v,
-            cur_pos_tensor=update_idxs_tt,
-            page_table_tensor=page_table,
-            scale=self.scaling,
-            program_config=program_config,
-            compute_kernel_config=compute_kernel_config,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG
-        )
         ttnn.deallocate(query_states)
-
-        attn_output = ttnn.to_memory_config(attn_output, memory_config=sdpa_out_mem_cfg)
-        """ O: [1, B, n, H]"""
-
+        
         attn_output_cat = ttnn.experimental.nlp_concat_heads_decode(
             attn_output, 
             num_heads=self.q_heads_per_device
         )
         ttnn.deallocate(attn_output)
-        """ O: [1, 1, B, H] """
 
         with Profiler().trace_with_timer("output-proj", level=4):
             linear_output = ttnn.linear(
@@ -445,13 +356,13 @@ class Qwen3MoeAttention(nn.Module):
         hidden_states: ttnn.Tensor,
         rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor],
         trans_mat: ttnn.Tensor,
-        start_pos: int,
+        start_pos: ttnn.Tensor,
         page_table: ttnn.Tensor,
         mode: InferenceMode = InferenceMode.PREFILL
     ) -> ttnn.Tensor:
 
         if mode == InferenceMode.PREFILL:
-            return self.forward_prefill(hidden_states, start_pos, rot_mats, trans_mat, page_table)
+            return self.forward_prefill(hidden_states, rot_mats, trans_mat, page_table)
         elif mode == InferenceMode.DECODE:
             return self.forward_decode(hidden_states, start_pos, rot_mats, trans_mat, page_table)
         else:

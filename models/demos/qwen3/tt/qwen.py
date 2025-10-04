@@ -47,7 +47,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self.is_tt_setup = True
 
     def forward_prefill(
-        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
+        self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
         hidden_states_0 = hidden_states
         """Hidden states: [B, S, H]"""
@@ -77,7 +77,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         return output
 
     def forward_decode(
-        self, hidden_states: ttnn.Tensor, start_pos: int, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
+        self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
         """Hidden states: [1, 1, B, H]"""
 
@@ -113,7 +113,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: ttnn.Tensor,
-        start_pos: int,
+        start_pos: ttnn.Tensor,
         mode: InferenceMode,
         rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor],
         trans_mat: ttnn.Tensor,
@@ -177,7 +177,7 @@ class Qwen3MoeModel(nn.Module):
 
     @profile_trace("Qwen3MoeModel", level=1)
     def forward(self, ids: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor,
-                start_pos: int = 0, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
+                start_pos: ttnn.Tensor, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
         if isinstance(mode, str):
             mode = InferenceMode(mode)
 

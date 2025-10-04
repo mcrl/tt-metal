@@ -299,6 +299,14 @@ class Qwen3MoETT:
                     memory_config=ttnn.DRAM_MEMORY_CONFIG,
                     layout=ttnn.ROW_MAJOR_LAYOUT,
                 )
+                start_pos = ttnn.as_tensor(
+                    torch.tensor([prev_pos for _ in range(batch_size)]),
+                    dtype=ttnn.int32,
+                    layout=ttnn.ROW_MAJOR_LAYOUT,
+                    device=self.mesh_device,
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
+                )
 
                 if mode == "prefill":
                     rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
@@ -308,7 +316,7 @@ class Qwen3MoETT:
                     rot_mats = self.rope.get_rot_mats(position_idxs)
                     trans_mat = self.rope.transformation_mat
 
-                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=prev_pos, mode=mode, page_table=page_table_tt)
+                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table_tt)
 
                 logits = ttnn.to_torch(
                     logits_tt,
