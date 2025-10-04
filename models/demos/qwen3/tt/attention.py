@@ -199,11 +199,8 @@ class Qwen3MoeAttention(nn.Module):
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("fill-cache", level=4):
             for b in range(batch_size):
-                k_fill_sliced = key_states[b:b + 1]
-                v_fill_sliced = value_states[b:b + 1]
-
-                ttnn.experimental.paged_fill_cache(self.cache_k, k_fill_sliced, page_table, batch_idx=b)
-                ttnn.experimental.paged_fill_cache(self.cache_v, v_fill_sliced, page_table, batch_idx=b)
+                ttnn.experimental.paged_fill_cache(self.cache_k, key_states[b:b + 1], page_table, batch_idx=b)
+                ttnn.experimental.paged_fill_cache(self.cache_v, value_states[b:b + 1], page_table, batch_idx=b)
 
         attn_out = tt_sdpa_forward(
             query_states,
