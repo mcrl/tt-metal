@@ -11,6 +11,8 @@ from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 from models.demos.qwen3.tt.ccl_1d import CCL1D
+from models.tt_transformers.tt.ccl import TT_CCL
+
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.tt_transformers.tt.rope import RotarySetup
@@ -75,7 +77,7 @@ class Qwen3MoeAttention(nn.Module):
         if self.is_tt_setup:
             return
 
-        self.ccl = CCL1D(self.mesh_device)
+        self.ccl = TT_CCL(self.mesh_device) # CCL1D(self.mesh_device)
 
         weight_shape = (self.hidden_size, -1)
 
@@ -232,22 +234,35 @@ class Qwen3MoeAttention(nn.Module):
 
         with Profiler().trace_with_timer("all-reduce", level=4):
             B, _, S, H = linear_output.shape
-            linear_output = ttnn.reshape(
-                linear_output, shape=(1, 1, B * S * H // 256, 256), memory_config=ttnn.DRAM_MEMORY_CONFIG
-            )
-            linear_output = ttnn.experimental.all_reduce_async(
+            linear_output = ttnn.view(linear_output, (1, 1, B * S, H))
+
+            linear_output = ttnn.experimental.reduce_scatter_minimal_async(
                 linear_output,
-                math_op=ttnn.ReduceType.Sum,
-                memory_config=mem_cfg,
+                persistent_output_buffers=None,
+                dim=3,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(),
+                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(),
+                num_links=1,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 topology=ttnn.Topology.Linear,
-                from_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
-                to_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
-                gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                chunks_per_sync=10,
+                num_workers_per_link=2,
+                num_buffers_per_channel=2,
+            )
+            linear_output = ttnn.experimental.all_gather_async(
+                linear_output,
+                3,
+                cluster_axis=1,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
             ttnn.synchronize_device(self.mesh_device)
 
-            linear_output = ttnn.reshape(linear_output, shape=(B, S, H), memory_config=mem_cfg)
+            linear_output = ttnn.view(linear_output, (B, S, H))
 
         return linear_output
 
@@ -330,19 +345,35 @@ class Qwen3MoeAttention(nn.Module):
 
         with Profiler().trace_with_timer("all-reduce", level=4):
             _, _, B, H = linear_output.shape
-            linear_output = ttnn.reshape(linear_output, shape=(1, 1, B * H // 256, 256), memory_config=mem_cfg)
-            linear_output = ttnn.experimental.all_reduce_async(
+            linear_output = ttnn.view(linear_output, (1, 1, B, H))
+
+            linear_output = ttnn.experimental.reduce_scatter_minimal_async(
                 linear_output,
-                math_op=ttnn.ReduceType.Sum,
-                memory_config=mem_cfg,
+                persistent_output_buffers=None,
+                dim=3,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(),
+                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(),
+                num_links=1,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 topology=ttnn.Topology.Linear,
-                from_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
-                to_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
-                gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                chunks_per_sync=10,
+                num_workers_per_link=2,
+                num_buffers_per_channel=2,
+            )
+            linear_output = ttnn.experimental.all_gather_async(
+                linear_output,
+                3,
+                cluster_axis=1,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
+
             ttnn.synchronize_device(self.mesh_device)
-            linear_output = ttnn.reshape(linear_output, shape=(1, 1, B, H), memory_config=mem_cfg)
+            linear_output = ttnn.view(linear_output, shape=(1, 1, B, H))
         """ O: [1, 1, B, H] """
 
         return linear_output
