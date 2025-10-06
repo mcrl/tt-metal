@@ -48,8 +48,7 @@
 #include "ttnn/operations/experimental/unary_backward/gelu_backward/gelu_backward_pybind.hpp"
 #include "ttnn/operations/experimental/padded_slice/padded_slice_pybind.hpp"
 #include "ttnn/operations/experimental/where/where_pybind.hpp"
-#include "ttnn/operations/experimental/test/hang_device/hang_device_operation_pybind.hpp"
-#include "ttnn/operations/experimental/minimal_matmul/minimal_matmul_pybind.hpp"
+#include "ttnn/operations/experimental/moe/prepare_moe_mapping_tensor/prepare_moe_mapping_tensor_pybind.hpp"
 
 namespace py = pybind11;
 
@@ -117,7 +116,7 @@ void py_module(py::module& module) {
 
     operations::experimental::ternary::detail::bind_where(module);
 
-    minimal_matmul::detail::py_bind_minimal_matmul(module);
+    moe::detail::bind_prepare_moe_mapping_tensor(module);
 }
 
 }  // namespace ttnn::operations::experimental
