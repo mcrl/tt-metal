@@ -16,6 +16,9 @@ target_sources(
         moe_expert_projection/moe_expert_projection.cpp
         moe_expert_projection/device/moe_expert_projection_op.cpp
         moe_expert_projection/device/moe_expert_projection_program_factory.cpp
+        moe_down_projection/moe_down_projection.cpp
+        moe_down_projection/device/moe_down_projection_op.cpp
+        moe_down_projection/device/moe_down_projection_program_factory.cpp
 )
 
 target_include_directories(ttnn_op_experimental_moe PRIVATE ${FixmeOpIncDirs})
