@@ -49,6 +49,7 @@
 #include "ttnn/operations/experimental/padded_slice/padded_slice_pybind.hpp"
 #include "ttnn/operations/experimental/where/where_pybind.hpp"
 #include "ttnn/operations/experimental/moe/prepare_moe_mapping_tensor/prepare_moe_mapping_tensor_pybind.hpp"
+#include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors_pybind.hpp"
 
 namespace py = pybind11;
 
@@ -117,6 +118,7 @@ void py_module(py::module& module) {
     operations::experimental::ternary::detail::bind_where(module);
 
     moe::detail::bind_prepare_moe_mapping_tensor(module);
+    prepare_moe_routing_tensors::detail::bind_prepare_moe_routing_tensors(module);
 }
 
 }  // namespace ttnn::operations::experimental

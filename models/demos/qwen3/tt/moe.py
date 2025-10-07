@@ -77,7 +77,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.num_experts_per_device = self.num_experts // self.num_devices
 
         with Profiler().trace_with_timer("expert_mapping_tensors_tt", level=4):
-            self.expert_mapping_tensors = ttnn.from_torch(
+            self.device_expert_mapping_legacy = ttnn.from_torch(
                 torch.eye(self.num_devices, dtype=torch.int32)
                 .repeat_interleave(self.num_experts_per_device, dim=0)
                 .unsqueeze(0)
@@ -162,6 +162,17 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     memory_config=mem_cfg,
                 )
 
+        # Prepare the expert mapping tensor that scatters routing weights to expert positions
+        with Profiler().trace_with_timer("prepare-expert-mapping", level=4):
+            selected_experts_rm = ttnn.to_layout(selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
+            routing_weights_rm = ttnn.to_layout(routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
+            expert_mapping_tensor = ttnn.prepare_moe_mapping_tensor(
+                selected_experts_rm,
+                routing_weights_rm,
+                self.num_experts,
+                memory_config=mem_cfg
+            )
+
         with Profiler().trace_with_timer("to-layout", level=4):
             selected_experts = ttnn.to_layout(
                 selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG
@@ -219,7 +230,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         with Profiler().trace_with_timer("all-to-all-combine", level=4):
             all_to_all_combine_output_tensors = ttnn.all_to_all_combine(
                 experts_output,
-                self.expert_mapping_tensors,
+                self.device_expert_mapping_legacy,
                 selected_experts,
                 axis=1,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
