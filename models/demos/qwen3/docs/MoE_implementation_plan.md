@@ -181,7 +181,8 @@ Steps 1, 2, and 4 are batched matrix multiplications where:
 
 ### Step 4: Down Projection (Batched Matrix Multiplication)
 - Input:
-  - Combined activations from Step 3 (T_d x H' actual, stored in pre-allocated tensor)
+  - Combined activations from Step 3 (T_d x H' actual, stored in pre-allocated tensor).
+    This pre-allocated tensor has size (K * T) x H'.
   - Num routed tokens (E) - to know T_e for each expert
   - Routed tokens (E x T) - token indices for each expert
   - Routed token weights (E x T) - routing weights for accumulation
@@ -199,10 +200,11 @@ Steps 1, 2, and 4 are batched matrix multiplications where:
     - Multiply each result by corresponding routing weight
   - This is batched across all E/D experts in parallel
 - Output:
+  - The output tensor of size (T x H) is initialized zero.
   - Each token-expert pair produces H-dimensional output
   - Results are multiplied by routing weights
   - Accumulate to final output tensor (T x H) at appropriate token positions
-- **Important**: Results must be accumulated (not overwritten) to the final T x H output tensor
+- **Important**: Results must be accumulated (not overwritten) to the final T x H output tensor since a token can go to multiple expert.
 - Multiple experts' results are aggregated per token using accumulation
 
 ### Step 5: Allreduce for Expert Parallelism

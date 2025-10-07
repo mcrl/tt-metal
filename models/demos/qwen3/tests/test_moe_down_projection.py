@@ -16,32 +16,6 @@ Key differences from expert_projection (Steps 1&2):
 - Weights are H' × H (down projection) not H × H' (up/gate projection)
 - Results are multiplied by routing weights before accumulation
 - Output is accumulated to final T × H tensor (not separate per-expert outputs)
-
-IMPLEMENTATION STATUS:
-✅ IMPLEMENTED - Kernel fixed and tested
-   - C++ operation layer with validation (supports both 2D and 3D device_expert_mapping)
-   - Program factory with circular buffer setup
-   - Dataflow kernel with output initialization, routing weight application, and accumulation
-   - Python bindings (ttnn.moe_down_projection)
-   - Build system integration
-
-KERNEL FIXES (2025-10-07):
-1. Fixed NaN issue by initializing output tensor to zeros before processing
-2. Fixed multi-device support: validation now accepts both (1, E/D) and (1, 1, E/D) shapes
-3. Fixed mapping page size calculation for different tensor ranks
-4. Corrected accumulation logic: routing_weight * (activation @ weights) + previous_output
-5. Optimized inner loop to read weight rows once per expert_dim (previously read per output element)
-
-TEST STATUS:
-✅ config0: PASS (num_tokens=8, hidden_dim=128, expert_dim=64) - ~8.6s
-⏱️  config1: TIMEOUT (num_tokens=128, hidden_dim=256, expert_dim=128) - needs further optimization
-⏱️  config2: TIMEOUT (num_tokens=256, hidden_dim=2048, expert_dim=768) - needs further optimization
-
-PERFORMANCE NOTES:
-- Current implementation reads weight rows one at a time (expert_dim reads per token)
-- For config1: 128 weight reads per token, each 512 bytes = 64KB per token
-- For config2: 768 weight reads per token, each 4KB = 3MB per token
-- Further optimization needed: batch weight reads, use compute kernels, or multi-core distribution
 """
 
 import ttnn
@@ -130,8 +104,10 @@ def reference_moe_down_projection(
 
 
 @pytest.mark.parametrize("config", [
-    {"num_tokens": 8, "top_k": 2, "num_experts": 8, "hidden_dim": 128, "expert_dim": 64},
-    {"num_tokens": 128, "top_k": 4, "num_experts": 16, "hidden_dim": 256, "expert_dim": 128},
+    {"num_tokens": 8, "top_k": 2, "num_experts": 8, "hidden_dim": 128, "expert_dim": 128},
+    {"num_tokens": 8, "top_k": 2, "num_experts": 8, "hidden_dim": 256, "expert_dim": 128},
+    {"num_tokens": 128, "top_k": 4, "num_experts": 16, "hidden_dim": 256, "expert_dim": 256},
+    {"num_tokens": 32, "top_k": 8, "num_experts": 128, "hidden_dim": 2048, "expert_dim": 768},
     {"num_tokens": 256, "top_k": 8, "num_experts": 128, "hidden_dim": 2048, "expert_dim": 768},
     # Realistic Qwen3-30B-A3B configurations:
     # {"num_tokens": 1024, "top_k": 8, "num_experts": 128, "hidden_dim": 2048, "expert_dim": 768},
@@ -276,16 +252,7 @@ def test_moe_down_projection(mesh_device, config):
         top_k,
     )
 
-    print(f"\n✓ Test structure prepared: T={num_tokens}, K={top_k}, E={num_experts}, H={hidden_dim}, H'={expert_dim}")
-
-    # Debug: Print input tensor information
-    print(f"\nInput tensor shapes before operation:")
-    print(f"  combined_activations: {combined_activations_tt.shape}")
-    print(f"  routed_tokens: {routed_tokens.shape}")
-    print(f"  num_routed: {num_routed.shape}")
-    print(f"  routed_weights: {routed_weights.shape}")
-    print(f"  down_proj_weights: {down_proj_weights_tt.shape}")
-    print(f"  device_expert_mapping: {device_expert_mapping_tt.shape}")
+    print(f"\nTest config: T={num_tokens}, K={top_k}, E={num_experts}, H={hidden_dim}, H'={expert_dim}, devices={num_devices}")
 
     # Read back the TTNN output - each device has its partial output
     # The operation outputs per-device partial results that need allreduce (Step 5)
@@ -300,7 +267,8 @@ def test_moe_down_projection(mesh_device, config):
     for device_id in range(num_devices):
         # Get device's expert mapping and weights
         # Shape of mapping is now (D, 1, E/D), so we need [device_id, 0]
-        device_expert_mapping = device_expert_mapping_readback[device_id, 0] if device_expert_mapping_readback.dim() == 3 else device_expert_mapping_readback[device_id]
+        device_expert_mapping = device_expert_mapping_readback[device_id,
+                                                               0] if device_expert_mapping_readback.dim() == 3 else device_expert_mapping_readback[device_id]
         device_expert_weights = down_proj_weights_readback[device_id * experts_per_device:(device_id + 1) * experts_per_device]
 
         # Simulate combined activations for this device (would come from Step 3)
@@ -322,83 +290,36 @@ def test_moe_down_projection(mesh_device, config):
 
         all_device_outputs.append(ref_output)
 
-        # Debug output
-        print(f"\nDevice {device_id} debug:")
-        print(f"  device_expert_mapping: {device_expert_mapping.tolist()}")
-        print(f"  actual_size: {actual_size}")
-        print(f"  output shape: {ref_output.shape}")
-        print(f"  output norm: {ref_output.norm():.4f}")
-
+        # Print first few output values for this device
+        print(f"Device {device_id} ref output[0, :8]: {ref_output[0, :8].tolist()}")
 
     # Step 5: Simulate allreduce - sum outputs from all devices
     final_output = torch.zeros_like(all_device_outputs[0])
     for device_output in all_device_outputs:
         final_output += device_output
 
-    print(f"\n✓ Final output after allreduce:")
-    print(f"  Shape: {final_output.shape}")
-    print(f"  Norm: {final_output.norm():.4f}")
-    print(f"  Mean: {final_output.mean():.4f}")
-    print(f"  Std: {final_output.std():.4f}")
-
     # Verify output properties
     assert final_output.shape == (num_tokens, hidden_dim), \
         f"Output shape mismatch: expected ({num_tokens}, {hidden_dim}), got {final_output.shape}"
-
-    # Check that output is non-zero (experts contributed)
     assert final_output.norm() > 0, "Output is all zeros - no expert contributions"
 
-    # Compare TTNN output with reference implementation
-    print(f"\nTTNN Output Analysis:")
-    print(f"  Raw output shape: {output_torch.shape}")
-    print(f"  Raw output dtype: {output_torch.dtype}")
-
-    # The output is concatenated from all devices: [num_devices, num_tokens, hidden_dim]
-    # or [num_devices * num_tokens, hidden_dim] depending on concat
-    if output_torch.dim() == 3:
-        # Shape is [num_devices, num_tokens, hidden_dim]
-        print(f"  Output is 3D: {output_torch.shape}")
-        # Each device has partial results that need to be summed (allreduce)
-        ttnn_combined = torch.zeros(num_tokens, hidden_dim, dtype=output_torch.dtype)
-        for device_id in range(num_devices):
-            device_output = output_torch[device_id]
-            print(f"  Device {device_id} partial output norm: {device_output.norm():.4f}")
-            ttnn_combined += device_output
-    elif output_torch.dim() == 2 and output_torch.shape[0] == num_devices * num_tokens:
-        # Shape is [num_devices * num_tokens, hidden_dim]
-        print(f"  Output is 2D concatenated: {output_torch.shape}")
-        # Reshape to [num_devices, num_tokens, hidden_dim]
-        output_reshaped = output_torch.view(num_devices, num_tokens, hidden_dim)
-        # Sum across devices (allreduce)
-        ttnn_combined = torch.zeros(num_tokens, hidden_dim, dtype=output_torch.dtype)
-        for device_id in range(num_devices):
-            device_output = output_reshaped[device_id]
-            print(f"  Device {device_id} partial output norm: {device_output.norm():.4f}")
-            ttnn_combined += device_output
-    else:
-        # Single device or unexpected shape
-        print(f"  Output shape suggests single device or unexpected format")
-        ttnn_combined = output_torch
-
-    print(f"\nTTNN combined output (after simulated allreduce):")
-    print(f"  Shape: {ttnn_combined.shape}")
-    print(f"  Norm: {ttnn_combined.norm():.4f}")
-    print(f"  Reference norm: {final_output.norm():.4f}")
+    # Combine TTNN device outputs (simulate allreduce)
+    # Output shape from ConcatMeshToTensor is (num_devices * num_tokens, hidden_dim)
+    output_reshaped = output_torch.view(num_devices, num_tokens, hidden_dim)
+    ttnn_combined = torch.zeros(num_tokens, hidden_dim, dtype=output_torch.dtype)
+    for device_id in range(num_devices):
+        print(f"Device {device_id} ttnn output[0, :8]: {output_reshaped[device_id, 0, :8].tolist()}")
+        ttnn_combined += output_reshaped[device_id]
 
     # Compare combined result with reference
-    if torch.allclose(ttnn_combined, final_output, atol=0.5, rtol=0.1):
-        print(f"  ✓ TTNN output matches reference implementation")
-    else:
-        diff = (ttnn_combined - final_output).abs()
-        print(f"  ⚠ TTNN output differs from reference")
-        print(f"    Max difference: {diff.max():.4f}")
-        print(f"    Mean difference: {diff.mean():.4f}")
-        # Print some debug info
-        print(f"    TTNN mean: {ttnn_combined.mean():.4f}, std: {ttnn_combined.std():.4f}")
-        print(f"    Reference mean: {final_output.mean():.4f}, std: {final_output.std():.4f}")
-        assert torch.allclose(ttnn_combined, final_output, atol=0.5, rtol=0.1), \
-            "TTNN output does not match reference implementation"
+    diff = (ttnn_combined - final_output).abs()
+    max_diff = diff.max()
+    mean_diff = diff.mean()
 
-    print(f"\n✓ Test passed: moe_down_projection implementation verified")
-    print(f"  Each device processes {experts_per_device} experts")
-    print(f"  Final output shape: ({num_tokens}, {hidden_dim})")
+    if torch.allclose(ttnn_combined, final_output, atol=0.5, rtol=0.1):
+        print(f"✓ Test passed - max_diff: {max_diff:.4f}, mean_diff: {mean_diff:.4f}")
+    else:
+        print(f"✗ Test failed - max_diff: {max_diff:.4f}, mean_diff: {mean_diff:.4f}")
+        print(f"  TTNN: mean={ttnn_combined.mean():.4f}, std={ttnn_combined.std():.4f}")
+        print(f"  Reference: mean={final_output.mean():.4f}, std={final_output.std():.4f}")
+        assert False, "TTNN output does not match reference implementation"
