@@ -96,6 +96,21 @@ tt::tt_metal::operation::ProgramWithCallbacks moe_down_projection_multi_core(
         .set_page_size(CBIndex::c_16, output_row_size);
     CreateCircularBuffer(program, core_range, cb_output_config);
 
+    // Add scratch buffers for intermediate computation (avoid stack allocation)
+    // cb_24: saved_output buffer (hidden_dim floats = hidden_dim * 4 bytes)
+    uint32_t saved_output_size = hidden_dim * sizeof(float);
+    CircularBufferConfig cb_saved_output_config = CircularBufferConfig(
+        saved_output_size, {{CBIndex::c_24, DataFormat::Float32}})
+        .set_page_size(CBIndex::c_24, saved_output_size);
+    CreateCircularBuffer(program, core_range, cb_saved_output_config);
+
+    // cb_25: matmul_result buffer (hidden_dim floats = hidden_dim * 4 bytes)
+    uint32_t matmul_result_size = hidden_dim * sizeof(float);
+    CircularBufferConfig cb_matmul_result_config = CircularBufferConfig(
+        matmul_result_size, {{CBIndex::c_25, DataFormat::Float32}})
+        .set_page_size(CBIndex::c_25, matmul_result_size);
+    CreateCircularBuffer(program, core_range, cb_matmul_result_config);
+
     // Compile time args for kernel
     std::vector<uint32_t> compile_time_args;
 

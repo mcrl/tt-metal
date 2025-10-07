@@ -51,6 +51,8 @@ void kernel_main() {
     constexpr uint32_t cb_weights_row = tt::CBIndex::c_4;
     constexpr uint32_t cb_mapping = tt::CBIndex::c_5;
     constexpr uint32_t cb_output_row = tt::CBIndex::c_16;
+    constexpr uint32_t cb_saved_output = tt::CBIndex::c_24;      // Scratch buffer for saved output
+    constexpr uint32_t cb_matmul_result = tt::CBIndex::c_25;     // Scratch buffer for matmul result
 
     // Create tensor accessors for proper DRAM access
     constexpr auto combined_accessor_args = TensorAccessorArgs<0>();
@@ -77,6 +79,8 @@ void kernel_main() {
     cb_reserve_back(cb_combined_row, 1);
     cb_reserve_back(cb_weights_row, 1);
     cb_reserve_back(cb_output_row, 1);
+    cb_reserve_back(cb_saved_output, 1);
+    cb_reserve_back(cb_matmul_result, 1);
 
     uint32_t l1_mapping_addr = get_write_ptr(cb_mapping);
     uint32_t l1_num_routed_addr = get_write_ptr(cb_num_routed_row);
@@ -85,6 +89,8 @@ void kernel_main() {
     uint32_t l1_combined_addr = get_write_ptr(cb_combined_row);
     uint32_t l1_weights_addr = get_write_ptr(cb_weights_row);
     uint32_t l1_output_addr = get_write_ptr(cb_output_row);
+    uint32_t l1_saved_output_addr = get_write_ptr(cb_saved_output);
+    uint32_t l1_matmul_result_addr = get_write_ptr(cb_matmul_result);
 
     // Read device expert mapping and num_routed_tokens
     uint64_t mapping_noc_addr = get_noc_addr(0, mapping_accessor);
@@ -161,16 +167,17 @@ void kernel_main() {
             noc_async_read(output_noc_addr, l1_output_addr, hidden_dim * sizeof(uint16_t));
             noc_async_read_barrier();
 
+            // Use L1 buffers instead of stack arrays to avoid stack overflow with large hidden_dim
+            volatile float* saved_output = reinterpret_cast<volatile float*>(l1_saved_output_addr);
+            volatile float* matmul_result = reinterpret_cast<volatile float*>(l1_matmul_result_addr);
+
             // Save the original output values (from previous experts)
             // We need to:  output = output_old + routing_weight * (activation @ weights)
-            float saved_output[hidden_dim];
             for (uint32_t h = 0; h < hidden_dim; h++) {
                 saved_output[h] = bfloat16_to_float(output_buffer[h]);
             }
 
-            // Compute matmul: activation (1 x H') @ weights (H' x H) = temp (1 x H)
-            // Accumulate in saved_output temporarily
-            float matmul_result[hidden_dim];
+            // Initialize matmul_result to zero
             for (uint32_t h = 0; h < hidden_dim; h++) {
                 matmul_result[h] = 0.0f;
             }
@@ -215,4 +222,6 @@ void kernel_main() {
     cb_push_back(cb_combined_row, 1);
     cb_push_back(cb_weights_row, 1);
     cb_push_back(cb_output_row, 1);
+    cb_push_back(cb_saved_output, 1);
+    cb_push_back(cb_matmul_result, 1);
 }
