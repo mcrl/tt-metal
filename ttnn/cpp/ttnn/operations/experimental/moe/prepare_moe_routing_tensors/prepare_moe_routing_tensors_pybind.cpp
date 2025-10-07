@@ -9,7 +9,7 @@
 #include <pybind11/stl.h>
 #include "ttnn-pybind/decorators.hpp"
 
-namespace ttnn::operations::experimental::prepare_moe_routing_tensors::detail {
+namespace ttnn::operations::experimental::moe::detail {
 namespace py = pybind11;
 
 void bind_prepare_moe_routing_tensors(py::module& module) {
@@ -74,4 +74,4 @@ Note:
         });
 }
 
-}  // namespace ttnn::operations::experimental::prepare_moe_routing_tensors::detail
+}  // namespace ttnn::operations::experimental::moe::detail

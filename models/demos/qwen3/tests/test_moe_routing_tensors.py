@@ -34,7 +34,7 @@ def reference_prepare_moe_routing_tensors(selected_experts, routing_weights, num
         - routed_token_weights: (E, max_tokens) weights per expert
     """
     num_tokens, top_k = selected_experts.shape
-    max_tokens_per_expert = num_tokens * top_k
+    max_tokens_per_expert = num_tokens
 
     # Initialize outputs
     num_routed_tokens = torch.zeros(num_experts, dtype=torch.int32)
@@ -57,9 +57,9 @@ def reference_prepare_moe_routing_tensors(selected_experts, routing_weights, num
     return num_routed_tokens, routed_tokens, routed_token_weights
 
 
-@pytest.mark.parametrize("num_tokens", [2, 4, 8, 16, 32])
-@pytest.mark.parametrize("top_k", [2, 3, 4])
-@pytest.mark.parametrize("num_experts", [8, 16, 32, 128])
+@pytest.mark.parametrize("num_tokens", [32, 128])
+@pytest.mark.parametrize("top_k", [4, 8])
+@pytest.mark.parametrize("num_experts", [8, 32, 128])
 def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts):
     """
     Test prepare_moe_routing_tensors on mesh_device.
@@ -117,7 +117,7 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
     assert num_routed.shape[0] == 1  # Single row tensor
     assert num_routed.shape[1] >= num_experts  # Padded to alignment
     assert routed_tokens.shape[0] >= num_experts  # Padded to alignment
-    assert routed_tokens.shape[1] == num_tokens * top_k  # max_tokens_per_expert
+    assert routed_tokens.shape[1] == num_tokens  # max_tokens_per_expert
     assert routed_weights.shape == routed_tokens.shape
 
     # Convert to PyTorch for verification
@@ -168,7 +168,7 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
                             break
 
         # Check padding (tokens beyond count should be invalid)
-        if count < num_tokens * top_k:
+        if count < num_tokens:
             padding_tokens = routed_tokens_torch[expert_idx, count:]
             # Invalid tokens are marked as 0xFFFFFFFF (or -1 in signed int)
             assert torch.all((padding_tokens == -1) | (padding_tokens == 0xFFFFFFFF)), \

@@ -59,6 +59,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
 
     // Scratch buffer for collecting tokens per expert
     // Size: num_experts * max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t))
+    // With correct max_tokens_per_expert = T, this should fit in L1
     const uint32_t scratch_bytes = padded_num_experts * max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t));
 
     // Create circular buffers

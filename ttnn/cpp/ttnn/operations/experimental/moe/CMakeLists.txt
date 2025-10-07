@@ -13,6 +13,9 @@ target_sources(
         prepare_moe_routing_tensors/prepare_moe_routing_tensors.cpp
         prepare_moe_routing_tensors/device/prepare_moe_routing_tensors_op.cpp
         prepare_moe_routing_tensors/device/prepare_moe_routing_tensors_program_factory.cpp
+        moe_expert_projection/moe_expert_projection.cpp
+        moe_expert_projection/device/moe_expert_projection_op.cpp
+        moe_expert_projection/device/moe_expert_projection_program_factory.cpp
 )
 
 target_include_directories(ttnn_op_experimental_moe PRIVATE ${FixmeOpIncDirs})
