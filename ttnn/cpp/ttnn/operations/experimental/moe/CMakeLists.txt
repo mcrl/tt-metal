@@ -10,6 +10,9 @@ target_sources(
         prepare_moe_mapping_tensor/prepare_moe_mapping_tensor.cpp
         prepare_moe_mapping_tensor/device/prepare_moe_mapping_tensor_op.cpp
         prepare_moe_mapping_tensor/device/prepare_moe_mapping_tensor_program_factory.cpp
+        prepare_moe_routing_tensors/prepare_moe_routing_tensors.cpp
+        prepare_moe_routing_tensors/device/prepare_moe_routing_tensors_op.cpp
+        prepare_moe_routing_tensors/device/prepare_moe_routing_tensors_program_factory.cpp
 )
 
 target_include_directories(ttnn_op_experimental_moe PRIVATE ${FixmeOpIncDirs})
