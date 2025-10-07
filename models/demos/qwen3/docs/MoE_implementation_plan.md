@@ -204,3 +204,17 @@ Steps 1, 2, and 4 are batched matrix multiplications where:
   - Accumulate to final output tensor (T x H) at appropriate token positions
 - **Important**: Results must be accumulated (not overwritten) to the final T x H output tensor
 - Multiple experts' results are aggregated per token using accumulation
+
+### Step 5: Allreduce for Expert Parallelism
+- Input:
+  - Partial output tensor from Step 4 (T x H per device)
+  - Each device has computed outputs for its subset of E/D experts
+- Operation:
+  - Perform allreduce across all devices in the mesh
+  - Sum the partial outputs from all devices to combine expert results
+  - Each device receives the complete aggregated output (T x H)
+- Output:
+  - Final MoE layer output (T x H)
+  - Contains contributions from all E experts across all D devices
+- **Purpose**: Combines expert-parallel computation results into final output
+- **Implementation**: Use TTNN's collective communication operations (e.g., `ttnn.all_reduce`)
