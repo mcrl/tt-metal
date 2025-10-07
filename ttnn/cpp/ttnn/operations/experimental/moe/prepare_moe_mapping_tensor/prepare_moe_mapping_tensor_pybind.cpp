@@ -26,7 +26,7 @@ and zero for non-selected experts.
 
 Args:
     * :attr:`selected_experts`: Tensor of selected expert indices (T x K), ROW_MAJOR layout, int32 dtype
-    * :attr:`routing_weights`: Tensor of routing weights (T x K), TILE layout, bfloat16 dtype
+    * :attr:`routing_weights`: Tensor of routing weights (T x K), ROW_MAJOR layout, bfloat16 dtype
     * :attr:`num_experts`: Total number of experts (E)
 
 Keyword Args:

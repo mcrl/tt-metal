@@ -152,5 +152,6 @@ def test_moe_decode(batch_size, seq_len, mesh_device):
     tracy.signpost("Run")
     output_tt = tt_mlp(hidden_states_tt)
 
+
 if __name__ == "__main__":
     pytest.main([__file__])

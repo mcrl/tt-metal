@@ -18,8 +18,10 @@ std::vector<ttnn::Tensor> PrepareMoeRoutingTensorsOperation::invoke(
     const uint32_t num_tokens = experts_shape[0];
     const uint32_t top_k = experts_shape[1];
 
-    // Maximum tokens that can be routed to any expert (worst case)
-    const uint32_t max_tokens_per_expert = num_tokens * top_k;
+    // Maximum tokens that can be routed to any single expert (worst case)
+    // Each token selects top_k experts, but each token can only contribute once to each expert
+    // So the maximum tokens any single expert can receive is T (all tokens choose that expert)
+    const uint32_t max_tokens_per_expert = num_tokens;
 
     auto output_mem_config = memory_config.value_or(selected_experts.memory_config());
 

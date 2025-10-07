@@ -10,4 +10,4 @@ export TTNN_CONFIG_OVERRIDES='{
     "enable_comparison_mode": false
 }'
 
-python -m tracy -r -p -v -m pytest models/demos/qwen3/tests/test_attn_perf.py::test_attn_prefill
+python -m tracy -r -p -v -m pytest tests/test_moe_perf.py::test_moe_decode
