@@ -14,7 +14,8 @@ namespace ttnn::operations::experimental::moe {
 using namespace tt::tt_metal;
 
 struct PrepareMoeRoutingTensors {
-    const uint32_t num_experts;
+    const uint32_t num_experts;          // Total number of experts (E)
+    const uint32_t num_local_experts;    // Number of experts on this device (E/D)
     const uint32_t max_tokens_per_expert;
     const MemoryConfig output_mem_config;
 

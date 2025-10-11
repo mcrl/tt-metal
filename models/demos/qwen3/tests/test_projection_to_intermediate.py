@@ -1,46 +1,6 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Tests for the projection_to_intermediate operation.
-
-This operation performs batched matrix multiplication for MoE expert processing:
-- Each expert processes only its assigned tokens (sparse routing)
-- Uses routed_tokens tensor to gather relevant input tokens
-- Performs batched matmul: (T_e × H) @ (H × H') = T_e × H'
-- Output is written to pre-allocated tensor at appropriate positions
-
-This is a general-purpose operation used for both gate_proj and up_proj.
-
-IMPLEMENTATION STATUS:
-✅ COMPLETE - All components implemented and tested
-   - C++ operation layer with validation
-   - Program factory with circular buffer setup
-   - Dataflow kernel with token gathering and FP32 accumulation matmul
-   - Python bindings (ttnn.projection_to_intermediate)
-   - Build system integration
-   - Test suite with multiple configurations
-   - All test cases PASSING ✓
-
-✅ Kernel Implementation:
-   - On-demand token reading: reads each token's hidden state when needed
-   - FP32 accumulation for improved precision
-   - Reads expert weight rows one at a time to conserve L1 memory
-   - Proper bfloat16 ↔ float32 conversion using std::memcpy
-   - Sequential output writing to DRAM
-   - No hidden dimension constraints
-
-✅ Precision:
-   - FP32 accumulation throughout matmul, convert to bfloat16 only at the end
-   - Typical precision: max_diff ≤0.5, relative_error ≤1%
-   - Works for all hidden dimensions including H=2048
-
-⚠️  Performance Notes:
-   - Current implementation is reference/correctness-focused, not optimized
-   - Weight matrix is read row-by-row from DRAM (multiple NOC reads per token)
-   - Future optimization: Use optimized matmul kernels, prefetching, or compute cores
-"""
-
 import ttnn
 import pytest
 import torch
@@ -49,19 +9,22 @@ import tt_lock
 
 def reference_projection_to_intermediate(
     hidden_states,           # (T, H)
-    routed_tokens,           # (E, max_tokens)
-    num_routed_tokens,       # (E,)
+    routed_tokens,           # (E, max_tokens) - concatenated from device-local (E/D) tensors
+    num_routed_tokens,       # (E,) - concatenated from device-local (E/D) tensors
     expert_weights,          # (E/D, H, H') per device (sharded)
     device_expert_mapping,   # (E/D,) global expert indices for this device
     top_k,                   # Top-K experts per token
 ):
     """
-    Reference implementation for moe_expert_projection.
+    Reference implementation for projection_to_intermediate (for validation after gathering device-local outputs).
+
+    Note: This reference operates on CONCATENATED routing tensors (E experts) for validation purposes.
+    The actual TT operation receives SHARDED device-local tensors (E/D experts per device).
 
     Args:
-        hidden_states: (T, H) input token embeddings
-        routed_tokens: (E, max_tokens) token indices per expert
-        num_routed_tokens: (E,) count of tokens per expert
+        hidden_states: (T, H) input token embeddings (replicated)
+        routed_tokens: (E, max_tokens) token indices per expert (concatenated from sharded device-local)
+        num_routed_tokens: (E,) count of tokens per expert (concatenated from sharded device-local)
         expert_weights: (E/D, H, H') expert weight matrices (sharded per device)
         device_expert_mapping: (E/D,) global expert indices assigned to this device
         top_k: number of experts per token (K)
@@ -180,24 +143,43 @@ def test_projection_to_intermediate(mesh_device, config):
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
     )
 
-    # Get routed tokens tensor
+    # Create device-expert mapping (uniform partitioning)
+    # Each device gets a contiguous range of experts
+    device_expert_mappings = []
+    for device_id in range(num_devices):
+        mapping = torch.arange(
+            device_id * experts_per_device,
+            (device_id + 1) * experts_per_device,
+            dtype=torch.int32
+        )
+        device_expert_mappings.append(mapping)
+
+    # Stack and upload device-expert mappings (sharded)
+    device_expert_mapping_np = torch.stack(device_expert_mappings, dim=0)  # (D, E/D)
+    device_expert_mapping_tt = ttnn.from_torch(
+        device_expert_mapping_np,
+        device=mesh_device,
+        dtype=ttnn.int32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
+    )
+
+    # Get routed tokens tensor (now device-local, sharded by experts)
     num_routed, routed_tokens, routed_weights = ttnn.prepare_moe_routing_tensors(
-        selected_experts, routing_weights, num_experts
+        selected_experts, routing_weights, device_expert_mapping_tt, num_experts
     )
 
     # Convert routing info to torch for reference
-    # prepare_moe_routing_tensors outputs are REPLICATED across all devices:
-    # After concat: num_routed shape is (D, E_padded) where each row is identical
-    # After concat: routed_tokens shape is (D*E_padded, max_tokens_per_expert)
+    # prepare_moe_routing_tensors outputs are SHARDED across devices (device-local):
+    # After concat: num_routed shape is (D, E/D) where each row has different expert counts
+    # After concat: routed_tokens shape is (D*(E/D), max_tokens) = (E, max_tokens)
     num_routed_torch = ttnn.to_torch(num_routed, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
     routed_tokens_torch = ttnn.to_torch(routed_tokens, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
 
-    # Extract first device data (all devices have identical copies)
-    # Each device has routing info for ALL experts (replicated for routing)
-    # The tensor from each device is shape (1, E_padded), concat gives (D, E_padded)
-    num_routed_np = num_routed_torch[0, :num_experts]  # First device, first E values
-    # The tensor from each device is shape (E_padded, max_tokens), concat gives (D*E_padded, max_tokens)
-    routed_tokens_np = routed_tokens_torch[:num_experts]  # First E rows
+    # Reshape to get global view (D, E/D) -> (E,)
+    num_routed_np = num_routed_torch.flatten()[:num_experts]  # Flatten and take first E values
+    routed_tokens_np = routed_tokens_torch[:num_experts]  # Concat already gives (E, max_tokens)
 
     # Create expert weights (sharded across devices)
     expert_weights_np = torch.randn(num_experts, hidden_dim, expert_dim, dtype=torch.bfloat16)

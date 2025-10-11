@@ -17,10 +17,12 @@ using namespace tt::tt_metal;
 operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
     const Tensor& selected_experts,
     const Tensor& routing_weights,
+    const Tensor& device_expert_mapping,
     Tensor& num_routed_tokens,
     Tensor& routed_tokens,
     Tensor& routed_token_weights,
     uint32_t num_experts,
+    uint32_t num_local_experts,
     uint32_t max_tokens_per_expert) {
 
     Program program{};
@@ -35,6 +37,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
     // Circular buffer indices
     const uint32_t cb_experts = CBIndex::c_0;
     const uint32_t cb_weights = CBIndex::c_1;
+    const uint32_t cb_device_mapping = CBIndex::c_2;
     const uint32_t cb_num_routed = CBIndex::c_16;
     const uint32_t cb_routed_tokens = CBIndex::c_17;
     const uint32_t cb_routed_weights = CBIndex::c_18;
@@ -43,21 +46,23 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
     // Data formats
     tt::DataFormat experts_data_format = tt_metal::datatype_to_dataformat_converter(selected_experts.dtype());
     tt::DataFormat weights_data_format = tt_metal::datatype_to_dataformat_converter(routing_weights.dtype());
+    tt::DataFormat mapping_data_format = tt_metal::datatype_to_dataformat_converter(device_expert_mapping.dtype());
     tt::DataFormat num_routed_data_format = tt_metal::datatype_to_dataformat_converter(DataType::UINT32);
     tt::DataFormat routed_tokens_data_format = tt_metal::datatype_to_dataformat_converter(DataType::UINT32);
     tt::DataFormat routed_weights_data_format = tt_metal::datatype_to_dataformat_converter(DataType::BFLOAT16);
 
-    // Buffer sizes
+    // Buffer sizes (device-local: E/D instead of E)
     const uint32_t experts_row_bytes = top_k * sizeof(uint32_t);
     const uint32_t weights_row_bytes = top_k * sizeof(uint16_t);
-    const uint32_t num_routed_bytes = num_experts * sizeof(uint32_t);
+    const uint32_t mapping_bytes = num_local_experts * sizeof(int32_t);
+    const uint32_t num_routed_bytes = num_local_experts * sizeof(uint32_t);
     const uint32_t routed_tokens_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
     const uint32_t routed_weights_row_bytes = max_tokens_per_expert * sizeof(uint16_t);
 
-    // Scratch buffer for collecting tokens per expert
-    // Size: num_experts * max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t))
-    // With correct max_tokens_per_expert = T, this should fit in L1
-    const uint32_t scratch_bytes = num_experts * max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t));
+    // Scratch buffer for collecting tokens per expert (device-local)
+    // Size: num_local_experts * max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t))
+    // Also need space for reverse mapping: num_experts * sizeof(uint32_t)
+    const uint32_t scratch_bytes = num_local_experts * max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t)) + num_experts * sizeof(uint32_t);
 
     // Create circular buffers
     tt_metal::CircularBufferConfig experts_cb_config =
@@ -69,6 +74,11 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
         tt_metal::CircularBufferConfig(weights_row_bytes, {{cb_weights, weights_data_format}})
             .set_page_size(cb_weights, weights_row_bytes);
     CreateCircularBuffer(program, core, weights_cb_config);
+
+    tt_metal::CircularBufferConfig mapping_cb_config =
+        tt_metal::CircularBufferConfig(mapping_bytes, {{cb_device_mapping, mapping_data_format}})
+            .set_page_size(cb_device_mapping, mapping_bytes);
+    CreateCircularBuffer(program, core, mapping_cb_config);
 
     tt_metal::CircularBufferConfig num_routed_cb_config =
         tt_metal::CircularBufferConfig(num_routed_bytes, {{cb_num_routed, num_routed_data_format}})
@@ -97,6 +107,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
     // Add TensorAccessor compile-time args for all buffers
     TensorAccessorArgs(*selected_experts.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*routing_weights.buffer()).append_to(compile_time_args);
+    TensorAccessorArgs(*device_expert_mapping.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*num_routed_tokens.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*routed_tokens.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*routed_token_weights.buffer()).append_to(compile_time_args);
@@ -104,12 +115,14 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
     std::vector<uint32_t> runtime_args = {
         selected_experts.buffer()->address(),
         routing_weights.buffer()->address(),
+        device_expert_mapping.buffer()->address(),
         num_routed_tokens.buffer()->address(),
         routed_tokens.buffer()->address(),
         routed_token_weights.buffer()->address(),
         num_tokens,
         top_k,
         num_experts,
+        num_local_experts,
         max_tokens_per_expert};
 
     auto kernel = CreateKernel(
@@ -131,6 +144,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
                                                    const std::vector<Tensor>& output_tensors) {
         const auto& selected_experts = input_tensors[0];
         const auto& routing_weights = input_tensors[1];
+        const auto& device_expert_mapping = input_tensors[2];
         const auto& num_routed_tokens = output_tensors[0];
         const auto& routed_tokens = output_tensors[1];
         const auto& routed_token_weights = output_tensors[2];
@@ -138,9 +152,10 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
         auto& runtime_args = GetRuntimeArgs(program, kernel, {0, 0});
         runtime_args[0] = selected_experts.buffer()->address();
         runtime_args[1] = routing_weights.buffer()->address();
-        runtime_args[2] = num_routed_tokens.buffer()->address();
-        runtime_args[3] = routed_tokens.buffer()->address();
-        runtime_args[4] = routed_token_weights.buffer()->address();
+        runtime_args[2] = device_expert_mapping.buffer()->address();
+        runtime_args[3] = num_routed_tokens.buffer()->address();
+        runtime_args[4] = routed_tokens.buffer()->address();
+        runtime_args[5] = routed_token_weights.buffer()->address();
     };
 
     return {std::move(program), override_runtime_arguments_callback};

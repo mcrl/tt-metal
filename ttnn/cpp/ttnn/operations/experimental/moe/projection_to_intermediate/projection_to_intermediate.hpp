@@ -16,26 +16,27 @@
 //
 // INPUTS:
 //   - hidden_states: (T × H) bfloat16 tensor, ROW_MAJOR layout, replicated across devices
-//   - routed_tokens: (E × max_tokens) uint32 tensor, replicated across devices
-//   - num_routed_tokens: (1 × E) uint32 tensor, replicated across devices
+//   - routed_tokens: (E/D × max_tokens) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
+//   - num_routed_tokens: (1 × E/D) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
 //   - expert_weights: (E/D × H × H') bfloat16 tensor, ROW_MAJOR layout, sharded across devices
-//   - device_expert_mapping: (E/D) int32 tensor, ROW_MAJOR layout, sharded across devices
+//   - device_expert_mapping: (E/D) int32 tensor, ROW_MAJOR layout, sharded (for validation/future use)
 //
 // OUTPUTS:
 //   - output: (K*T × H') bfloat16 tensor - projection outputs (sparse, padded)
 //
 // COMPUTATION:
 //   For each local expert (0 to E/D-1):
-//     1. Get global expert index from device_expert_mapping
-//     2. Get token count T_e from num_routed_tokens[global_expert_idx]
-//     3. Gather T_e tokens from hidden_states using routed_tokens[global_expert_idx]
-//     4. Perform matmul: (T_e × H) @ (H × H') = T_e × H'
-//     5. Write output sequentially to pre-allocated tensor
+//     1. Get token count T_e from num_routed_tokens[local_expert_idx]
+//     2. Gather T_e tokens from hidden_states using routed_tokens[local_expert_idx]
+//     3. Perform matmul: (T_e × H) @ (H × H') = T_e × H'
+//     4. Write output sequentially to pre-allocated tensor
 //
 // NOTES:
 //   - Used for both gate_proj and up_proj in MoE layers
 //   - Each device processes E/D experts in parallel (expert parallelism)
 //   - Output is zero-padded to K*T size
+//   - Routing tensors are device-local (E/D per device) from prepare_moe_routing_tensors
+//   - device_expert_mapping kept for API compatibility but routing is already device-local
 
 namespace ttnn {
 namespace operations::experimental {
