@@ -132,6 +132,9 @@ void kernel_main() {
     uint32_t l1_routed_tokens_addr = get_write_ptr(cb_routed_tokens);
     uint32_t l1_routed_weights_addr = get_write_ptr(cb_routed_weights);
 
+    // Batch writes: issue async writes for multiple experts, then barrier once
+    constexpr uint32_t write_batch_size = 8;
+
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
         uint32_t count = num_routed_ptr[expert_idx];
 
@@ -159,7 +162,10 @@ void kernel_main() {
         uint64_t routed_weights_noc_addr = get_noc_addr(expert_idx, routed_weights_accessor);
         noc_async_write(l1_routed_weights_addr, routed_weights_noc_addr, max_tokens_per_expert * sizeof(uint16_t));
 
-        noc_async_write_barrier();
+        // Barrier every write_batch_size experts or at the end
+        if (((expert_idx + 1) % write_batch_size == 0) || (expert_idx == num_experts - 1)) {
+            noc_async_write_barrier();
+        }
     }
 
     // Pad remaining expert rows with empty data
@@ -180,7 +186,10 @@ void kernel_main() {
         uint64_t routed_weights_noc_addr = get_noc_addr(expert_idx, routed_weights_accessor);
         noc_async_write(l1_routed_weights_addr, routed_weights_noc_addr, max_tokens_per_expert * sizeof(uint16_t));
 
-        noc_async_write_barrier();
+        // Barrier every write_batch_size experts or at the end
+        if (((expert_idx + 1) % write_batch_size == 0) || (expert_idx == padded_num_experts - 1)) {
+            noc_async_write_barrier();
+        }
     }
 
     // Release circular buffers

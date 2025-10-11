@@ -36,48 +36,36 @@
 - Input hidden state shape: T x H
 - Input hidden state is replicated across all devices
 
-## Selected Expert Indices (unused)
+## Selected Expert Indices
 - Shape: T x K per device
 - Replicated across all devices
 - [t, k]: Global expert index (0 to E-1) for token t's k-th selected expert
 
-## Routing Weights (unused)
+## Routing Weights
 - Shape: T x K per device
 - Replicated across all devices
 - [t, k]: Mapping weight of token t's k-th expert
 
-## Token-Expert Mapping (unused)
-- Shape: T x E
-- [t, e]: Routing weight of token t to expert e
-- Zero if token t is not routed to expert e
-- Derived from selected expert indices and routing weights
-
-## Expert-Token Mapping (unused)
-- Shape: E x T (transpose of Token-Expert Mapping)
-- [e, t]: Routing weight of expert e for token t
-- Zero if expert e is not assigned to token t
-- Used as input for efficient expert-parallel computation
-
-## Num Routed Tokens (Input Tensor)
+## Num Routed Tokens
 - Shape: E (one value per expert)
 - [e]: Number of tokens routed to expert e (T_e)
 - Used to determine iteration bounds for each expert
 
-## Routed Tokens (Input Tensor)
+## Routed Tokens
 - Shape: E x T
 - [e, i]: Index of i-th token routed to expert e
 - Variable length per expert, padded to T for rectangular tensor shape
 - Entries beyond num_routed_tokens[e] are padding/invalid
 - Used for efficient token lookup during expert computation
 
-## Routed Token Weights (Input Tensor)
+## Routed Token Weights
 - Shape: E x T
 - [e, i]: Routing weight for i-th token routed to expert e
 - Corresponds to the routing weights in Routed Tokens tensor
 - Entries beyond num_routed_tokens[e] are padding/invalid
 - Used to apply routing weights during final accumulation
 
-## Device-Expert Mapping Tensor (Input Tensor)
+## Device-Expert Mapping Tensor
 - Shape: (E/D,) per device (16 for our configuration)
 - Data type: int32
 - Contains global expert indices assigned to this device

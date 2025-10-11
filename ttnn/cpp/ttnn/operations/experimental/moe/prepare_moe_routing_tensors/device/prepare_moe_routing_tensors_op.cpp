@@ -52,19 +52,19 @@ std::vector<TensorSpec> PrepareMoeRoutingTensors::compute_output_specs(
     ttnn::Shape num_routed_shape({1, padded_num_experts});
     auto num_routed_spec = TensorSpec(
         num_routed_shape,
-        detail::TensorLayout(DataType::UINT32, detail::PageConfig(Layout::ROW_MAJOR), output_mem_config));
+        TensorLayout(DataType::UINT32, PageConfig(Layout::ROW_MAJOR), output_mem_config));
 
     // Output 2: routed_tokens (E × max_tokens)
     ttnn::Shape routed_tokens_shape({padded_num_experts, max_tokens_per_expert});
     auto routed_tokens_spec = TensorSpec(
         routed_tokens_shape,
-        detail::TensorLayout(DataType::UINT32, detail::PageConfig(Layout::ROW_MAJOR), output_mem_config));
+        TensorLayout(DataType::UINT32, PageConfig(Layout::ROW_MAJOR), output_mem_config));
 
     // Output 3: routed_token_weights (E × max_tokens)
     ttnn::Shape routed_weights_shape({padded_num_experts, max_tokens_per_expert});
     auto routed_weights_spec = TensorSpec(
         routed_weights_shape,
-        detail::TensorLayout(DataType::BFLOAT16, detail::PageConfig(Layout::ROW_MAJOR), output_mem_config));
+        TensorLayout(DataType::BFLOAT16, PageConfig(Layout::ROW_MAJOR), output_mem_config));
 
     return {num_routed_spec, routed_tokens_spec, routed_weights_spec};
 }

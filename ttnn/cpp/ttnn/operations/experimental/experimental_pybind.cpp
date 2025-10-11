@@ -48,10 +48,9 @@
 #include "ttnn/operations/experimental/unary_backward/gelu_backward/gelu_backward_pybind.hpp"
 #include "ttnn/operations/experimental/padded_slice/padded_slice_pybind.hpp"
 #include "ttnn/operations/experimental/where/where_pybind.hpp"
-#include "ttnn/operations/experimental/moe/prepare_moe_mapping_tensor/prepare_moe_mapping_tensor_pybind.hpp"
 #include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors_pybind.hpp"
-#include "ttnn/operations/experimental/moe/moe_expert_projection/moe_expert_projection_pybind.hpp"
-#include "ttnn/operations/experimental/moe/moe_down_projection/moe_down_projection_pybind.hpp"
+#include "ttnn/operations/experimental/moe/projection_to_intermediate/projection_to_intermediate_pybind.hpp"
+#include "ttnn/operations/experimental/moe/projection_to_output/projection_to_output_pybind.hpp"
 
 namespace py = pybind11;
 
@@ -119,10 +118,9 @@ void py_module(py::module& module) {
 
     operations::experimental::ternary::detail::bind_where(module);
 
-    moe::detail::bind_prepare_moe_mapping_tensor(module);
     moe::detail::bind_prepare_moe_routing_tensors(module);
-    moe_expert_projection::detail::bind_moe_expert_projection(module);
-    moe_down_projection::detail::bind_moe_down_projection(module);
+    projection_to_intermediate::detail::bind_projection_to_intermediate(module);
+    projection_to_output::detail::bind_projection_to_output(module);
 }
 
 }  // namespace ttnn::operations::experimental
