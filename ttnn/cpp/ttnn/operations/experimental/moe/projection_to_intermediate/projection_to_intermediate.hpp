@@ -16,9 +16,9 @@
 //
 // INPUTS:
 //   - hidden_states: (T × H) bfloat16 tensor, ROW_MAJOR layout, replicated across devices
-//   - routed_tokens: (E_padded × max_tokens) uint32 tensor, replicated across devices
-//   - num_routed_tokens: (1 × E_padded) uint32 tensor, replicated across devices
-//   - expert_weights: (E/D × H × H') bfloat16 tensor, TILE_LAYOUT, sharded across devices
+//   - routed_tokens: (E × max_tokens) uint32 tensor, replicated across devices
+//   - num_routed_tokens: (1 × E) uint32 tensor, replicated across devices
+//   - expert_weights: (E/D × H × H') bfloat16 tensor, ROW_MAJOR layout, sharded across devices
 //   - device_expert_mapping: (E/D) int32 tensor, ROW_MAJOR layout, sharded across devices
 //
 // OUTPUTS:

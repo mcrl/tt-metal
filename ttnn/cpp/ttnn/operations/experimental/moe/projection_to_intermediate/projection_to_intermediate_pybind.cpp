@@ -28,9 +28,9 @@ This operation is used for both gate_proj and up_proj in MoE layers.
 
 Args:
     * :attr:`hidden_states`: Input token embeddings (T, H), ROW_MAJOR, replicated across devices
-    * :attr:`routed_tokens`: Token indices per expert (E_padded, max_tokens), ROW_MAJOR, replicated
-    * :attr:`num_routed_tokens`: Token count per expert (1, E_padded), ROW_MAJOR, replicated
-    * :attr:`expert_weights`: Expert weight matrices (E/D, H, H'), TILE_LAYOUT, sharded across devices
+    * :attr:`routed_tokens`: Token indices per expert (E, max_tokens), ROW_MAJOR, replicated
+    * :attr:`num_routed_tokens`: Token count per expert (1, E), ROW_MAJOR, replicated
+    * :attr:`expert_weights`: Expert weight matrices (E/D, H, H'), ROW_MAJOR, sharded across devices
     * :attr:`device_expert_mapping`: Global expert indices (E/D,), ROW_MAJOR, sharded across devices
     * :attr:`top_k`: Number of experts selected per token
 
@@ -49,8 +49,8 @@ Example:
     >>> # Perform expert projection (e.g., gate_proj)
     >>> gate_output = ttnn.projection_to_intermediate(
     ...     hidden_states,           # (T, H) replicated
-    ...     routed_tokens,           # (E_padded, max_tokens) replicated
-    ...     num_routed,              # (1, E_padded) replicated
+    ...     routed_tokens,           # (E, max_tokens) replicated
+    ...     num_routed,              # (1, E) replicated
     ...     gate_weights,            # (E/D, H, H') sharded
     ...     device_expert_mapping,   # (E/D,) sharded
     ...     top_k=8                  # Number of experts per token

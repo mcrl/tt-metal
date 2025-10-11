@@ -52,8 +52,7 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
     // Buffer sizes (use logical dimensions from runtime args)
     const uint32_t hidden_row_bytes = hidden_dim * sizeof(uint16_t);
     const uint32_t routed_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
-    // num_routed_tokens has shape (1, E_padded) - need to read entire expert count array
-    // Pad to next power of 2 for E to match padded shape
+    // num_routed_tokens has shape (1, E) - need to read entire expert count array
     const uint32_t num_experts_padded = (num_routed_tokens.padded_shape().rank() == 2) ?
         num_routed_tokens.padded_shape()[1] : num_routed_tokens.padded_shape()[0];
     const uint32_t num_routed_row_bytes = num_experts_padded * sizeof(uint32_t);

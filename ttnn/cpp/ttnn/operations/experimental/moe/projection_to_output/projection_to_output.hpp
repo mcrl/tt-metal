@@ -17,10 +17,10 @@
 // INPUTS:
 //   - combined_activations: (T_d × H') bfloat16 tensor, ROW_MAJOR layout
 //     Contains combined gate*up activations for all token-expert pairs on device
-//   - routed_tokens: (E_padded × max_tokens) uint32 tensor, replicated across devices
-//   - num_routed_tokens: (1 × E_padded) uint32 tensor, replicated across devices
-//   - routed_token_weights: (E_padded × max_tokens) bfloat16 tensor, replicated across devices
-//   - down_proj_weights: (E/D × H' × H) bfloat16 tensor, TILE_LAYOUT, sharded across devices
+//   - routed_tokens: (E × max_tokens) uint32 tensor, replicated across devices
+//   - num_routed_tokens: (1 × E) uint32 tensor, replicated across devices
+//   - routed_token_weights: (E × max_tokens) bfloat16 tensor, replicated across devices
+//   - down_proj_weights: (E/D × H' × H) bfloat16 tensor, ROW_MAJOR layout, sharded across devices
 //   - device_expert_mapping: (E/D) int32 tensor, ROW_MAJOR layout, sharded across devices
 //
 // OUTPUTS:

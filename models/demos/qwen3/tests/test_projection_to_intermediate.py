@@ -118,9 +118,9 @@ def reference_projection_to_intermediate(
 @pytest.mark.parametrize("config", [
     {"num_tokens": 8, "top_k": 2, "num_experts": 8, "hidden_dim": 128, "expert_dim": 64},
     {"num_tokens": 128, "top_k": 4, "num_experts": 16, "hidden_dim": 256, "expert_dim": 128},
-    # {"num_tokens": 256, "top_k": 4, "num_experts": 32, "hidden_dim": 512, "expert_dim": 256},
+    {"num_tokens": 256, "top_k": 4, "num_experts": 32, "hidden_dim": 512, "expert_dim": 256},
     {"num_tokens": 256, "top_k": 8, "num_experts": 128, "hidden_dim": 2048, "expert_dim": 768},
-    # {"num_tokens": 1024, "top_k": 8, "num_experts": 128, "hidden_dim": 2048, "expert_dim": 768},
+    {"num_tokens": 1024, "top_k": 8, "num_experts": 128, "hidden_dim": 2048, "expert_dim": 768},
     # {"num_tokens": 4096, "top_k": 8, "num_experts": 128, "hidden_dim": 2048, "expert_dim": 768},
 ])
 def test_projection_to_intermediate(mesh_device, config):

@@ -29,9 +29,6 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
     const uint32_t num_tokens = experts_shape[0];
     const uint32_t top_k = experts_shape[1];
 
-    // Pad num_experts to 32 for alignment
-    const uint32_t padded_num_experts = (num_experts + 31) & ~31;
-
     IDevice* device = selected_experts.device();
     CoreCoord core = {0, 0};
 
@@ -53,14 +50,14 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
     // Buffer sizes
     const uint32_t experts_row_bytes = top_k * sizeof(uint32_t);
     const uint32_t weights_row_bytes = top_k * sizeof(uint16_t);
-    const uint32_t num_routed_bytes = padded_num_experts * sizeof(uint32_t);
+    const uint32_t num_routed_bytes = num_experts * sizeof(uint32_t);
     const uint32_t routed_tokens_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
     const uint32_t routed_weights_row_bytes = max_tokens_per_expert * sizeof(uint16_t);
 
     // Scratch buffer for collecting tokens per expert
     // Size: num_experts * max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t))
     // With correct max_tokens_per_expert = T, this should fit in L1
-    const uint32_t scratch_bytes = padded_num_experts * max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t));
+    const uint32_t scratch_bytes = num_experts * max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t));
 
     // Create circular buffers
     tt_metal::CircularBufferConfig experts_cb_config =

@@ -97,7 +97,7 @@ void kernel_main() {
     noc_async_read(mapping_noc_addr, l1_mapping_addr, experts_per_device * sizeof(int32_t));
     noc_async_read_barrier();
 
-    // Read the entire num_routed_tokens array (shape: 1 x E_padded)
+    // Read the entire num_routed_tokens array (shape: 1 x E)
     uint64_t num_routed_noc_addr = get_noc_addr(0, num_routed_accessor);
     noc_async_read(num_routed_noc_addr, l1_num_routed_addr, num_experts_padded * sizeof(uint32_t));
     noc_async_read_barrier();
