@@ -7,18 +7,15 @@ TT_ENABLE_UNITY_BUILD(ttnn_op_experimental_moe)
 target_sources(
     ttnn_op_experimental_moe
     PRIVATE
-        prepare_moe_mapping_tensor/prepare_moe_mapping_tensor.cpp
-        prepare_moe_mapping_tensor/device/prepare_moe_mapping_tensor_op.cpp
-        prepare_moe_mapping_tensor/device/prepare_moe_mapping_tensor_program_factory.cpp
         prepare_moe_routing_tensors/prepare_moe_routing_tensors.cpp
         prepare_moe_routing_tensors/device/prepare_moe_routing_tensors_op.cpp
         prepare_moe_routing_tensors/device/prepare_moe_routing_tensors_program_factory.cpp
-        moe_expert_projection/moe_expert_projection.cpp
-        moe_expert_projection/device/moe_expert_projection_op.cpp
-        moe_expert_projection/device/moe_expert_projection_program_factory.cpp
-        moe_down_projection/moe_down_projection.cpp
-        moe_down_projection/device/moe_down_projection_op.cpp
-        moe_down_projection/device/moe_down_projection_program_factory.cpp
+        projection_to_intermediate/projection_to_intermediate.cpp
+        projection_to_intermediate/device/projection_to_intermediate_op.cpp
+        projection_to_intermediate/device/projection_to_intermediate_program_factory.cpp
+        projection_to_output/projection_to_output.cpp
+        projection_to_output/device/projection_to_output_op.cpp
+        projection_to_output/device/projection_to_output_program_factory.cpp
 )
 
 target_include_directories(ttnn_op_experimental_moe PRIVATE ${FixmeOpIncDirs})

@@ -1,13 +1,18 @@
 # Qwen3 MoE Documentation
 
-This directory contains technical documentation for the Qwen3 Mixture of Experts (MoE) implementation.
+This directory contains technical documentation for the Qwen3 Mixture of Experts (MoE) implementation and comprehensive TT-Metal framework documentation.
 
 ## Documentation Files
 
-### Implementation Documentation
-- **[MOE_IMPLEMENTATION_SUMMARY.md](MOE_IMPLEMENTATION_SUMMARY.md)** - Complete implementation summary for MoE operations including `prepare_moe_mapping_tensor` and `prepare_moe_routing_tensors`
+### TT-Metal Framework Documentation
+- **[01_tenstorrent_chip_architecture.md](01_tenstorrent_chip_architecture.md)** - Chip architecture, coordinate systems, harvested cores
+- **[02_tenstorrent_tensix_core.md](02_tenstorrent_tensix_core.md)** - Tensix core architecture, 5 RISC-V cores, L1 memory
+- **[03_host_programming_apis.md](03_host_programming_apis.md)** - Host APIs, device management, programs, buffers
+- **[04_kernel_programming.md](04_kernel_programming.md)** - Kernel programming, NOC operations, compute APIs
+- **[05_inter_core_communication.md](05_inter_core_communication.md)** - Semaphores, multicast, synchronization patterns
+
+### MoE Implementation Documentation
 - **[MoE_implementation_plan.md](MoE_implementation_plan.md)** - Original implementation planning document
-- **[MOE_TESTING_STATUS.md](MOE_TESTING_STATUS.md)** - Detailed testing status and results
 
 ## Quick Links
 
@@ -18,17 +23,13 @@ This directory contains technical documentation for the Qwen3 Mixture of Experts
 
 ### Key Operations
 
-#### 1. `ttnn.prepare_moe_mapping_tensor()`
-Converts sparse MoE expert selection to dense format for computation.
-
-#### 2. `ttnn.prepare_moe_routing_tensors()`
+#### 1. `ttnn.prepare_moe_routing_tensors()`
 Creates efficient routing tensors for expert-parallel computation.
 
 ## Status Summary
 
 | Component | Status | Test Coverage |
 |-----------|--------|---------------|
-| prepare_moe_mapping_tensor | ✅ Complete | 46 tests passing |
 | prepare_moe_routing_tensors | ✅ Complete | 60 tests passing |
 | pytest fixtures | ✅ Optimized | Module-scoped caching |
 

@@ -162,17 +162,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     memory_config=mem_cfg,
                 )
 
-        # Prepare the expert mapping tensor that scatters routing weights to expert positions
-        with Profiler().trace_with_timer("prepare-expert-mapping", level=4):
-            selected_experts_rm = ttnn.to_layout(selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
-            routing_weights_rm = ttnn.to_layout(routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
-            expert_mapping_tensor = ttnn.prepare_moe_mapping_tensor(
-                selected_experts_rm,
-                routing_weights_rm,
-                self.num_experts,
-                memory_config=mem_cfg
-            )
-
         with Profiler().trace_with_timer("to-layout", level=4):
             selected_experts = ttnn.to_layout(
                 selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG
@@ -281,6 +270,195 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             elif mode == InferenceMode.DECODE:
                 final_hidden_states = ttnn.reshape(
                     combined_output_3,
+                    (1, 1, batch_size, hidden_dim),
+                    memory_config=mem_cfg,
+                )
+
+        return final_hidden_states
+
+    @profile_trace("Qwen3MoeSparseMoeBlock", level=3)
+    def forward_v2(self, hidden_states: ttnn.Tensor, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
+        if mode == InferenceMode.PREFILL:
+            batch_size, sequence_length, hidden_dim = hidden_states.shape
+            mem_cfg = ttnn.DRAM_MEMORY_CONFIG
+        elif mode == InferenceMode.DECODE:
+            _, sequence_length, batch_size, hidden_dim = hidden_states.shape
+            mem_cfg = ttnn.L1_MEMORY_CONFIG
+
+        with Profiler().trace_with_timer("reshape", level=4):
+            hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
+
+        with Profiler().trace_with_timer("moe-router", level=4):
+            router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+
+        with Profiler().trace_with_timer("softmax-topk-div", level=4):
+            routing_weights = ttnn.softmax(router_logits, dim=1, memory_config=mem_cfg)
+            routing_weights, selected_experts = ttnn.topk(
+                routing_weights, self.top_k, dim=1, largest=True, memory_config=mem_cfg
+            )
+            if self.norm_topk_prob:
+                routing_weights = ttnn.div(
+                    routing_weights,
+                    ttnn.sum(routing_weights, dim=1, keepdim=True, memory_config=mem_cfg),
+                    memory_config=mem_cfg,
+                )
+
+        # Convert selected_experts to UINT32 and ROW_MAJOR for routing tensor preparation
+        with Profiler().trace_with_timer("typecast-selected-experts", level=4):
+            # typecast requires TILE layout
+            selected_experts = ttnn.typecast(selected_experts, ttnn.uint32, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            # Convert to ROW_MAJOR after typecast
+            selected_experts = ttnn.to_layout(
+                selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            )
+
+        # Convert routing_weights to ROW_MAJOR
+        with Profiler().trace_with_timer("to-layout-routing-weights", level=4):
+            routing_weights = ttnn.to_layout(
+                routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            )
+
+        # Step 1: Prepare routing tensors
+        with Profiler().trace_with_timer("prepare-routing-tensors", level=4):
+            num_routed, routed_tokens, routed_weights = ttnn.prepare_moe_routing_tensors(
+                selected_experts, routing_weights, self.num_experts
+            )
+
+        # Create device-expert mapping (uniform partitioning)
+        # Each device gets contiguous range of experts
+        with Profiler().trace_with_timer("device-expert-mapping", level=4):
+            device_expert_mappings = []
+            for device_id in range(self.num_devices):
+                mapping = torch.arange(
+                    device_id * self.num_experts_per_device,
+                    (device_id + 1) * self.num_experts_per_device,
+                    dtype=torch.int32
+                )
+                device_expert_mappings.append(mapping)
+
+            device_expert_mapping_np = torch.stack(device_expert_mappings, dim=0)  # (D, E/D)
+            device_expert_mapping = ttnn.from_torch(
+                device_expert_mapping_np,
+                device=self.mesh_device,
+                dtype=ttnn.int32,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=0),
+            )
+
+        # Prepare expert weights - need to convert from (1, E/D, H, H') to (E/D, H, H') per device
+        with Profiler().trace_with_timer("prepare-expert-weights", level=4):
+            # Gate projection: convert to ROW_MAJOR and squeeze first dimension
+            gate_proj_rm = ttnn.to_layout(self.gate_proj, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            gate_proj_rm = ttnn.reshape(gate_proj_rm, (self.num_experts_per_device, self.config.hidden_size, self.config.moe_intermediate_size))
+
+            # Up projection: convert to ROW_MAJOR and squeeze first dimension
+            up_proj_rm = ttnn.to_layout(self.up_proj, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            up_proj_rm = ttnn.reshape(up_proj_rm, (self.num_experts_per_device, self.config.hidden_size, self.config.moe_intermediate_size))
+
+            # Down projection: convert to ROW_MAJOR and squeeze first dimension
+            down_proj_rm = ttnn.to_layout(self.down_proj, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            down_proj_rm = ttnn.reshape(down_proj_rm, (self.num_experts_per_device, self.config.moe_intermediate_size, self.config.hidden_size))
+
+        # Convert hidden_states to ROW_MAJOR for expert projection
+        with Profiler().trace_with_timer("hidden-to-row-major", level=4):
+            hidden_states = ttnn.to_layout(hidden_states, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+
+        # Step 2: Gate & Up Projection (batched matmul for all experts)
+        with Profiler().trace_with_timer("gate-projection", level=4):
+            gate_output = ttnn.projection_to_intermediate(
+                hidden_states,
+                routed_tokens,
+                num_routed,
+                gate_proj_rm,
+                device_expert_mapping,
+                self.top_k
+            )
+
+        with Profiler().trace_with_timer("up-projection", level=4):
+            up_output = ttnn.projection_to_intermediate(
+                hidden_states,
+                routed_tokens,
+                num_routed,
+                up_proj_rm,
+                device_expert_mapping,
+                self.top_k
+            )
+
+        # Step 3: SiLU(gate) * up
+        with Profiler().trace_with_timer("silu-multiply", level=4):
+            # Convert to TILE for SiLU (unary ops require TILE layout)
+            gate_output = ttnn.to_layout(gate_output, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            up_output = ttnn.to_layout(up_output, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+
+            # Apply SiLU to gate_output: silu(x) = x * sigmoid(x)
+            gate_silu = ttnn.silu(gate_output, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            ttnn.deallocate(gate_output)
+
+            # Elementwise multiply
+            combined_activations = ttnn.mul(gate_silu, up_output, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            ttnn.deallocate(gate_silu)
+            ttnn.deallocate(up_output)
+
+            # Convert back to ROW_MAJOR for down projection
+            combined_activations = ttnn.to_layout(
+                combined_activations, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            )
+
+        # Step 4: Down Projection with routing weights and accumulation
+        with Profiler().trace_with_timer("down-projection", level=4):
+            num_tokens = batch_size * sequence_length
+            moe_output = ttnn.projection_to_output(
+                combined_activations,
+                routed_tokens,
+                num_routed,
+                routed_weights,
+                down_proj_rm,
+                device_expert_mapping,
+                num_tokens,
+                self.top_k
+            )
+            ttnn.deallocate(combined_activations)
+
+        # Step 5: Allreduce across devices (sum partial outputs from all devices)
+        with Profiler().trace_with_timer("allreduce", level=4):
+            print(f"[DEBUG] moe_output shape before allreduce: {moe_output.shape}")
+            print(f"[DEBUG] moe_output layout: {moe_output.layout}")
+            T, H = moe_output.shape
+            print(f"[DEBUG] T={T}, H={H}, T*H={T*H}, T*H//256={T*H//256}")
+            final_output = ttnn.reshape(moe_output, shape=(1, 1, T * H // 256, 256), memory_config=mem_cfg)
+            print(f"[DEBUG] After reshape for allreduce: {final_output.shape}")
+            final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
+            print(f"[DEBUG] After to_layout TILE: {final_output.shape}")
+            final_output = ttnn.experimental.all_reduce_async(
+                final_output,
+                math_op=ttnn.ReduceType.Sum,
+                memory_config=mem_cfg,
+                topology=ttnn.Topology.Linear,
+                from_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                to_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
+                num_links=1,
+            )
+            ttnn.synchronize_device(self.mesh_device)
+
+        # Reshape to original shape
+        with Profiler().trace_with_timer("reshape", level=4):
+            # Convert to ROW_MAJOR before reshaping
+            final_output = ttnn.to_layout(final_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
+            # Reshape from (1, 1, T*H//256, 256) back to (T, H)
+            num_tokens = batch_size * sequence_length
+            final_output = ttnn.reshape(final_output, (num_tokens, hidden_dim), memory_config=mem_cfg)
+
+            if mode == InferenceMode.PREFILL:
+                final_hidden_states = ttnn.reshape(
+                    final_output,
+                    (batch_size, sequence_length, hidden_dim),
+                    memory_config=mem_cfg,
+                )
+            elif mode == InferenceMode.DECODE:
+                final_hidden_states = ttnn.reshape(
+                    final_output,
                     (1, 1, batch_size, hidden_dim),
                     memory_config=mem_cfg,
                 )
