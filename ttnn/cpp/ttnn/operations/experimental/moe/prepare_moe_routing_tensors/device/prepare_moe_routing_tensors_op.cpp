@@ -45,23 +45,20 @@ std::vector<TensorSpec> PrepareMoeRoutingTensors::compute_output_specs(
     const uint32_t num_tokens = experts_shape[0];
     const uint32_t top_k = experts_shape[1];
 
-    // Pad num_experts to 32 for alignment
-    const uint32_t padded_num_experts = (num_experts + 31) & ~31;
-
     // Output 1: num_routed_tokens (E)
-    ttnn::Shape num_routed_shape({1, padded_num_experts});
+    ttnn::Shape num_routed_shape({1, num_experts});
     auto num_routed_spec = TensorSpec(
         num_routed_shape,
         TensorLayout(DataType::UINT32, PageConfig(Layout::ROW_MAJOR), output_mem_config));
 
     // Output 2: routed_tokens (E × max_tokens)
-    ttnn::Shape routed_tokens_shape({padded_num_experts, max_tokens_per_expert});
+    ttnn::Shape routed_tokens_shape({num_experts, max_tokens_per_expert});
     auto routed_tokens_spec = TensorSpec(
         routed_tokens_shape,
         TensorLayout(DataType::UINT32, PageConfig(Layout::ROW_MAJOR), output_mem_config));
 
     // Output 3: routed_token_weights (E × max_tokens)
-    ttnn::Shape routed_weights_shape({padded_num_experts, max_tokens_per_expert});
+    ttnn::Shape routed_weights_shape({num_experts, max_tokens_per_expert});
     auto routed_weights_spec = TensorSpec(
         routed_weights_shape,
         TensorLayout(DataType::BFLOAT16, PageConfig(Layout::ROW_MAJOR), output_mem_config));

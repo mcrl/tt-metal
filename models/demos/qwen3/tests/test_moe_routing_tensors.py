@@ -115,8 +115,8 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
 
     # Verify output shapes
     assert num_routed.shape[0] == 1  # Single row tensor
-    assert num_routed.shape[1] >= num_experts  # Padded to alignment
-    assert routed_tokens.shape[0] >= num_experts  # Padded to alignment
+    assert num_routed.shape[1] == num_experts  # Exact size (no padding)
+    assert routed_tokens.shape[0] == num_experts  # Exact size (no padding)
     assert routed_tokens.shape[1] == num_tokens  # max_tokens_per_expert
     assert routed_weights.shape == routed_tokens.shape
 
@@ -129,7 +129,7 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
     num_devices = mesh_device.get_num_devices()
 
     # Extract first device output
-    num_routed_torch = num_routed_torch[0, :num_experts]  # First row, first num_experts values
+    num_routed_torch = num_routed_torch[0, :]  # First row, all values
     routed_tokens_torch = routed_tokens_torch[:num_experts]
     routed_weights_torch = routed_weights_torch[:num_experts]
 

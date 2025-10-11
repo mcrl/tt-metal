@@ -46,9 +46,6 @@ void kernel_main() {
     constexpr uint32_t cb_routed_weights = tt::CBIndex::c_18;
     constexpr uint32_t cb_scratch = tt::CBIndex::c_24;
 
-    // Pad num_experts to 32 for alignment
-    const uint32_t padded_num_experts = (num_experts + 31) & ~31;
-
     // Create tensor accessors for proper DRAM access
     constexpr auto experts_accessor_args = TensorAccessorArgs<0>();
     constexpr auto weights_accessor_args = TensorAccessorArgs<experts_accessor_args.next_compile_time_args_offset()>();
@@ -58,7 +55,7 @@ void kernel_main() {
 
     const auto experts_accessor = TensorAccessor(experts_accessor_args, selected_experts_addr, top_k * sizeof(uint32_t));
     const auto weights_accessor = TensorAccessor(weights_accessor_args, routing_weights_addr, top_k * sizeof(uint16_t));
-    const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, padded_num_experts * sizeof(uint32_t));
+    const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, num_experts * sizeof(uint32_t));
     const auto routed_tokens_accessor = TensorAccessor(routed_tokens_accessor_args, routed_tokens_addr, max_tokens_per_expert * sizeof(uint32_t));
     const auto routed_weights_accessor = TensorAccessor(routed_weights_accessor_args, routed_token_weights_addr, max_tokens_per_expert * sizeof(uint16_t));
 
@@ -75,7 +72,7 @@ void kernel_main() {
 
     // Initialize num_routed_tokens to 0
     uint32_t* num_routed_ptr = reinterpret_cast<uint32_t*>(l1_num_routed_addr);
-    for (uint32_t e = 0; e < padded_num_experts; e++) {
+    for (uint32_t e = 0; e < num_experts; e++) {
         num_routed_ptr[e] = 0;
     }
 
@@ -84,7 +81,7 @@ void kernel_main() {
     // Each expert gets max_tokens_per_expert slots for tokens and weights
     uint32_t* scratch_tokens = reinterpret_cast<uint32_t*>(l1_scratch_addr);
     uint16_t* scratch_weights = reinterpret_cast<uint16_t*>(
-        l1_scratch_addr + padded_num_experts * max_tokens_per_expert * sizeof(uint32_t));
+        l1_scratch_addr + num_experts * max_tokens_per_expert * sizeof(uint32_t));
 
     // PASS 1: Count tokens per expert and collect routing information
     for (uint32_t token_idx = 0; token_idx < num_tokens; token_idx++) {
@@ -123,7 +120,7 @@ void kernel_main() {
 
     // Write num_routed_tokens to DRAM
     uint64_t num_routed_noc_addr = get_noc_addr(0, num_routed_accessor);
-    noc_async_write(l1_num_routed_addr, num_routed_noc_addr, padded_num_experts * sizeof(uint32_t));
+    noc_async_write(l1_num_routed_addr, num_routed_noc_addr, num_experts * sizeof(uint32_t));
     noc_async_write_barrier();
 
     // PASS 2: Write routed_tokens and routed_token_weights
@@ -164,30 +161,6 @@ void kernel_main() {
 
         // Barrier every write_batch_size experts or at the end
         if (((expert_idx + 1) % write_batch_size == 0) || (expert_idx == num_experts - 1)) {
-            noc_async_write_barrier();
-        }
-    }
-
-    // Pad remaining expert rows with empty data
-    for (uint32_t expert_idx = num_experts; expert_idx < padded_num_experts; expert_idx++) {
-        // Initialize with invalid/zero values
-        uint32_t* routed_tokens_row = reinterpret_cast<uint32_t*>(l1_routed_tokens_addr);
-        uint16_t* routed_weights_row = reinterpret_cast<uint16_t*>(l1_routed_weights_addr);
-
-        for (uint32_t i = 0; i < max_tokens_per_expert; i++) {
-            routed_tokens_row[i] = 0xFFFFFFFF;  // Invalid token index
-            routed_weights_row[i] = 0;          // Zero weight
-        }
-
-        // Write padding rows
-        uint64_t routed_tokens_noc_addr = get_noc_addr(expert_idx, routed_tokens_accessor);
-        noc_async_write(l1_routed_tokens_addr, routed_tokens_noc_addr, max_tokens_per_expert * sizeof(uint32_t));
-
-        uint64_t routed_weights_noc_addr = get_noc_addr(expert_idx, routed_weights_accessor);
-        noc_async_write(l1_routed_weights_addr, routed_weights_noc_addr, max_tokens_per_expert * sizeof(uint16_t));
-
-        // Barrier every write_batch_size experts or at the end
-        if (((expert_idx + 1) % write_batch_size == 0) || (expert_idx == padded_num_experts - 1)) {
             noc_async_write_barrier();
         }
     }

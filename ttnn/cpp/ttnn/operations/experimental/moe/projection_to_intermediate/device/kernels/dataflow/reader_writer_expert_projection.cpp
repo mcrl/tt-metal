@@ -59,7 +59,7 @@ void kernel_main() {
 
     const auto hidden_accessor = TensorAccessor(hidden_accessor_args, hidden_states_addr, hidden_dim * sizeof(uint16_t));
     const auto routed_accessor = TensorAccessor(routed_accessor_args, routed_tokens_addr, max_tokens_per_expert * sizeof(uint32_t));
-    // num_routed_tokens tensor has shape (1, E_padded) - row size is E_padded elements
+    // num_routed_tokens tensor has shape (1, E) - row size is E elements
     const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, num_experts_padded * sizeof(uint32_t));
     const auto weights_accessor = TensorAccessor(weights_accessor_args, expert_weights_addr, expert_dim * sizeof(uint16_t));
     const auto mapping_accessor = TensorAccessor(mapping_accessor_args, device_expert_mapping_addr, experts_per_device * sizeof(int32_t));
@@ -85,7 +85,7 @@ void kernel_main() {
     noc_async_read(mapping_noc_addr, l1_mapping_addr, experts_per_device * sizeof(int32_t));
     noc_async_read_barrier();
 
-    // Read the entire num_routed_tokens array (shape: 1 x E_padded)
+    // Read the entire num_routed_tokens array (shape: 1 x E)
     uint64_t num_routed_noc_addr = get_noc_addr(0, num_routed_accessor);
     noc_async_read(num_routed_noc_addr, l1_num_routed_addr, num_experts_padded * sizeof(uint32_t));
     noc_async_read_barrier();
