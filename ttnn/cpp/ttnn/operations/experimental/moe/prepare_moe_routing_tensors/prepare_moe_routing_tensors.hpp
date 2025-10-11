@@ -11,23 +11,27 @@
 // prepare_moe_routing_tensors Operation
 //
 // PURPOSE:
-//   Converts sparse MoE expert selection into efficient routing tensors for expert-parallel computation.
-//   Creates three tensors: num_routed_tokens, routed_tokens, and routed_token_weights.
+//   Converts sparse MoE expert selection into device-local routing tensors for expert-parallel computation.
+//   Filters global routing information to only include experts assigned to this device.
+//   Creates three device-local tensors: num_routed_tokens, routed_tokens, and routed_token_weights.
 //
 // INPUTS:
-//   - selected_experts: (T × K) uint32 tensor, ROW_MAJOR layout
-//   - routing_weights: (T × K) bfloat16 tensor, ROW_MAJOR layout
-//   - num_experts: scalar, total number of experts
+//   - selected_experts: (T × K) uint32 tensor, ROW_MAJOR layout - global expert IDs selected by each token
+//   - routing_weights: (T × K) bfloat16 tensor, ROW_MAJOR layout - routing weights for selected experts
+//   - device_expert_mapping: (E/D) int32 tensor, ROW_MAJOR layout - global expert IDs assigned to this device
+//   - num_experts: scalar, total number of experts (E)
 //
-// OUTPUTS:
-//   - num_routed_tokens: (E) uint32 tensor - count of tokens routed to each expert
-//   - routed_tokens: (E × max_tokens) uint32 tensor - token indices for each expert (padded)
-//   - routed_token_weights: (E × max_tokens) bfloat16 tensor - routing weights for each expert (padded)
+// OUTPUTS (device-local, shape E/D):
+//   - num_routed_tokens: (E/D) uint32 tensor - count of tokens routed to each local expert
+//   - routed_tokens: (E/D × max_tokens) uint32 tensor - token indices for each local expert (padded)
+//   - routed_token_weights: (E/D × max_tokens) bfloat16 tensor - routing weights for each local expert (padded)
 //
 // NOTES:
 //   - Each token selects top_k unique experts (no duplicates)
-//   - Output tensors are padded to rectangular shape (E × max_tokens)
-//   - max_tokens = T × K (worst case where all experts are on same device)
+//   - Output tensors are device-local (only experts assigned to this device)
+//   - Output shape is (E/D × T) where E/D = number of experts on this device
+//   - Padded with sentinel values: tokens=0xFFFFFFFF, weights=0.0
+//   - max_tokens = T (maximum tokens that can be routed to any single expert)
 
 namespace ttnn {
 namespace operations::experimental {
@@ -37,6 +41,7 @@ struct PrepareMoeRoutingTensorsOperation {
         QueueId queue_id,
         const Tensor& selected_experts,
         const Tensor& routing_weights,
+        const Tensor& device_expert_mapping,
         uint32_t num_experts,
         const std::optional<MemoryConfig>& memory_config = std::nullopt);
 };

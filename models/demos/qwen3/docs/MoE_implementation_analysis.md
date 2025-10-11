@@ -30,19 +30,21 @@ The implementation closely follows the plan with some important deviations in da
 | **Inputs** | | | |
 | Routing weights | `T × K` (TODO in plan) | `T × K` bfloat16, ROW_MAJOR | ✅ Matches expected |
 | Token-Expert mapping | `T × K` (TODO in plan) | `T × K` uint32, ROW_MAJOR | ✅ Named `selected_experts` |
-| Device-Expert mapping | `E / D` int32 | Not used as input | ⚠️ Not needed - operation runs on single core |
+| Device-Expert mapping | `E / D` int32 | `(E/D)` int32, sharded | ✅ Matches plan |
 | **Outputs** | | | |
-| Tokens per expert | `E / D` | `(1, E)` uint32 | ✅ Matches |
-| Expert-Token routing table | `E / D × T` | `(E, T)` uint32 | ✅ Matches |
-| Expert-Token routing weight | `E / D × T` | `(E, T)` bfloat16 | ✅ Matches |
+| Tokens per expert | `E / D` | `(1, E/D)` uint32, sharded | ✅ Device-local as planned |
+| Expert-Token routing table | `E / D × T` | `(E/D, T)` uint32, sharded | ✅ Device-local as planned |
+| Expert-Token routing weight | `E / D × T` | `(E/D, T)` bfloat16, sharded | ✅ Device-local as planned |
 | **Memory Layout** | Not specified | ROW_MAJOR for all tensors | ✅ Specified in implementation |
-| **Core Usage** | Not specified | Single-core | ⚠️ Plan assumed multi-device, actual is replicated |
+| **Core Usage** | Not specified | Single-core | ✅ Single-core with sharded outputs |
 
-### Key Differences
+### Key Implementation Details
 
-1. **No Device-Expert Mapping Input**: The operation doesn't take device-expert mapping because it processes ALL experts and replicates outputs to all devices. Each device then filters relevant experts in subsequent operations.
+1. **Device-Expert Mapping Input**: The operation takes device-expert mapping as input and filters routing information to produce device-local outputs. Each device only processes and stores information for experts assigned to that device.
 
-2. **Replicated Outputs**: All outputs are replicated across devices (not sharded). This is a deliberate design choice for simplicity.
+2. **Sharded Outputs**: All outputs are sharded across devices (shape E/D per device, not E). This provides D× memory reduction compared to replication and aligns with the plan's design.
+
+3. **Reverse Mapping Algorithm**: The kernel builds a reverse mapping (global_expert_id → local_expert_id) in L1 for O(1) lookup during token filtering. This enables efficient filtering without repeated searches.
 
 ### Implementation Details
 
@@ -55,15 +57,25 @@ The implementation closely follows the plan with some important deviations in da
 
 **Output Shape** ([lines 40-70](../../ttnn/cpp/ttnn/operations/experimental/moe/prepare_moe_routing_tensors/device/prepare_moe_routing_tensors_op.cpp#L40-L70)):
 ```cpp
-Shape num_routed_shape({1, num_experts});
-Shape routed_tokens_shape({num_experts, max_tokens_per_expert});
+// Device-local shapes (E/D experts per device)
+Shape num_routed_shape({1, num_local_experts});
+Shape routed_tokens_shape({num_local_experts, max_tokens_per_expert});
 ```
 
+**Kernel Algorithm** ([reader_writer_moe_routing.cpp](../../ttnn/cpp/ttnn/operations/experimental/moe/prepare_moe_routing_tensors/device/kernels/dataflow/reader_writer_moe_routing.cpp)):
+1. Load device-expert mapping into L1
+2. Build reverse mapping: `global_to_local[global_expert_id] = local_expert_id`
+3. For each token, filter selected experts by checking if they belong to this device
+4. Accumulate routing info only for local experts
+5. Write device-local outputs (shape E/D)
+
 **Test Coverage**: [test_moe_routing_tensors.py](../../models/demos/qwen3/tests/test_moe_routing_tensors.py:60-182)
-- Tests configurations: (T, K, E) = (32, 4, 8), (128, 4, 8), (128, 8, 32), etc.
-- Validates no duplicate experts per token
-- Checks invalid token markers (0xFFFFFFFF, weights = 0) for padding within max_tokens dimension
+- Tests configurations: (T, K, E) = (8, 4, 8), (32, 4, 8), (128, 4, 8), (32, 8, 32), etc.
+- Creates device-expert mappings with uniform partitioning
+- Validates device-local filtering (only experts assigned to device appear in output)
+- Checks invalid token markers (0xFFFFFFFF, weights = 0) for padding
 - Validates token-weight correspondence
+- Tests sharded tensor distribution across devices
 
 ---
 
@@ -76,10 +88,10 @@ Shape routed_tokens_shape({num_experts, max_tokens_per_expert});
 | **Name** | `moe_up_projection` | `projection_to_intermediate` | ✅ Renamed per plan Task #2 |
 | **Inputs** | | | |
 | Input hidden state | `T × H` | `T × H` bfloat16, ROW_MAJOR | ✅ Matches |
-| Expert weights | `E / D × H × H'` | `E / D × H × H'` bfloat16, ROW_MAJOR | ✅ ROW_MAJOR layout |
-| Expert-Token routing table | `E / D × T` | `E × T` uint32, replicated | ✅ Matches |
-| Tokens per expert | `E / D` | `(1, E)` uint32, replicated | ✅ Matches |
-| Device-Expert mapping | `E / D` int32 | `(1, E/D)` or `(E/D)` int32, sharded | ✅ Matches (with minor shape variance) |
+| Expert weights | `E / D × H × H'` | `E / D × H × H'` bfloat16, ROW_MAJOR, sharded | ✅ ROW_MAJOR layout |
+| Expert-Token routing table | `E / D × T` | `(E/D, T)` uint32, sharded | ✅ Device-local as planned |
+| Tokens per expert | `E / D` | `(1, E/D)` uint32, sharded | ✅ Device-local as planned |
+| Device-Expert mapping | Not in plan (removed) | N/A | ✅ No longer needed with device-local routing |
 | Top-K | Not in plan | uint32 scalar | ⚠️ Additional parameter |
 | **Outputs** | | | |
 | Output hidden state | `TK × H'` | `(K*T, H')` bfloat16, ROW_MAJOR | ✅ Matches (K*T conservative bound) |
@@ -90,7 +102,7 @@ Shape routed_tokens_shape({num_experts, max_tokens_per_expert});
 
 1. **Layout**: Current implementation uses ROW_MAJOR for all tensors. TILE layout support deferred for future optimization.
 
-2. **Routing Tensor Distribution**: Uses global routing tensors (replicated) instead of device-local. Device-expert mapping filters which experts to process.
+2. **Routing Tensor Distribution**: Uses device-local routing tensors (sharded) as planned. Each device receives routing information only for its assigned experts (E/D experts per device).
 
 3. **FP32 Accumulation**: Implementation uses float32 accumulation for better precision, then converts to bfloat16 at the end. Test tolerance: `atol=0.5, rtol=0.01` ([test_projection_to_intermediate.py:317](../../models/demos/qwen3/tests/test_projection_to_intermediate.py#L317))
 
@@ -98,24 +110,27 @@ Shape routed_tokens_shape({num_experts, max_tokens_per_expert});
 
 5. **Output Size Calculation**: Pre-allocates `K*T` rows conservatively. Actual valid data is `sum(tokens_per_expert)` rows.
 
+6. **Device-Expert Mapping Removed**: No longer needed as input since routing tensors are already device-local from `prepare_moe_routing_tensors`.
+
 ### Implementation Details
 
 **File**: [projection_to_intermediate_op.cpp](../../ttnn/cpp/ttnn/operations/experimental/moe/projection_to_intermediate/device/projection_to_intermediate_op.cpp:1-124)
 
 **Validation** ([lines 12-70](../../ttnn/cpp/ttnn/operations/experimental/moe/projection_to_intermediate/device/projection_to_intermediate_op.cpp#L12-L70)):
-- Enforces 5 input tensors (hidden_states, routed_tokens, num_routed_tokens, expert_weights, device_expert_mapping)
+- Enforces 4 input tensors (hidden_states, routed_tokens, num_routed_tokens, expert_weights)
 - Validates ROW_MAJOR layout for all inputs (note about TILE not yet supported)
 - Checks dimension compatibility
+- Expects device-local routing tensors (shape E/D)
 
 **Computation Pattern** (from test reference, [test_projection_to_intermediate.py:86-111](../../models/demos/qwen3/tests/test_projection_to_intermediate.py#L86-L111)):
 ```python
 write_pos = 0
+# Routing tensors are already device-local (E/D experts)
 for local_expert_idx in range(experts_per_device):
-    global_expert_idx = device_expert_mapping[local_expert_idx]
-    count = num_routed_tokens[global_expert_idx]
+    count = num_routed_tokens[local_expert_idx]  # Direct indexing (device-local)
 
     # Gather tokens for this expert
-    token_indices = routed_tokens[global_expert_idx, :count]
+    token_indices = routed_tokens[local_expert_idx, :count]  # Device-local indexing
     expert_inputs = hidden_states[token_indices]  # (T_e, H)
 
     # Matmul with expert weights
@@ -144,11 +159,11 @@ for local_expert_idx in range(experts_per_device):
 | **Name** | `projection_to_output` | `projection_to_output` | ✅ Matches renamed plan |
 | **Inputs** | | | |
 | Input hidden state | `T × K × H'` | `(T*K, H')` bfloat16, ROW_MAJOR | ✅ Flattened shape, same semantics |
-| Tokens per expert | `E / D` | `(1, E)` uint32, replicated | ✅ Matches |
-| Expert weights | `E / D × H' × H` | `(E/D, H', H)` bfloat16, ROW_MAJOR | ✅ Matches |
-| Expert-Token routing table | `E / D × T` | `(E, T)` uint32, replicated | ✅ Matches |
-| Expert-Token routing weight | `E / D × T` | `(E, T)` bfloat16, replicated | ✅ Matches |
-| Device-Expert mapping | `E / D` int32 | `(1, E/D)` or `(1, 1, E/D)` int32, sharded | ✅ Matches (with shape flexibility) |
+| Tokens per expert | `E / D` | `(1, E/D)` uint32, sharded | ✅ Device-local as planned |
+| Expert weights | `E / D × H' × H` | `(E/D, H', H)` bfloat16, ROW_MAJOR, sharded | ✅ Matches |
+| Expert-Token routing table | `E / D × T` | `(E/D, T)` uint32, sharded | ✅ Device-local as planned |
+| Expert-Token routing weight | `E / D × T` | `(E/D, T)` bfloat16, sharded | ✅ Device-local as planned |
+| Device-Expert mapping | Not in plan (removed) | N/A | ✅ No longer needed with device-local routing |
 | num_tokens | Not in plan | uint32 scalar | ⚠️ Additional parameter |
 | top_k | Not in plan | uint32 scalar | ⚠️ Additional parameter |
 | **Outputs** | | | |
@@ -173,29 +188,29 @@ for local_expert_idx in range(experts_per_device):
 
 5. **Additional Parameters**: Added `num_tokens` and `top_k` for proper buffer sizing and validation
 
-6. **Shape Flexibility**: Accepts both `(1, E/D)` and `(1, 1, E/D)` for device_expert_mapping to handle single-device vs multi-device sharding ([projection_to_output_op.cpp:72-82](../../ttnn/cpp/ttnn/operations/experimental/moe/projection_to_output/device/projection_to_output_op.cpp#L72-L82))
+6. **Device-Expert Mapping Removed**: No longer needed as input since routing tensors are already device-local from `prepare_moe_routing_tensors`
 
 ### Implementation Details
 
 **File**: [projection_to_output_op.cpp](../../ttnn/cpp/ttnn/operations/experimental/moe/projection_to_output/device/projection_to_output_op.cpp:1-132)
 
 **Validation** ([lines 11-83](../../ttnn/cpp/ttnn/operations/experimental/moe/projection_to_output/device/projection_to_output_op.cpp#L11-L83)):
-- Enforces 6 input tensors (combined_activations, routed_tokens, num_routed_tokens, routed_token_weights, down_proj_weights, device_expert_mapping)
+- Enforces 5 input tensors (combined_activations, routed_tokens, num_routed_tokens, routed_token_weights, down_proj_weights)
 - Validates ROW_MAJOR layout for all inputs
-- Flexible device_expert_mapping shape handling
+- Expects device-local routing tensors (shape E/D)
 
 **Computation Pattern** (from test reference, [test_projection_to_output.py:64-98](../../models/demos/qwen3/tests/test_projection_to_output.py#L64-L98)):
 ```python
 output = torch.zeros(num_tokens, hidden_dim)  # Accumulation target
 read_pos = 0
 
+# Routing tensors are already device-local (E/D experts)
 for local_expert_idx in range(experts_per_device):
-    global_expert_idx = device_expert_mapping[local_expert_idx]
-    count = num_routed_tokens[global_expert_idx]
+    count = num_routed_tokens[local_expert_idx]  # Direct indexing (device-local)
 
     # Get this expert's activations and routing info
-    token_indices = routed_tokens[global_expert_idx, :count]
-    routing_weights = routed_token_weights[global_expert_idx, :count]
+    token_indices = routed_tokens[local_expert_idx, :count]  # Device-local indexing
+    routing_weights = routed_token_weights[local_expert_idx, :count]  # Device-local indexing
     expert_activations = combined_activations[read_pos:read_pos + count]
     read_pos += count
 
@@ -237,10 +252,11 @@ for local_expert_idx in range(experts_per_device):
 - Supported both uniform and dynamic strategies
 
 **Actual**:
-- Only used in projection operations (not in `prepare_moe_routing_tensors`)
-- `prepare_moe_routing_tensors` creates global routing tensors (replicated)
-- Projection operations use device-expert mapping to filter which experts to process
+- Used in `prepare_moe_routing_tensors` to create device-local routing tensors (aligned with plan)
+- Each device receives only routing information for its assigned experts (E/D experts per device)
+- Projection operations no longer need device-expert mapping input since routing tensors are already device-local
 - Tests use uniform partitioning: device `d` gets experts `[d*(E/D), (d+1)*(E/D))`
+- Achieves D× memory reduction through sharding instead of replication
 
 ### 3. Memory Configuration
 
@@ -250,9 +266,9 @@ for local_expert_idx in range(experts_per_device):
 - All operations use `output_mem_config` (typically `DRAM_MEMORY_CONFIG`)
 - Input tensors replicated or sharded as appropriate:
   - Hidden states: replicated
-  - Routing tensors: replicated
+  - Routing tensors: sharded (device-local, E/D per device)
   - Expert weights: sharded along expert dimension
-  - Device-expert mapping: sharded
+  - Device-expert mapping: sharded (input to `prepare_moe_routing_tensors`)
 
 ### 4. Layout Constraints
 
@@ -288,12 +304,13 @@ for local_expert_idx in range(experts_per_device):
 3. **Routing Table Structure**: Expert-token routing tables work as specified
 4. **API Naming**: Operations renamed according to Task #2 in plan
 
-### Important Deviations
+### Important Alignments
 
 1. **Routing Tensor Distribution**:
-   - Plan implied device-local routing tensors
-   - Actual uses replicated global routing tensors + device-expert mapping for filtering
-   - This is a valid implementation choice (trades memory for simplicity)
+   - Plan specified device-local routing tensors (E/D per device)
+   - Implementation correctly produces device-local sharded routing tensors
+   - Achieves D× memory reduction compared to replication
+   - Kernel uses reverse mapping algorithm for efficient filtering
 
 2. **Output Shape Semantics**:
    - `projection_to_intermediate` output: Plan says `TK × H'`, actual pre-allocates `K*T` conservatively
@@ -358,8 +375,9 @@ All three operations have comprehensive test coverage:
 
 1. **Use as implemented**: The current implementation is correct and tested
 2. **Be aware of memory layout**: All ROW_MAJOR - TILE support would improve performance
-3. **Understand replication**: Routing tensors are replicated, not sharded
+3. **Understand sharding**: Routing tensors are sharded (device-local, E/D per device) for memory efficiency
 4. **Check precision**: FP32 accumulation provides good precision but still has ~1% relative error
+5. **Device-Expert Mapping**: Required input for `prepare_moe_routing_tensors` to produce device-local outputs
 
 ### For Future Optimization
 
@@ -374,12 +392,7 @@ All three operations have comprehensive test coverage:
    - Would require atomic operations or coordination for output accumulation in `projection_to_output`
    - `prepare_moe_routing_tensors` and `projection_to_intermediate` could also benefit from multi-core
 
-3. **Sharded Routing Tensors**:
-   - Current replication uses more memory
-   - Could shard routing tensors if memory becomes bottleneck
-   - Would require different tensor distribution strategy
-
-4. **Batch Matmul Optimization**:
+3. **Batch Matmul Optimization**:
    - Current implementation processes tokens one-by-one in some paths
    - Could group consecutive tokens for batched matmul
    - Plan mentions this as future work ([MoE_implementation_plan.md:138](MoE_implementation_plan.md#L138))
@@ -388,10 +401,10 @@ All three operations have comprehensive test coverage:
 
 ## Conclusion
 
-The implementation closely follows the plan with practical adjustments for:
-- **Simplicity**: Replicated routing tensors instead of sharded; single-core implementation
+The implementation closely follows the plan with key features:
+- **Device-Local Routing**: Sharded routing tensors (E/D per device) as specified in the plan, achieving D× memory reduction
 - **Correctness**: FP32 accumulation for better precision
-- **Flexibility**: Shape variants to handle single/multi-device cases
-- **Future-ready**: Function names and structure prepared for multi-core optimization
+- **Efficient Filtering**: Reverse mapping algorithm in kernel for O(1) device-expert lookup
+- **Future-ready**: Single-core implementation with structure prepared for multi-core optimization
 
-All planned APIs are implemented, tested, and working. The deviations from the plan are well-justified engineering decisions that maintain correctness while improving usability. Multi-core optimization is planned but not yet implemented.
+All planned APIs are implemented, tested, and working. The implementation aligns well with the plan's design of device-local outputs and sharded tensor distribution. Multi-core optimization is planned but not yet implemented.
