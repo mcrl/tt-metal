@@ -15,14 +15,13 @@
 //   Each expert processes only its assigned tokens and writes outputs sequentially.
 //
 // INPUTS:
-//   - hidden_states: (T × H) bfloat16 tensor, ROW_MAJOR layout, replicated across devices
-//   - routed_tokens: (E/D × max_tokens) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
-//   - num_routed_tokens: (1 × E/D) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
-//   - expert_weights: (E/D × H × H') bfloat16 tensor, ROW_MAJOR layout, sharded across devices
-//   - device_expert_mapping: (E/D) int32 tensor, ROW_MAJOR layout, sharded (for validation/future use)
+//   - hidden_states: (T, H) bfloat16 tensor, ROW_MAJOR layout, replicated across devices
+//   - routed_tokens: (E/D, max_tokens) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
+//   - num_routed_tokens: (E/D,) uint32 1D tensor, ROW_MAJOR layout, sharded (device-local)
+//   - expert_weights: (E/D, H, H') bfloat16 tensor, ROW_MAJOR layout, sharded across devices
 //
 // OUTPUTS:
-//   - output: (K*T × H') bfloat16 tensor - projection outputs (sparse, padded)
+//   - output: (K*T, H') bfloat16 tensor - projection outputs (compacted, padded)
 //
 // COMPUTATION:
 //   For each local expert (0 to E/D-1):
@@ -36,7 +35,6 @@
 //   - Each device processes E/D experts in parallel (expert parallelism)
 //   - Output is zero-padded to K*T size
 //   - Routing tensors are device-local (E/D per device) from prepare_moe_routing_tensors
-//   - device_expert_mapping kept for API compatibility but routing is already device-local
 
 namespace ttnn {
 namespace operations::experimental {
@@ -48,7 +46,6 @@ struct ProjectionToIntermediateOperation {
         const Tensor& routed_tokens,
         const Tensor& num_routed_tokens,
         const Tensor& expert_weights,
-        const Tensor& device_expert_mapping,
         uint32_t top_k,
         const std::optional<MemoryConfig>& memory_config = std::nullopt);
 };

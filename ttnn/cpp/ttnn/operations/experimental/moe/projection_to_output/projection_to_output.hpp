@@ -15,16 +15,15 @@
 //   Each expert processes its assigned tokens and accumulates weighted results to final output.
 //
 // INPUTS:
-//   - combined_activations: (T_d × H') bfloat16 tensor, ROW_MAJOR layout
+//   - combined_activations: (T_d, H') bfloat16 tensor, ROW_MAJOR layout
 //     Contains combined gate*up activations for all token-expert pairs on device
-//   - routed_tokens: (E/D × max_tokens) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
-//   - num_routed_tokens: (1 × E/D) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
-//   - routed_token_weights: (E/D × max_tokens) bfloat16 tensor, ROW_MAJOR layout, sharded (device-local)
-//   - down_proj_weights: (E/D × H' × H) bfloat16 tensor, ROW_MAJOR layout, sharded across devices
-//   - device_expert_mapping: (E/D) int32 tensor, ROW_MAJOR layout, sharded (for validation/future use)
+//   - routed_tokens: (E/D, max_tokens) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
+//   - num_routed_tokens: (E/D,) uint32 1D tensor, ROW_MAJOR layout, sharded (device-local)
+//   - routed_token_weights: (E/D, max_tokens) bfloat16 tensor, ROW_MAJOR layout, sharded (device-local)
+//   - down_proj_weights: (E/D, H', H) bfloat16 tensor, ROW_MAJOR layout, sharded across devices
 //
 // OUTPUTS:
-//   - output: (T × H) bfloat16 tensor - final accumulated MoE output
+//   - output: (T, H) bfloat16 tensor - partial MoE output (requires allreduce)
 //
 // COMPUTATION:
 //   For each local expert (0 to E/D-1):
@@ -40,7 +39,6 @@
 //   - Input activations are already compacted (T_d size, not T*K)
 //   - Output is initialized to zeros before accumulation
 //   - Routing tensors are device-local (E/D per device) from prepare_moe_routing_tensors
-//   - device_expert_mapping kept for API compatibility but routing is already device-local
 
 namespace ttnn {
 namespace operations::experimental {
@@ -53,7 +51,6 @@ struct ProjectionToOutputOperation {
         const Tensor& num_routed_tokens,
         const Tensor& routed_token_weights,
         const Tensor& down_proj_weights,
-        const Tensor& device_expert_mapping,
         uint32_t num_tokens,
         uint32_t top_k,
         const std::optional<MemoryConfig>& memory_config = std::nullopt);

@@ -25,6 +25,11 @@ static inline uint16_t float_to_bfloat16(float val) {
 // MoE down projection kernel - performs batched matrix multiplication with routing weight application
 // Processes each local expert, computing: (T_e × H') @ (H' × H) = T_e × H
 // Then multiplies by routing weights and accumulates to final output
+//
+// NOTE: Routing tensors are DEVICE-LOCAL (indexed 0 to E/D-1) from prepare_moe_routing_tensors:
+//   - num_routed_tokens: (E/D,) 1D tensor - token counts per local expert
+//   - routed_tokens: (E/D, max_tokens) 2D tensor - token indices per local expert
+//   - routed_token_weights: (E/D, max_tokens) 2D tensor - routing weights per local expert
 
 void kernel_main() {
     // Get runtime arguments
@@ -33,15 +38,14 @@ void kernel_main() {
     const uint32_t num_routed_tokens_addr = get_arg_val<uint32_t>(2);
     const uint32_t routed_token_weights_addr = get_arg_val<uint32_t>(3);
     const uint32_t down_proj_weights_addr = get_arg_val<uint32_t>(4);
-    const uint32_t device_expert_mapping_addr = get_arg_val<uint32_t>(5);
-    const uint32_t output_addr = get_arg_val<uint32_t>(6);
-    const uint32_t num_tokens = get_arg_val<uint32_t>(7);
-    const uint32_t hidden_dim = get_arg_val<uint32_t>(8);
-    const uint32_t expert_dim = get_arg_val<uint32_t>(9);
-    const uint32_t experts_per_device = get_arg_val<uint32_t>(10);
-    const uint32_t max_tokens_per_expert = get_arg_val<uint32_t>(11);
-    const uint32_t top_k = get_arg_val<uint32_t>(12);
-    const uint32_t num_experts_padded = get_arg_val<uint32_t>(13);
+    const uint32_t output_addr = get_arg_val<uint32_t>(5);
+    const uint32_t num_tokens = get_arg_val<uint32_t>(6);
+    const uint32_t hidden_dim = get_arg_val<uint32_t>(7);
+    const uint32_t expert_dim = get_arg_val<uint32_t>(8);
+    const uint32_t experts_per_device = get_arg_val<uint32_t>(9);
+    const uint32_t max_tokens_per_expert = get_arg_val<uint32_t>(10);
+    const uint32_t top_k = get_arg_val<uint32_t>(11);
+    const uint32_t num_experts_padded = get_arg_val<uint32_t>(12);
 
     // Circular buffers
     constexpr uint32_t cb_combined_row = tt::CBIndex::c_0;
@@ -49,7 +53,6 @@ void kernel_main() {
     constexpr uint32_t cb_num_routed_row = tt::CBIndex::c_2;
     constexpr uint32_t cb_routing_weights_row = tt::CBIndex::c_3;
     constexpr uint32_t cb_weights_row = tt::CBIndex::c_4;
-    constexpr uint32_t cb_mapping = tt::CBIndex::c_5;
     constexpr uint32_t cb_output_row = tt::CBIndex::c_16;
     constexpr uint32_t cb_saved_output = tt::CBIndex::c_24;      // Scratch buffer for saved output
     constexpr uint32_t cb_matmul_result = tt::CBIndex::c_25;     // Scratch buffer for matmul result
@@ -60,19 +63,17 @@ void kernel_main() {
     constexpr auto num_routed_accessor_args = TensorAccessorArgs<routed_accessor_args.next_compile_time_args_offset()>();
     constexpr auto routing_weights_accessor_args = TensorAccessorArgs<num_routed_accessor_args.next_compile_time_args_offset()>();
     constexpr auto weights_accessor_args = TensorAccessorArgs<routing_weights_accessor_args.next_compile_time_args_offset()>();
-    constexpr auto mapping_accessor_args = TensorAccessorArgs<weights_accessor_args.next_compile_time_args_offset()>();
-    constexpr auto output_accessor_args = TensorAccessorArgs<mapping_accessor_args.next_compile_time_args_offset()>();
+    constexpr auto output_accessor_args = TensorAccessorArgs<weights_accessor_args.next_compile_time_args_offset()>();
 
     const auto combined_accessor = TensorAccessor(combined_accessor_args, combined_activations_addr, expert_dim * sizeof(uint16_t));
     const auto routed_accessor = TensorAccessor(routed_accessor_args, routed_tokens_addr, max_tokens_per_expert * sizeof(uint32_t));
-    const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, num_experts_padded * sizeof(uint32_t));
+    // num_routed_tokens tensor is device-local 1D with shape (E/D,) - page_size is the entire array
+    const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, experts_per_device * sizeof(uint32_t));
     const auto routing_weights_accessor = TensorAccessor(routing_weights_accessor_args, routed_token_weights_addr, max_tokens_per_expert * sizeof(uint16_t));
     const auto weights_accessor = TensorAccessor(weights_accessor_args, down_proj_weights_addr, hidden_dim * sizeof(uint16_t));
-    const auto mapping_accessor = TensorAccessor(mapping_accessor_args, device_expert_mapping_addr, experts_per_device * sizeof(int32_t));
     const auto output_accessor = TensorAccessor(output_accessor_args, output_addr, hidden_dim * sizeof(uint16_t));
 
     // Reserve L1 buffers for intermediate data
-    cb_reserve_back(cb_mapping, 1);
     cb_reserve_back(cb_num_routed_row, 1);
     cb_reserve_back(cb_routed_row, 1);
     cb_reserve_back(cb_routing_weights_row, 1);
@@ -82,7 +83,6 @@ void kernel_main() {
     cb_reserve_back(cb_saved_output, 1);
     cb_reserve_back(cb_matmul_result, 1);
 
-    uint32_t l1_mapping_addr = get_write_ptr(cb_mapping);
     uint32_t l1_num_routed_addr = get_write_ptr(cb_num_routed_row);
     uint32_t l1_routed_addr = get_write_ptr(cb_routed_row);
     uint32_t l1_routing_weights_addr = get_write_ptr(cb_routing_weights_row);
@@ -92,18 +92,14 @@ void kernel_main() {
     uint32_t l1_saved_output_addr = get_write_ptr(cb_saved_output);
     uint32_t l1_matmul_result_addr = get_write_ptr(cb_matmul_result);
 
-    // Read device expert mapping and num_routed_tokens
-    uint64_t mapping_noc_addr = get_noc_addr(0, mapping_accessor);
-    noc_async_read(mapping_noc_addr, l1_mapping_addr, experts_per_device * sizeof(int32_t));
-    noc_async_read_barrier();
-
-    // Read the entire num_routed_tokens array (shape: 1 x E)
+    // Read the entire num_routed_tokens 1D array (device-local: E/D elements)
+    // For 1D ROW_MAJOR tensors, TensorAccessor page_size is the entire array
+    // Use get_noc_addr(0, accessor) to get the NOC address of the first (and only) "page"
     uint64_t num_routed_noc_addr = get_noc_addr(0, num_routed_accessor);
-    noc_async_read(num_routed_noc_addr, l1_num_routed_addr, num_experts_padded * sizeof(uint32_t));
+    noc_async_read(num_routed_noc_addr, l1_num_routed_addr, experts_per_device * sizeof(uint32_t));
     noc_async_read_barrier();
 
-    volatile int32_t* expert_mapping = reinterpret_cast<volatile int32_t*>(l1_mapping_addr);
-    volatile uint32_t* num_routed_all = reinterpret_cast<volatile uint32_t*>(l1_num_routed_addr);
+    volatile uint32_t* num_routed_local = reinterpret_cast<volatile uint32_t*>(l1_num_routed_addr);
 
     // Initialize output buffer to zeros for all tokens
     // This is necessary because we use read-modify-write pattern for accumulation
@@ -124,19 +120,15 @@ void kernel_main() {
 
     // Process each local expert
     for (uint32_t local_expert_idx = 0; local_expert_idx < experts_per_device; local_expert_idx++) {
-        // Get global expert index
-        int32_t global_expert_idx = expert_mapping[local_expert_idx];
-        if (global_expert_idx < 0) continue;  // Invalid expert
-
-        // Get number of tokens for this expert
-        uint32_t token_count = num_routed_all[global_expert_idx];
+        // Get number of tokens for this expert (using LOCAL index into device-local routing tensors)
+        uint32_t token_count = num_routed_local[local_expert_idx];
         if (token_count == 0) continue;
 
-        // Read routed tokens and routing weights for this expert
-        uint64_t routed_noc_addr = get_noc_addr(global_expert_idx, routed_accessor);
+        // Read routed tokens and routing weights for this expert (using LOCAL index)
+        uint64_t routed_noc_addr = get_noc_addr(local_expert_idx, routed_accessor);
         noc_async_read(routed_noc_addr, l1_routed_addr, max_tokens_per_expert * sizeof(uint32_t));
 
-        uint64_t routing_weights_noc_addr = get_noc_addr(global_expert_idx, routing_weights_accessor);
+        uint64_t routing_weights_noc_addr = get_noc_addr(local_expert_idx, routing_weights_accessor);
         noc_async_read(routing_weights_noc_addr, l1_routing_weights_addr, max_tokens_per_expert * sizeof(uint16_t));
         noc_async_read_barrier();
 
@@ -215,7 +207,6 @@ void kernel_main() {
     }
 
     // Release circular buffers
-    cb_push_back(cb_mapping, 1);
     cb_push_back(cb_num_routed_row, 1);
     cb_push_back(cb_routed_row, 1);
     cb_push_back(cb_routing_weights_row, 1);

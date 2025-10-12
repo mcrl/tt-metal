@@ -13,7 +13,6 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_intermediate_single_
     const Tensor& routed_tokens,
     const Tensor& num_routed_tokens,
     const Tensor& expert_weights,
-    const Tensor& device_expert_mapping,
     Tensor& output,
     uint32_t num_tokens,
     uint32_t hidden_dim,

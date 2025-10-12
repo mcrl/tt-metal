@@ -10,27 +10,24 @@
 namespace ttnn::operations::experimental::moe {
 
 void ProjectionToIntermediate::validate(const std::vector<Tensor>& input_tensors) const {
-    TT_FATAL(input_tensors.size() == 5, "Expected 5 input tensors");
+    TT_FATAL(input_tensors.size() == 4, "Expected 4 input tensors");
 
     const auto& hidden_states = input_tensors.at(0);
     const auto& routed_tokens = input_tensors.at(1);
     const auto& num_routed_tokens = input_tensors.at(2);
     const auto& expert_weights = input_tensors.at(3);
-    const auto& device_expert_mapping = input_tensors.at(4);
 
     // Validate storage
     TT_FATAL(hidden_states.storage_type() == StorageType::DEVICE, "hidden_states must be on device");
     TT_FATAL(routed_tokens.storage_type() == StorageType::DEVICE, "routed_tokens must be on device");
     TT_FATAL(num_routed_tokens.storage_type() == StorageType::DEVICE, "num_routed_tokens must be on device");
     TT_FATAL(expert_weights.storage_type() == StorageType::DEVICE, "expert_weights must be on device");
-    TT_FATAL(device_expert_mapping.storage_type() == StorageType::DEVICE, "device_expert_mapping must be on device");
 
     // Validate dtypes
     TT_FATAL(hidden_states.dtype() == DataType::BFLOAT16, "hidden_states must be BFLOAT16");
     TT_FATAL(routed_tokens.dtype() == DataType::UINT32, "routed_tokens must be UINT32");
     TT_FATAL(num_routed_tokens.dtype() == DataType::UINT32, "num_routed_tokens must be UINT32");
     TT_FATAL(expert_weights.dtype() == DataType::BFLOAT16, "expert_weights must be BFLOAT16");
-    TT_FATAL(device_expert_mapping.dtype() == DataType::INT32, "device_expert_mapping must be INT32");
 
     // Validate layouts
     TT_FATAL(hidden_states.layout() == Layout::ROW_MAJOR, "hidden_states must be ROW_MAJOR layout");
@@ -39,41 +36,48 @@ void ProjectionToIntermediate::validate(const std::vector<Tensor>& input_tensors
     // NOTE: Kernel currently only supports ROW_MAJOR for expert_weights
     // TILE layout support requires different addressing logic in kernel
     TT_FATAL(expert_weights.layout() == Layout::ROW_MAJOR, "expert_weights must be ROW_MAJOR layout (TILE not yet supported)");
-    TT_FATAL(device_expert_mapping.layout() == Layout::ROW_MAJOR, "device_expert_mapping must be ROW_MAJOR layout");
 
     // Validate buffers
     TT_FATAL(hidden_states.buffer() != nullptr, "hidden_states buffer is null");
     TT_FATAL(routed_tokens.buffer() != nullptr, "routed_tokens buffer is null");
     TT_FATAL(num_routed_tokens.buffer() != nullptr, "num_routed_tokens buffer is null");
     TT_FATAL(expert_weights.buffer() != nullptr, "expert_weights buffer is null");
-    TT_FATAL(device_expert_mapping.buffer() != nullptr, "device_expert_mapping buffer is null");
 
-    // Validate shapes
+    // Validate shapes and consistency
     const auto& hidden_shape = hidden_states.padded_shape();
+    const auto& routing_shape = routed_tokens.padded_shape();
     const auto& weights_shape = expert_weights.padded_shape();
-    const auto& mapping_shape = device_expert_mapping.padded_shape();
 
     TT_FATAL(hidden_shape.rank() == 2, "hidden_states must be 2D");
+    TT_FATAL(routing_shape.rank() == 2, "routed_tokens must be 2D");
     TT_FATAL(weights_shape.rank() == 3, "expert_weights must be 3D");
 
-    TT_FATAL(hidden_shape[0] == num_tokens, "hidden_states[0] must match num_tokens");
-    TT_FATAL(hidden_shape[1] == hidden_dim, "hidden_states[1] must match hidden_dim");
-    TT_FATAL(weights_shape[0] == experts_per_device, "expert_weights[0] must match experts_per_device");
-    TT_FATAL(weights_shape[1] == hidden_dim, "expert_weights[1] must match hidden_dim");
-    TT_FATAL(weights_shape[2] == expert_dim, "expert_weights[2] must match expert_dim");
+    // Validate consistency: hidden_dim must match between hidden_states and expert_weights
+    TT_FATAL(hidden_shape[1] == weights_shape[1],
+        "hidden_states dim [1] ({}) must match expert_weights dim [1] ({})",
+        hidden_shape[1], weights_shape[1]);
 
-    // Validate device_expert_mapping shape
-    TT_FATAL(mapping_shape[0] == 1 || mapping_shape[0] == experts_per_device,
-        "device_expert_mapping must have shape (E/D) or (1, E/D)");
-    const uint32_t mapping_size = mapping_shape.rank() == 2 ? mapping_shape[1] : mapping_shape[0];
-    TT_FATAL(mapping_size == experts_per_device, "device_expert_mapping size must match experts_per_device");
+    // Validate routing tensor dimensions
+    TT_FATAL(routing_shape[0] == weights_shape[0],
+        "routed_tokens dim [0] ({}) must match expert_weights dim [0] ({})",
+        routing_shape[0], weights_shape[0]);
 }
 
 std::vector<TensorSpec> ProjectionToIntermediate::compute_output_specs(
     const std::vector<Tensor>& input_tensors) const {
 
+    const auto& hidden_states = input_tensors.at(0);
+    const auto& expert_weights = input_tensors.at(3);
+
+    const auto& hidden_shape = hidden_states.padded_shape();
+    const auto& weights_shape = expert_weights.padded_shape();
+
+    const uint32_t num_tokens = hidden_shape[0];
+    const uint32_t expert_dim = weights_shape[2];
+
     // Output shape: (output_size, expert_dim)
     // output_size is K*T (conservative upper bound)
+    const uint32_t output_size = top_k * num_tokens;
     ttnn::Shape output_shape({output_size, expert_dim});
 
     auto output_spec = TensorSpec(
@@ -102,15 +106,25 @@ tt::tt_metal::operation::ProgramWithCallbacks ProjectionToIntermediate::create_p
     const auto& routed_tokens = input_tensors.at(1);
     const auto& num_routed_tokens = input_tensors.at(2);
     const auto& expert_weights = input_tensors.at(3);
-    const auto& device_expert_mapping = input_tensors.at(4);
     auto& output = output_tensors.at(0);
+
+    // Extract dimensions from input tensors
+    const auto& hidden_shape = hidden_states.padded_shape();
+    const auto& routing_shape = routed_tokens.padded_shape();
+    const auto& weights_shape = expert_weights.padded_shape();
+
+    const uint32_t num_tokens = hidden_shape[0];
+    const uint32_t hidden_dim = hidden_shape[1];
+    const uint32_t expert_dim = weights_shape[2];
+    const uint32_t experts_per_device = weights_shape[0];
+    const uint32_t max_tokens_per_expert = routing_shape[1];
+    const uint32_t output_size = top_k * num_tokens;
 
     return projection_to_intermediate_single_core(
         hidden_states,
         routed_tokens,
         num_routed_tokens,
         expert_weights,
-        device_expert_mapping,
         output,
         num_tokens,
         hidden_dim,

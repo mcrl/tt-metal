@@ -19,7 +19,6 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
     const Tensor& routed_tokens,
     const Tensor& num_routed_tokens,
     const Tensor& expert_weights,
-    const Tensor& device_expert_mapping,
     Tensor& output,
     uint32_t num_tokens,
     uint32_t hidden_dim,
@@ -37,7 +36,6 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
     const uint32_t cb_hidden_row = CBIndex::c_0;           // Input: hidden states row (on-demand)
     const uint32_t cb_routed_row = CBIndex::c_1;           // Input: routed tokens row
     const uint32_t cb_num_routed_row = CBIndex::c_2;       // Input: num routed tokens row
-    const uint32_t cb_mapping = CBIndex::c_3;              // Input: device expert mapping
     const uint32_t cb_expert_weights = CBIndex::c_4;       // Input: expert weight row (H' elements)
     const uint32_t cb_output_row = CBIndex::c_16;          // Output: projection output row
 
@@ -45,18 +43,14 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
     tt::DataFormat hidden_data_format = tt_metal::datatype_to_dataformat_converter(hidden_states.dtype());
     tt::DataFormat routed_data_format = tt_metal::datatype_to_dataformat_converter(routed_tokens.dtype());
     tt::DataFormat num_routed_data_format = tt_metal::datatype_to_dataformat_converter(num_routed_tokens.dtype());
-    tt::DataFormat mapping_data_format = tt_metal::datatype_to_dataformat_converter(device_expert_mapping.dtype());
     tt::DataFormat weights_data_format = tt_metal::datatype_to_dataformat_converter(expert_weights.dtype());
     tt::DataFormat output_data_format = tt_metal::datatype_to_dataformat_converter(DataType::BFLOAT16);
 
     // Buffer sizes (use logical dimensions from runtime args)
     const uint32_t hidden_row_bytes = hidden_dim * sizeof(uint16_t);
     const uint32_t routed_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
-    // num_routed_tokens has shape (1, E) - need to read entire expert count array
-    const uint32_t num_experts_padded = (num_routed_tokens.padded_shape().rank() == 2) ?
-        num_routed_tokens.padded_shape()[1] : num_routed_tokens.padded_shape()[0];
-    const uint32_t num_routed_row_bytes = num_experts_padded * sizeof(uint32_t);
-    const uint32_t mapping_bytes = experts_per_device * sizeof(int32_t);
+    // NOTE: num_routed_tokens is device-local 1D tensor with shape (experts_per_device,)
+    const uint32_t num_routed_row_bytes = experts_per_device * sizeof(uint32_t);
     const uint32_t output_row_bytes = expert_dim * sizeof(uint16_t);
     const uint32_t expert_weights_row_bytes = expert_dim * sizeof(uint16_t);
 
@@ -75,11 +69,6 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
         tt_metal::CircularBufferConfig(num_routed_row_bytes, {{cb_num_routed_row, num_routed_data_format}})
             .set_page_size(cb_num_routed_row, num_routed_row_bytes);
     CreateCircularBuffer(program, core, num_routed_cb_config);
-
-    tt_metal::CircularBufferConfig mapping_cb_config =
-        tt_metal::CircularBufferConfig(mapping_bytes, {{cb_mapping, mapping_data_format}})
-            .set_page_size(cb_mapping, mapping_bytes);
-    CreateCircularBuffer(program, core, mapping_cb_config);
 
     tt_metal::CircularBufferConfig output_cb_config =
         tt_metal::CircularBufferConfig(output_row_bytes, {{cb_output_row, output_data_format}})
@@ -101,7 +90,6 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
     TensorAccessorArgs(*routed_tokens.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*num_routed_tokens.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*expert_weights.buffer()).append_to(compile_time_args);
-    TensorAccessorArgs(*device_expert_mapping.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*output.buffer()).append_to(compile_time_args);
 
     std::vector<uint32_t> runtime_args = {
@@ -109,7 +97,6 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
         routed_tokens.buffer()->address(),
         num_routed_tokens.buffer()->address(),
         expert_weights.buffer()->address(),
-        device_expert_mapping.buffer()->address(),
         output.buffer()->address(),
         num_tokens,
         hidden_dim,
@@ -117,7 +104,7 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
         experts_per_device,
         max_tokens_per_expert,
         output_size,
-        num_experts_padded};
+        experts_per_device};  // Pass experts_per_device (same as num_experts_padded for device-local)
 
     auto kernel = CreateKernel(
         program,
@@ -140,7 +127,6 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
         const auto& routed_tokens = input_tensors[1];
         const auto& num_routed_tokens = input_tensors[2];
         const auto& expert_weights = input_tensors[3];
-        const auto& device_expert_mapping = input_tensors[4];
         const auto& output = output_tensors[0];
 
         auto& runtime_args = GetRuntimeArgs(program, kernel, {0, 0});
@@ -148,8 +134,7 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
         runtime_args[1] = routed_tokens.buffer()->address();
         runtime_args[2] = num_routed_tokens.buffer()->address();
         runtime_args[3] = expert_weights.buffer()->address();
-        runtime_args[4] = device_expert_mapping.buffer()->address();
-        runtime_args[5] = output.buffer()->address();
+        runtime_args[4] = output.buffer()->address();
     };
 
     return {std::move(program), override_runtime_arguments_callback};
