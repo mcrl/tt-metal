@@ -22,9 +22,9 @@ This operation filters global routing information to only include experts assign
 enabling efficient parallel processing where each device processes its assigned experts independently.
 
 Args:
-    * :attr:`selected_experts`: (T × K) uint32 tensor containing GLOBAL expert indices for each token
-    * :attr:`routing_weights`: (T × K) bfloat16 tensor containing routing weights
-    * :attr:`device_expert_mapping`: (E/D) int32 tensor containing GLOBAL expert IDs assigned to this device
+    * :attr:`selected_experts`: (T, K) uint32 tensor containing GLOBAL expert indices for each token
+    * :attr:`routing_weights`: (T, K) bfloat16 tensor containing routing weights
+    * :attr:`device_expert_mapping`: (E/D,) int32 1D tensor containing GLOBAL expert IDs assigned to this device
     * :attr:`num_experts`: Total number of experts (E)
 
 Keyword Args:
@@ -33,9 +33,9 @@ Keyword Args:
 
 Returns:
     Tuple of three device-local tensors:
-    * :attr:`num_routed_tokens`: (E/D) uint32 tensor - count of tokens routed to each LOCAL expert
-    * :attr:`routed_tokens`: (E/D × max_tokens) uint32 tensor - token indices for each LOCAL expert (padded)
-    * :attr:`routed_token_weights`: (E/D × max_tokens) bfloat16 tensor - routing weights for each LOCAL expert (padded)
+    * :attr:`num_routed_tokens`: (E/D,) uint32 1D tensor - count of tokens routed to each LOCAL expert
+    * :attr:`routed_tokens`: (E/D, max_tokens) uint32 2D tensor - token indices for each LOCAL expert (padded)
+    * :attr:`routed_token_weights`: (E/D, max_tokens) bfloat16 2D tensor - routing weights for each LOCAL expert (padded)
 
 Example:
     >>> # T=32 tokens, K=8 top experts, E=128 total experts, D=8 devices

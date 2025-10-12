@@ -135,8 +135,7 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
     )
 
     # Verify output shapes (device-local: E/D per device)
-    assert num_routed.shape[0] == 1  # Single row tensor
-    assert num_routed.shape[1] == experts_per_device  # Device-local size (E/D)
+    assert num_routed.shape[0] == experts_per_device  # 1D tensor with E/D elements
     assert routed_tokens.shape[0] == experts_per_device  # Device-local size (E/D)
     assert routed_tokens.shape[1] == num_tokens  # max_tokens_per_expert
     assert routed_weights.shape == routed_tokens.shape
@@ -148,7 +147,7 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
 
     # Each device has different output (sharded by experts)
     # Verify first device's output
-    num_routed_torch_device0 = num_routed_torch[0, :]  # First device, all values
+    num_routed_torch_device0 = num_routed_torch[:experts_per_device]  # First device, all values (1D)
     routed_tokens_torch_device0 = routed_tokens_torch[:experts_per_device]  # First E/D experts
     routed_weights_torch_device0 = routed_weights_torch[:experts_per_device]
 

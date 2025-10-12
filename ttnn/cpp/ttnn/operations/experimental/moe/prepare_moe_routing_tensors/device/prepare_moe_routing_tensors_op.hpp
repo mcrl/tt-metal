@@ -14,9 +14,7 @@ namespace ttnn::operations::experimental::moe {
 using namespace tt::tt_metal;
 
 struct PrepareMoeRoutingTensors {
-    const uint32_t num_experts;          // Total number of experts (E)
-    const uint32_t num_local_experts;    // Number of experts on this device (E/D)
-    const uint32_t max_tokens_per_expert;
+    const uint32_t num_experts;  // User-provided: total number of experts (E)
     const MemoryConfig output_mem_config;
 
     void validate(const std::vector<Tensor>& input_tensors) const;

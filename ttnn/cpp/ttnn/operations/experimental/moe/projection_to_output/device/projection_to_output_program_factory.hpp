@@ -8,13 +8,12 @@
 
 namespace ttnn::operations::experimental::moe {
 
-tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
+tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
     const Tensor& combined_activations,
     const Tensor& routed_tokens,
     const Tensor& num_routed_tokens,
     const Tensor& routed_token_weights,
     const Tensor& down_proj_weights,
-    const Tensor& device_expert_mapping,
     Tensor& output,
     uint32_t num_tokens,
     uint32_t hidden_dim,

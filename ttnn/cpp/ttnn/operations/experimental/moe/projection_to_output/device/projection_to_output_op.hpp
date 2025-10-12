@@ -14,12 +14,8 @@ namespace ttnn::operations::experimental::moe {
 using namespace tt::tt_metal;
 
 struct ProjectionToOutput {
-    const uint32_t num_tokens;
-    const uint32_t hidden_dim;
-    const uint32_t expert_dim;
-    const uint32_t experts_per_device;
-    const uint32_t max_tokens_per_expert;
-    const uint32_t top_k;
+    const uint32_t num_tokens;  // User-provided parameter
+    const uint32_t top_k;  // User-provided parameter
     const MemoryConfig output_mem_config;
 
     void validate(const std::vector<Tensor>& input_tensors) const;

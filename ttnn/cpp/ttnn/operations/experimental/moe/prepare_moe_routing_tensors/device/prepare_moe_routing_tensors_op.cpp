@@ -48,8 +48,7 @@ void PrepareMoeRoutingTensors::validate(const std::vector<Tensor>& input_tensors
         TT_FATAL(mapping_shape[0] == 1, "device_expert_mapping 2D tensor must have shape (1, E/D)");
         mapping_size = mapping_shape[1];
     }
-    TT_FATAL(mapping_size == num_local_experts, "device_expert_mapping size ({}) must match num_local_experts ({})", mapping_size, num_local_experts);
-    TT_FATAL(num_local_experts <= num_experts, "num_local_experts ({}) cannot exceed num_experts ({})", num_local_experts, num_experts);
+    TT_FATAL(mapping_size <= num_experts, "device_expert_mapping size ({}) cannot exceed num_experts ({})", mapping_size, num_experts);
 
     const uint32_t top_k = experts_shape[1];
     TT_FATAL(top_k <= num_experts, "top_k ({}) cannot exceed num_experts ({})", top_k, num_experts);
@@ -59,23 +58,38 @@ std::vector<TensorSpec> PrepareMoeRoutingTensors::compute_output_specs(
     const std::vector<Tensor>& input_tensors) const {
 
     const auto& selected_experts = input_tensors[0];
-    const auto& experts_shape = selected_experts.padded_shape();
-    const uint32_t num_tokens = experts_shape[0];
-    const uint32_t top_k = experts_shape[1];
+    const auto& device_expert_mapping = input_tensors[2];
 
-    // Output 1: num_routed_tokens (E/D) - device-local expert count
-    ttnn::Shape num_routed_shape({1, num_local_experts});
+    const auto& experts_shape = selected_experts.padded_shape();
+    const auto& mapping_shape = device_expert_mapping.padded_shape();
+
+    const uint32_t num_tokens = experts_shape[0];
+
+    // Extract num_local_experts from device_expert_mapping shape
+    uint32_t num_local_experts;
+    if (mapping_shape.rank() == 1) {
+        num_local_experts = mapping_shape[0];
+    } else {
+        // 2D tensor: (1, E/D) or (E/D, 1)
+        num_local_experts = (mapping_shape[0] == 1) ? mapping_shape[1] : mapping_shape[0];
+    }
+
+    // Maximum tokens that can be routed to any single expert (worst case: all tokens choose that expert)
+    const uint32_t max_tokens_per_expert = num_tokens;
+
+    // Output 1: num_routed_tokens (E/D,) - device-local expert count (1D tensor)
+    ttnn::Shape num_routed_shape({num_local_experts});
     auto num_routed_spec = TensorSpec(
         num_routed_shape,
         TensorLayout(DataType::UINT32, PageConfig(Layout::ROW_MAJOR), output_mem_config));
 
-    // Output 2: routed_tokens (E/D × max_tokens) - device-local routing table
+    // Output 2: routed_tokens (E/D, max_tokens) uint32 2D tensor - device-local routing table
     ttnn::Shape routed_tokens_shape({num_local_experts, max_tokens_per_expert});
     auto routed_tokens_spec = TensorSpec(
         routed_tokens_shape,
         TensorLayout(DataType::UINT32, PageConfig(Layout::ROW_MAJOR), output_mem_config));
 
-    // Output 3: routed_token_weights (E/D × max_tokens) - device-local routing weights
+    // Output 3: routed_token_weights (E/D, max_tokens) bfloat16 2D tensor - device-local routing weights
     ttnn::Shape routed_weights_shape({num_local_experts, max_tokens_per_expert});
     auto routed_weights_spec = TensorSpec(
         routed_weights_shape,
@@ -107,6 +121,23 @@ tt::tt_metal::operation::ProgramWithCallbacks PrepareMoeRoutingTensors::create_p
     auto& num_routed_tokens = output_tensors.at(0);
     auto& routed_tokens = output_tensors.at(1);
     auto& routed_token_weights = output_tensors.at(2);
+
+    // Extract dimensions from input tensors
+    const auto& experts_shape = selected_experts.padded_shape();
+    const auto& mapping_shape = device_expert_mapping.padded_shape();
+
+    const uint32_t num_tokens = experts_shape[0];
+
+    // Extract num_local_experts from device_expert_mapping shape
+    uint32_t num_local_experts;
+    if (mapping_shape.rank() == 1) {
+        num_local_experts = mapping_shape[0];
+    } else {
+        // 2D tensor: (1, E/D) or (E/D, 1)
+        num_local_experts = (mapping_shape[0] == 1) ? mapping_shape[1] : mapping_shape[0];
+    }
+
+    const uint32_t max_tokens_per_expert = num_tokens;
 
     return prepare_moe_routing_tensors_single_core(
         selected_experts,

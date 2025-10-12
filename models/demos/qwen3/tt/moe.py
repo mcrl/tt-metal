@@ -371,7 +371,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 routed_tokens,
                 num_routed,
                 gate_proj_rm,
-                device_expert_mapping,
                 self.top_k
             )
 
@@ -381,7 +380,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 routed_tokens,
                 num_routed,
                 up_proj_rm,
-                device_expert_mapping,
                 self.top_k
             )
 
@@ -414,7 +412,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 num_routed,
                 routed_weights,
                 down_proj_rm,
-                device_expert_mapping,
                 num_tokens,
                 self.top_k
             )

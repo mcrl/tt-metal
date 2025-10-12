@@ -15,13 +15,12 @@ namespace ttnn::operations::experimental::moe {
 using namespace tt;
 using namespace tt::tt_metal;
 
-tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
+tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
     const Tensor& combined_activations,
     const Tensor& routed_tokens,
     const Tensor& num_routed_tokens,
     const Tensor& routed_token_weights,
     const Tensor& down_proj_weights,
-    const Tensor& device_expert_mapping,
     Tensor& output,
     uint32_t num_tokens,
     uint32_t hidden_dim,
@@ -37,13 +36,9 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
     auto* num_routed_buffer = num_routed_tokens.buffer();
     auto* routed_weights_buffer = routed_token_weights.buffer();
     auto* weights_buffer = down_proj_weights.buffer();
-    auto* mapping_buffer = device_expert_mapping.buffer();
     auto* output_buffer = output.buffer();
 
-    // Get padded number of experts from num_routed_tokens tensor
-    const auto& num_routed_shape = num_routed_tokens.padded_shape();
-    uint32_t num_experts_padded = num_routed_shape[1];
-
+    // NOTE: num_routed_tokens is device-local 1D tensor with shape (experts_per_device,)
     // Use a single core for simplicity (can be optimized later for multi-core)
     CoreCoord core = {0, 0};
     CoreRange core_range({0, 0}, {0, 0});
@@ -51,15 +46,10 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
     // Calculate buffer sizes
     uint32_t combined_row_size = expert_dim * sizeof(uint16_t);
     uint32_t routed_row_size = max_tokens_per_expert * sizeof(uint32_t);
-    uint32_t num_routed_size = num_experts_padded * sizeof(uint32_t);
+    uint32_t num_routed_size = experts_per_device * sizeof(uint32_t);  // Device-local 1D array size
     uint32_t weights_routing_row_size = max_tokens_per_expert * sizeof(uint16_t);
     uint32_t weights_row_size = hidden_dim * sizeof(uint16_t);
-    uint32_t mapping_size = experts_per_device * sizeof(int32_t);
     uint32_t output_row_size = hidden_dim * sizeof(uint16_t);
-
-    // Determine mapping page size based on tensor rank
-    const auto& mapping_shape = device_expert_mapping.padded_shape();
-    uint32_t mapping_page_size = (mapping_shape.rank() == 3) ? mapping_shape[2] * sizeof(int32_t) : mapping_shape[1] * sizeof(int32_t);
 
     // Create circular buffers
     CircularBufferConfig cb_combined_config = CircularBufferConfig(
@@ -86,11 +76,6 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
         weights_row_size, {{CBIndex::c_4, DataFormat::Float16_b}})
         .set_page_size(CBIndex::c_4, weights_row_size);
     CreateCircularBuffer(program, core_range, cb_weights_config);
-
-    CircularBufferConfig cb_mapping_config = CircularBufferConfig(
-        mapping_size, {{CBIndex::c_5, DataFormat::Int32}})
-        .set_page_size(CBIndex::c_5, mapping_size);
-    CreateCircularBuffer(program, core_range, cb_mapping_config);
 
     CircularBufferConfig cb_output_config = CircularBufferConfig(
         output_row_size, {{CBIndex::c_16, DataFormat::Float16_b}})
@@ -121,7 +106,6 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
     TensorAccessorArgs(num_routed_buffer).append_to(compile_time_args);
     TensorAccessorArgs(routed_weights_buffer).append_to(compile_time_args);
     TensorAccessorArgs(weights_buffer).append_to(compile_time_args);
-    TensorAccessorArgs(mapping_buffer).append_to(compile_time_args);
     TensorAccessorArgs(output_buffer).append_to(compile_time_args);
 
     // Create dataflow kernel
@@ -143,7 +127,6 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
         num_routed_buffer->address(),
         routed_weights_buffer->address(),
         weights_buffer->address(),
-        mapping_buffer->address(),
         output_buffer->address(),
         num_tokens,
         hidden_dim,
@@ -151,7 +134,7 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
         experts_per_device,
         max_tokens_per_expert,
         top_k,
-        num_experts_padded
+        experts_per_device  // Pass experts_per_device (same as num_experts_padded for device-local)
     };
 
     SetRuntimeArgs(program, kernel, core, runtime_args);
@@ -168,7 +151,6 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
         auto num_routed_buffer = input_tensors[2].buffer();
         auto routed_weights_buffer = input_tensors[3].buffer();
         auto weights_buffer = input_tensors[4].buffer();
-        auto mapping_buffer = input_tensors[5].buffer();
         auto output_buffer = output_tensors[0].buffer();
 
         auto& runtime_args = GetRuntimeArgs(program, kernel, core);
@@ -177,8 +159,7 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_multi_core(
         runtime_args[2] = num_routed_buffer->address();
         runtime_args[3] = routed_weights_buffer->address();
         runtime_args[4] = weights_buffer->address();
-        runtime_args[5] = mapping_buffer->address();
-        runtime_args[6] = output_buffer->address();
+        runtime_args[5] = output_buffer->address();
     };
 
     return {std::move(program), override_runtime_args_callback};
