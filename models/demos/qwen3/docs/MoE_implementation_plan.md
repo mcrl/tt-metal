@@ -331,9 +331,3 @@ Device-Local Routing (E/D, max_tokens) - SHARDED
 3. **Compacted Format**: Intermediate activations stored densely (no padding between expert outputs)
 4. **Accumulation Pattern**: Output accumulates contributions from multiple experts per token
 5. **Allreduce Required**: Final step sums partial results across devices
-
-### Memory Distribution
-
-- **Replicated**: `hidden_states`, `combined_activations`
-- **Sharded**: `expert_weights`, `routed_tokens`, `num_routed_tokens`, `routed_token_weights`
-- **Partial**: `output` (requires allreduce)
