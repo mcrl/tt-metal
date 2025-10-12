@@ -91,18 +91,13 @@ def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
     output_tt = tt_mlp.forward_v2(hidden_states_tt)
-    tt_output = ttnn.to_torch(
-        output_tt, dtype=torch.bfloat16, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
-    )
-
     # After allreduce in forward_v2, output is replicated across all devices
-    # So we only need to take the output from the first device (first batch_size samples)
-    print(f"TT output shape: {tt_output.shape}")
-    print(f"Ref output shape: {ref_output.shape}")
-    print(f"TT output stats: min={tt_output.min()}, max={tt_output.max()}, mean={tt_output.mean()}")
-    print(f"Ref output stats: min={ref_output.min()}, max={ref_output.max()}, mean={ref_output.mean()}")
+    # Convert to ROW_MAJOR before converting to torch
+    output_tt = ttnn.to_layout(output_tt, ttnn.ROW_MAJOR_LAYOUT)
+    # Use ConcatMeshToTensor and slice to get first replica
+    tt_output = ttnn.to_torch(output_tt, dtype=torch.bfloat16, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))[:batch_size, :, :]
 
-    compare_tensor_pcc(ref_output, tt_output[:batch_size, :, :])
+    compare_tensor_pcc(ref_output, tt_output)
 
 
 if __name__ == "__main__":

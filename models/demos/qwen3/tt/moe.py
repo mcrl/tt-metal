@@ -318,12 +318,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG
             )
 
-        # Step 1: Prepare routing tensors
-        with Profiler().trace_with_timer("prepare-routing-tensors", level=4):
-            num_routed, routed_tokens, routed_weights = ttnn.prepare_moe_routing_tensors(
-                selected_experts, routing_weights, self.num_experts
-            )
-
         # Create device-expert mapping (uniform partitioning)
         # Each device gets contiguous range of experts
         with Profiler().trace_with_timer("device-expert-mapping", level=4):
@@ -336,9 +330,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 )
                 device_expert_mappings.append(mapping)
 
-            device_expert_mapping_np = torch.stack(device_expert_mappings, dim=0)  # (D, E/D)
+            device_expert_mapping_torch = torch.stack(device_expert_mappings, dim=0)  # (D, E/D)
             device_expert_mapping = ttnn.from_torch(
-                device_expert_mapping_np,
+                device_expert_mapping_torch,
                 device=self.mesh_device,
                 dtype=ttnn.int32,
                 layout=ttnn.ROW_MAJOR_LAYOUT,
@@ -346,19 +340,25 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=0),
             )
 
-        # Prepare expert weights - need to convert from (1, E/D, H, H') to (E/D, H, H') per device
+        # Step 1: Prepare routing tensors with device-expert mapping
+        with Profiler().trace_with_timer("prepare-routing-tensors", level=4):
+            num_routed, routed_tokens, routed_weights = ttnn.prepare_moe_routing_tensors(
+                selected_experts, routing_weights, device_expert_mapping, self.num_experts
+            )
+
+        # Prepare expert weights - convert to ROW_MAJOR and squeeze first dimension from (1, E/D, H, H') to (E/D, H, H')
         with Profiler().trace_with_timer("prepare-expert-weights", level=4):
             # Gate projection: convert to ROW_MAJOR and squeeze first dimension
             gate_proj_rm = ttnn.to_layout(self.gate_proj, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-            gate_proj_rm = ttnn.reshape(gate_proj_rm, (self.num_experts_per_device, self.config.hidden_size, self.config.moe_intermediate_size))
+            gate_proj_rm = ttnn.squeeze(gate_proj_rm, dim=0)
 
             # Up projection: convert to ROW_MAJOR and squeeze first dimension
             up_proj_rm = ttnn.to_layout(self.up_proj, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-            up_proj_rm = ttnn.reshape(up_proj_rm, (self.num_experts_per_device, self.config.hidden_size, self.config.moe_intermediate_size))
+            up_proj_rm = ttnn.squeeze(up_proj_rm, dim=0)
 
             # Down projection: convert to ROW_MAJOR and squeeze first dimension
             down_proj_rm = ttnn.to_layout(self.down_proj, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-            down_proj_rm = ttnn.reshape(down_proj_rm, (self.num_experts_per_device, self.config.moe_intermediate_size, self.config.hidden_size))
+            down_proj_rm = ttnn.squeeze(down_proj_rm, dim=0)
 
         # Convert hidden_states to ROW_MAJOR for expert projection
         with Profiler().trace_with_timer("hidden-to-row-major", level=4):
@@ -391,12 +391,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
             # Apply SiLU to gate_output: silu(x) = x * sigmoid(x)
             gate_silu = ttnn.silu(gate_output, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-            ttnn.deallocate(gate_output)
 
             # Elementwise multiply
             combined_activations = ttnn.mul(gate_silu, up_output, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-            ttnn.deallocate(gate_silu)
-            ttnn.deallocate(up_output)
 
             # Convert back to ROW_MAJOR for down projection
             combined_activations = ttnn.to_layout(
@@ -415,18 +412,12 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 num_tokens,
                 self.top_k
             )
-            ttnn.deallocate(combined_activations)
 
         # Step 5: Allreduce across devices (sum partial outputs from all devices)
         with Profiler().trace_with_timer("allreduce", level=4):
-            print(f"[DEBUG] moe_output shape before allreduce: {moe_output.shape}")
-            print(f"[DEBUG] moe_output layout: {moe_output.layout}")
             T, H = moe_output.shape
-            print(f"[DEBUG] T={T}, H={H}, T*H={T*H}, T*H//256={T*H//256}")
             final_output = ttnn.reshape(moe_output, shape=(1, 1, T * H // 256, 256), memory_config=mem_cfg)
-            print(f"[DEBUG] After reshape for allreduce: {final_output.shape}")
             final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
-            print(f"[DEBUG] After to_layout TILE: {final_output.shape}")
             final_output = ttnn.experimental.all_reduce_async(
                 final_output,
                 math_op=ttnn.ReduceType.Sum,
