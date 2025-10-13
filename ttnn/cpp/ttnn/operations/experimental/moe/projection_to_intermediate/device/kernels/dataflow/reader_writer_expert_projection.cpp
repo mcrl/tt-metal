@@ -26,7 +26,7 @@ static inline uint16_t float_to_bfloat16(float val) {
 // Processes each local expert, gathering tokens and computing: (T_e × H) @ (H × H') = T_e × H'
 //
 // NOTE: Routing tensors are DEVICE-LOCAL (indexed 0 to E/D-1) from prepare_moe_routing_tensors:
-//   - num_routed_tokens: (E/D,) 1D tensor - token counts per local expert
+//   - num_routed_tokens: (E/D, 1) 2D tensor - token counts per local expert (read as 1D array in kernel)
 //   - routed_tokens: (E/D, max_tokens) 2D tensor - token indices per local expert
 
 void kernel_main() {
@@ -60,7 +60,7 @@ void kernel_main() {
 
     const auto hidden_accessor = TensorAccessor(hidden_accessor_args, hidden_states_addr, hidden_dim * sizeof(uint16_t));
     const auto routed_accessor = TensorAccessor(routed_accessor_args, routed_tokens_addr, max_tokens_per_expert * sizeof(uint32_t));
-    // num_routed_tokens tensor is device-local 1D with shape (E/D,) - page_size is the entire array
+    // num_routed_tokens tensor shape is (E/D, 1) but read as 1D array - page_size is the entire array
     const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, experts_per_device * sizeof(uint32_t));
     const auto weights_accessor = TensorAccessor(weights_accessor_args, expert_weights_addr, expert_dim * sizeof(uint16_t));
     const auto output_accessor = TensorAccessor(output_accessor_args, output_addr, expert_dim * sizeof(uint16_t));
@@ -78,8 +78,8 @@ void kernel_main() {
     uint32_t l1_weights_addr = get_write_ptr(cb_expert_weights);
     uint32_t l1_output_addr = get_write_ptr(cb_output_row);
 
-    // Read the entire num_routed_tokens 1D array (device-local: E/D elements)
-    // For 1D ROW_MAJOR tensors, TensorAccessor page_size is the entire array
+    // Read the entire num_routed_tokens array (shape: E/D, 1; read as E/D elements)
+    // TensorAccessor page_size is the entire array size
     // Use get_noc_addr(0, accessor) to get the NOC address of the first (and only) "page"
     uint64_t num_routed_noc_addr = get_noc_addr(0, num_routed_accessor);
     noc_async_read(num_routed_noc_addr, l1_num_routed_addr, experts_per_device * sizeof(uint32_t));

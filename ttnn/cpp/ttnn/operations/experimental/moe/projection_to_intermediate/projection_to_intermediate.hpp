@@ -17,7 +17,8 @@
 // INPUTS:
 //   - hidden_states: (T, H) bfloat16 tensor, ROW_MAJOR layout, replicated across devices
 //   - routed_tokens: (E/D, max_tokens) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
-//   - num_routed_tokens: (E/D,) uint32 1D tensor, ROW_MAJOR layout, sharded (device-local)
+//   - num_routed_tokens: (E/D, 1) uint32 2D tensor, ROW_MAJOR layout, sharded (device-local)
+//                        Access as num_routed_tokens[e, 0] for local expert e
 //   - expert_weights: (E/D, H, H') bfloat16 tensor, ROW_MAJOR layout, sharded across devices
 //
 // OUTPUTS:

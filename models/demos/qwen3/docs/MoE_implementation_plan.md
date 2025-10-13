@@ -73,9 +73,11 @@ num_routed_tokens, routed_tokens, routed_token_weights = ttnn.prepare_moe_routin
 	- Total number of experts (E) in the model
 
 **Output** (all device-local)
-- **num_routed_tokens**: `(E/D,)` uint32 1D tensor
+- **num_routed_tokens**: `(E/D, 1)` uint32 2D tensor
 	- Count of tokens routed to each local expert
-	- `num_routed_tokens[e]` = number of tokens assigned to local expert e
+	- `num_routed_tokens[e, 0]` = number of tokens assigned to local expert e
+	- **Implementation note**: Uses 2D shape `(E/D, 1)` instead of 1D `(E/D,)` to enable per-element pages in ROW_MAJOR layout
+	- Each row is a separate page containing exactly one element, allowing safe multi-core writes without race conditions
 - **routed_tokens**: `(E/D, max_tokens)` uint32 2D tensor
 	- Token indices for each local expert (padded)
 	- Each row e contains `num_routed_tokens[e]` valid token indices
@@ -92,6 +94,33 @@ num_routed_tokens, routed_tokens, routed_token_weights = ttnn.prepare_moe_routin
 - Converts sparse MoE expert selection into device-local routing tensors
 - Enables expert-parallel computation where each device processes E/D experts independently
 
+**Parallelization Strategy**
+
+Uses **expert parallelism** where one Tensix core handles one local expert:
+- **Core assignment**: Core `c` processes local expert `c` (for `c` in `[0, E/D-1]`)
+- **Per-core computation**:
+  1. Read global expert ID: `global_expert_id = device_expert_mapping[c]`
+  2. Initialize counters: `count = 0`, `write_pos = 0`
+  3. Scan all tokens: For each token `t` in `[0, T-1]`:
+     - Check all K selections: For each `k` in `[0, K-1]`:
+       - If `selected_experts[t, k] == global_expert_id`:
+         - Write token index: `routed_tokens[c, write_pos] = t`
+         - Write routing weight: `routed_token_weights[c, write_pos] = routing_weights[t, k]`
+         - Increment: `count++`, `write_pos++`
+  4. Write final count: `num_routed_tokens[c, 0] = count`
+  5. Pad remaining entries: Set `routed_tokens[c, write_pos:] = 0xFFFFFFFF`, `routed_token_weights[c, write_pos:] = 0.0`
+
+**Key insights**:
+- Each core independently scans the entire input `(T, K)` but only writes output for its assigned expert
+- No inter-core communication or synchronization needed during computation
+- Per-element pages enable race-free writes: Each core writes to page ID `c`, which contains exactly one element `num_routed_tokens[c, 0]`
+
+**Implementation details**:
+- **Per-element pages**: `num_routed_tokens` uses shape `(E/D, 1)` so each row is one page with size `sizeof(uint32_t)`
+- **TensorAccessor**: Use `page_size = sizeof(uint32_t)` to access individual elements via `get_noc_addr(local_expert_id, accessor)`
+- **Safe multi-core writes**: Core `c` writes to page ID `c`, eliminating race conditions without read-modify-write
+- **Downstream operations**: `projection_to_intermediate` and `projection_to_output` read `num_routed_tokens` with same per-element page size
+
 ---
 
 ## `projection_to_intermediate`
@@ -101,7 +130,7 @@ num_routed_tokens, routed_tokens, routed_token_weights = ttnn.prepare_moe_routin
 output = ttnn.projection_to_intermediate(
     hidden_states,       # (T, H) bfloat16 tensor - replicated
     routed_tokens,       # (E/D, max_tokens) uint32 tensor - sharded
-    num_routed_tokens,   # (E/D,) uint32 tensor - sharded
+    num_routed_tokens,   # (E/D, 1) uint32 tensor - sharded
     expert_weights,      # (E/D, H, H') bfloat16 tensor - sharded
     top_k,               # scalar int - number of experts per token
     *,
@@ -117,9 +146,10 @@ output = ttnn.projection_to_intermediate(
 - **routed_tokens**: `(E/D, max_tokens)` uint32 tensor, ROW_MAJOR layout
 	- Device-local token indices from `prepare_moe_routing_tensors`
 	- Sharded across devices (each device has different E/D experts)
-- **num_routed_tokens**: `(E/D,)` uint32 1D tensor, ROW_MAJOR layout
+- **num_routed_tokens**: `(E/D, 1)` uint32 2D tensor, ROW_MAJOR layout
 	- Device-local token counts from `prepare_moe_routing_tensors`
 	- Sharded across devices
+	- Access as `num_routed_tokens[e, 0]` or squeeze to 1D before use
 - **expert_weights**: `(E/D, H, H')` bfloat16 tensor, ROW_MAJOR layout
 	- Expert weight matrices, sharded across devices by expert dimension
 	- `expert_weights[e, :, :]` contains weights for local expert e
@@ -169,7 +199,7 @@ For each local expert e in [0, E/D-1):
 output = ttnn.projection_to_output(
     combined_activations,     # (T_d, H') bfloat16 tensor - replicated
     routed_tokens,            # (E/D, max_tokens) uint32 tensor - sharded
-    num_routed_tokens,        # (E/D,) uint32 tensor - sharded
+    num_routed_tokens,        # (E/D, 1) uint32 tensor - sharded
     routed_token_weights,     # (E/D, max_tokens) bfloat16 tensor - sharded
     down_proj_weights,        # (E/D, H', H) bfloat16 tensor - sharded
     num_tokens,               # scalar int - T
@@ -189,9 +219,10 @@ output = ttnn.projection_to_output(
 - **routed_tokens**: `(E/D, max_tokens)` uint32 tensor, ROW_MAJOR layout
 	- Device-local token indices from `prepare_moe_routing_tensors`
 	- Sharded across devices
-- **num_routed_tokens**: `(E/D,)` uint32 1D tensor, ROW_MAJOR layout
+- **num_routed_tokens**: `(E/D, 1)` uint32 2D tensor, ROW_MAJOR layout
 	- Device-local token counts from `prepare_moe_routing_tensors`
 	- Sharded across devices
+	- Access as `num_routed_tokens[e, 0]` or squeeze to 1D before use
 - **routed_token_weights**: `(E/D, max_tokens)` bfloat16 tensor, ROW_MAJOR layout
 	- Device-local routing weights from `prepare_moe_routing_tensors`
 	- Sharded across devices

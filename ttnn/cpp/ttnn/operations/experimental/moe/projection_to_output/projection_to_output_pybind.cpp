@@ -32,7 +32,7 @@ Routing tensors are device-local from prepare_moe_routing_tensors.
 Args:
     * :attr:`combined_activations`: (T_d, H') bfloat16 tensor - combined gate*up activations from Step 3
     * :attr:`routed_tokens`: (E/D, max_tokens) uint32 tensor - device-local token indices, sharded
-    * :attr:`num_routed_tokens`: (E/D,) uint32 1D tensor - device-local token counts, sharded
+    * :attr:`num_routed_tokens`: (E/D, 1) uint32 2D tensor - device-local token counts, sharded (access as [e, 0])
     * :attr:`routed_token_weights`: (E/D, max_tokens) bfloat16 tensor - device-local routing weights, sharded
     * :attr:`down_proj_weights`: (E/D, H', H) bfloat16 tensor - down projection weight matrices, sharded
     * :attr:`num_tokens`: Total number of tokens (T)

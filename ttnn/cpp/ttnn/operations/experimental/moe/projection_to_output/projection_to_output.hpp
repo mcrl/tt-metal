@@ -18,7 +18,8 @@
 //   - combined_activations: (T_d, H') bfloat16 tensor, ROW_MAJOR layout
 //     Contains combined gate*up activations for all token-expert pairs on device
 //   - routed_tokens: (E/D, max_tokens) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
-//   - num_routed_tokens: (E/D,) uint32 1D tensor, ROW_MAJOR layout, sharded (device-local)
+//   - num_routed_tokens: (E/D, 1) uint32 2D tensor, ROW_MAJOR layout, sharded (device-local)
+//                        Access as num_routed_tokens[e, 0] for local expert e
 //   - routed_token_weights: (E/D, max_tokens) bfloat16 tensor, ROW_MAJOR layout, sharded (device-local)
 //   - down_proj_weights: (E/D, H', H) bfloat16 tensor, ROW_MAJOR layout, sharded across devices
 //

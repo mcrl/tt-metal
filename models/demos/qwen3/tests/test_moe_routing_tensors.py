@@ -17,7 +17,7 @@ def reference_prepare_moe_routing_tensors(selected_experts, routing_weights, dev
         device_expert_mapping: (E/D,) tensor of GLOBAL expert IDs assigned to this device
 
     Returns:
-        - num_routed_tokens: (E/D,) count of tokens per LOCAL expert
+        - num_routed_tokens: (E/D,) count of tokens per LOCAL expert (1D for reference, but API returns (E/D, 1))
         - routed_tokens: (E/D, max_tokens) token indices per LOCAL expert
         - routed_token_weights: (E/D, max_tokens) weights per LOCAL expert
     """
@@ -135,7 +135,8 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
     )
 
     # Verify output shapes (device-local: E/D per device)
-    assert num_routed.shape[0] == experts_per_device  # 1D tensor with E/D elements
+    assert num_routed.shape[0] == experts_per_device  # 2D tensor (E/D, 1) for per-element pages
+    assert num_routed.shape[1] == 1
     assert routed_tokens.shape[0] == experts_per_device  # Device-local size (E/D)
     assert routed_tokens.shape[1] == num_tokens  # max_tokens_per_expert
     assert routed_weights.shape == routed_tokens.shape
@@ -145,9 +146,12 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
     routed_tokens_torch = ttnn.to_torch(routed_tokens, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
     routed_weights_torch = ttnn.to_torch(routed_weights, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
 
+    # Squeeze num_routed_torch to 1D for comparison
+    num_routed_torch = num_routed_torch.squeeze(-1)
+
     # Each device has different output (sharded by experts)
     # Verify first device's output
-    num_routed_torch_device0 = num_routed_torch[:experts_per_device]  # First device, all values (1D)
+    num_routed_torch_device0 = num_routed_torch[:experts_per_device]  # First device, all values (1D after squeeze)
     routed_tokens_torch_device0 = routed_tokens_torch[:experts_per_device]  # First E/D experts
     routed_weights_torch_device0 = routed_weights_torch[:experts_per_device]
 
