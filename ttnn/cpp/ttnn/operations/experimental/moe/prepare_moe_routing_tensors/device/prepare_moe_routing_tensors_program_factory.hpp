@@ -8,7 +8,7 @@
 
 namespace ttnn::operations::experimental::moe {
 
-tt::tt_metal::operation::ProgramWithCallbacks prepare_moe_routing_tensors_single_core(
+tt::tt_metal::operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     const Tensor& selected_experts,
     const Tensor& routing_weights,
     const Tensor& device_expert_mapping,

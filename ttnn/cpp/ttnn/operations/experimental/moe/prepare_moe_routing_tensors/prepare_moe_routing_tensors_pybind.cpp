@@ -33,7 +33,7 @@ Keyword Args:
 
 Returns:
     Tuple of three device-local tensors:
-    * :attr:`num_routed_tokens`: (E/D,) uint32 1D tensor - count of tokens routed to each LOCAL expert
+    * :attr:`num_routed_tokens`: (E/D, 1) uint32 2D tensor - count of tokens routed to each LOCAL expert (uses 2D shape for per-element pages)
     * :attr:`routed_tokens`: (E/D, max_tokens) uint32 2D tensor - token indices for each LOCAL expert (padded)
     * :attr:`routed_token_weights`: (E/D, max_tokens) bfloat16 2D tensor - routing weights for each LOCAL expert (padded)
 

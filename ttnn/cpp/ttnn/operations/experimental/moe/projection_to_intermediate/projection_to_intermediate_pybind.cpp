@@ -29,7 +29,7 @@ Routing tensors are device-local from prepare_moe_routing_tensors.
 Args:
     * :attr:`hidden_states`: (T, H) bfloat16 tensor, ROW_MAJOR, replicated across devices
     * :attr:`routed_tokens`: (E/D, max_tokens) uint32 tensor, ROW_MAJOR, sharded
-    * :attr:`num_routed_tokens`: (E/D,) uint32 1D tensor, ROW_MAJOR, sharded
+    * :attr:`num_routed_tokens`: (E/D, 1) uint32 2D tensor, ROW_MAJOR, sharded (access as [e, 0])
     * :attr:`expert_weights`: (E/D, H, H') bfloat16 tensor, ROW_MAJOR, sharded across devices
     * :attr:`top_k`: Number of experts selected per token
 
@@ -49,7 +49,7 @@ Example:
     >>> gate_output = ttnn.projection_to_intermediate(
     ...     hidden_states,           # (T, H) replicated
     ...     routed_tokens,           # (E/D, max_tokens) sharded
-    ...     num_routed,              # (E/D,) sharded
+    ...     num_routed,              # (E/D, 1) sharded
     ...     gate_weights,            # (E/D, H, H') sharded
     ...     top_k=8                  # Number of experts per token
     ... )
