@@ -80,9 +80,9 @@ num_routed_tokens, routed_tokens, routed_token_weights = ttnn.prepare_moe_routin
 	- Each row is a separate page containing exactly one element, allowing safe multi-core writes without race conditions
 - **routed_tokens**: `(E/D, max_tokens)` uint32 2D tensor
 	- Token indices for each local expert (padded)
-	- Each row e contains `num_routed_tokens[e]` valid token indices
+	- Each row e contains `num_routed_tokens[e, 0]` valid token indices
 	- `routed_tokens[e, k]` = token index for k-th token assigned to local expert e
-	- Padded entries (beyond `num_routed_tokens[e]`) are set to `0xFFFFFFFF`
+	- Padded entries (beyond `num_routed_tokens[e, 0]`) are set to `0xFFFFFFFF`
 	- `max_tokens = T` (worst case: all tokens routed to one expert)
 - **routed_token_weights**: `(E/D, max_tokens)` bfloat16 2D tensor
 	- Routing weights for each local expert (padded)
@@ -166,12 +166,12 @@ output = ttnn.projection_to_intermediate(
 
 **Computation**
 For each local expert e in [0, E/D-1):
-1. Read `T_e = num_routed_tokens[e]` (number of tokens for this expert)
+1. Read `T_e = num_routed_tokens[e, 0]` (number of tokens for this expert)
 2. Read `token_indices = routed_tokens[e, :T_e]` (which tokens to process)
 3. For each of the T_e tokens:
    - Gather input: `x = hidden_states[token_indices[i], :]` (shape: 1 × H)
    - Compute: `y = x @ expert_weights[e, :, :]` (shape: 1 × H')
-   - Write to output at position: `write_pos = sum(num_routed_tokens[0:e]) + i`
+   - Write to output at position: `write_pos = sum(num_routed_tokens[0:e, 0]) + i`
    - `output[write_pos, :] = y`
 
 **Memory Layout**
@@ -189,6 +189,10 @@ For each local expert e in [0, E/D-1):
 - Each device processes its assigned E/D experts in parallel
 - No cross-device communication required during computation
 - Device-expert mapping is NOT needed (routing tensors are already device-local)
+
+**Implementation Notes**
+- Current: Single-core implementation (sequential expert processing)
+- Future: Multi-core would process experts in parallel across multiple cores
 
 ---
 
@@ -244,10 +248,10 @@ output = ttnn.projection_to_output(
 
 **Computation**
 For each local expert e in [0, E/D-1):
-1. Read `T_e = num_routed_tokens[e]` (number of tokens for this expert)
+1. Read `T_e = num_routed_tokens[e, 0]` (number of tokens for this expert)
 2. Read `token_indices = routed_tokens[e, :T_e]` (which tokens)
 3. Read `weights = routed_token_weights[e, :T_e]` (routing weights)
-4. Calculate input start: `input_start = sum(num_routed_tokens[0:e])`
+4. Calculate input start: `input_start = sum(num_routed_tokens[0:e, 0])`
 5. For each of the T_e tokens:
    - Read input: `x = combined_activations[input_start + i, :]` (shape: 1 × H')
    - Compute: `y = x @ down_proj_weights[e, :, :]` (shape: 1 × H)
