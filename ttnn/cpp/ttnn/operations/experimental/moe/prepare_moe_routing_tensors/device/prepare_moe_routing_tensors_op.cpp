@@ -96,7 +96,13 @@ std::vector<TensorSpec> PrepareMoeRoutingTensors::compute_output_specs(
         routed_weights_shape,
         TensorLayout(DataType::BFLOAT16, PageConfig(Layout::ROW_MAJOR), output_mem_config));
 
-    return {num_routed_spec, routed_tokens_spec, routed_weights_spec};
+    // Output 4: tokenidx_expertlocal_to_global (E/D, max_tokens) uint32 2D tensor - local to global token index mapping
+    ttnn::Shape tokenidx_map_shape({num_local_experts, max_tokens_per_expert});
+    auto tokenidx_map_spec = TensorSpec(
+        tokenidx_map_shape,
+        TensorLayout(DataType::UINT32, PageConfig(Layout::ROW_MAJOR), output_mem_config));
+
+    return {num_routed_spec, routed_tokens_spec, routed_weights_spec, tokenidx_map_spec};
 }
 
 std::vector<Tensor> PrepareMoeRoutingTensors::create_output_tensors(
@@ -110,6 +116,7 @@ std::vector<Tensor> PrepareMoeRoutingTensors::create_output_tensors(
         create_device_tensor(output_specs[0], input_tensor.device()),
         create_device_tensor(output_specs[1], input_tensor.device()),
         create_device_tensor(output_specs[2], input_tensor.device()),
+        create_device_tensor(output_specs[3], input_tensor.device()),
     };
 }
 
@@ -122,6 +129,7 @@ tt::tt_metal::operation::ProgramWithCallbacks PrepareMoeRoutingTensors::create_p
     auto& num_routed_tokens = output_tensors.at(0);
     auto& routed_tokens = output_tensors.at(1);
     auto& routed_token_weights = output_tensors.at(2);
+    auto& tokenidx_expertlocal_to_global = output_tensors.at(3);
 
     // Extract dimensions from input tensors
     const auto& experts_shape = selected_experts.padded_shape();
@@ -147,6 +155,7 @@ tt::tt_metal::operation::ProgramWithCallbacks PrepareMoeRoutingTensors::create_p
         num_routed_tokens,
         routed_tokens,
         routed_token_weights,
+        tokenidx_expertlocal_to_global,
         num_experts,
         num_local_experts,
         max_tokens_per_expert);
