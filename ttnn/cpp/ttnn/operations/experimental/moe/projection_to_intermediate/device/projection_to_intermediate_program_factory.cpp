@@ -49,8 +49,8 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
     // Buffer sizes (use logical dimensions from runtime args)
     const uint32_t hidden_row_bytes = hidden_dim * sizeof(uint16_t);
     const uint32_t routed_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
-    // NOTE: num_routed_tokens is device-local 1D tensor with shape (experts_per_device,)
-    const uint32_t num_routed_row_bytes = experts_per_device * sizeof(uint32_t);
+    // NOTE: num_routed_tokens is (E/D, 1) with per-element pages - CB only needs space for one element
+    const uint32_t num_routed_element_bytes = sizeof(uint32_t);
     const uint32_t output_row_bytes = expert_dim * sizeof(uint16_t);
     const uint32_t expert_weights_row_bytes = expert_dim * sizeof(uint16_t);
 
@@ -66,8 +66,8 @@ operation::ProgramWithCallbacks projection_to_intermediate_single_core(
     CreateCircularBuffer(program, core, routed_cb_config);
 
     tt_metal::CircularBufferConfig num_routed_cb_config =
-        tt_metal::CircularBufferConfig(num_routed_row_bytes, {{cb_num_routed_row, num_routed_data_format}})
-            .set_page_size(cb_num_routed_row, num_routed_row_bytes);
+        tt_metal::CircularBufferConfig(num_routed_element_bytes, {{cb_num_routed_row, num_routed_data_format}})
+            .set_page_size(cb_num_routed_row, num_routed_element_bytes);
     CreateCircularBuffer(program, core, num_routed_cb_config);
 
     tt_metal::CircularBufferConfig output_cb_config =

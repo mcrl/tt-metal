@@ -60,8 +60,8 @@ void kernel_main() {
 
     const auto hidden_accessor = TensorAccessor(hidden_accessor_args, hidden_states_addr, hidden_dim * sizeof(uint16_t));
     const auto routed_accessor = TensorAccessor(routed_accessor_args, routed_tokens_addr, max_tokens_per_expert * sizeof(uint32_t));
-    // num_routed_tokens tensor shape is (E/D, 1) but read as 1D array - page_size is the entire array
-    const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, experts_per_device * sizeof(uint32_t));
+    // num_routed_tokens tensor shape is (E/D, 1) with per-element pages - page_size is sizeof(uint32_t)
+    const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, sizeof(uint32_t));
     const auto weights_accessor = TensorAccessor(weights_accessor_args, expert_weights_addr, expert_dim * sizeof(uint16_t));
     const auto output_accessor = TensorAccessor(output_accessor_args, output_addr, expert_dim * sizeof(uint16_t));
 
@@ -78,13 +78,6 @@ void kernel_main() {
     uint32_t l1_weights_addr = get_write_ptr(cb_expert_weights);
     uint32_t l1_output_addr = get_write_ptr(cb_output_row);
 
-    // Read the entire num_routed_tokens array (shape: E/D, 1; read as E/D elements)
-    // TensorAccessor page_size is the entire array size
-    // Use get_noc_addr(0, accessor) to get the NOC address of the first (and only) "page"
-    uint64_t num_routed_noc_addr = get_noc_addr(0, num_routed_accessor);
-    noc_async_read(num_routed_noc_addr, l1_num_routed_addr, experts_per_device * sizeof(uint32_t));
-    noc_async_read_barrier();
-
     volatile uint32_t* num_routed_local = reinterpret_cast<volatile uint32_t*>(l1_num_routed_addr);
 
     // Track write position in output
@@ -92,8 +85,12 @@ void kernel_main() {
 
     // Process each local expert
     for (uint32_t local_expert_idx = 0; local_expert_idx < experts_per_device; local_expert_idx++) {
-        // Get token count for this expert (using LOCAL index into device-local routing tensors)
-        uint32_t token_count = num_routed_local[local_expert_idx];
+        // Get token count for this expert (Per-element page access)
+        uint64_t num_routed_noc_addr = get_noc_addr(local_expert_idx, num_routed_accessor);
+        noc_async_read(num_routed_noc_addr, l1_num_routed_addr, sizeof(uint32_t));
+        noc_async_read_barrier();
+
+        uint32_t token_count = num_routed_local[0];
 
         if (token_count == 0) {
             continue;
