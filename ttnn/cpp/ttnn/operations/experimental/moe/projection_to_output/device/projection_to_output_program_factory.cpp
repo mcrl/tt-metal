@@ -17,6 +17,7 @@ using namespace tt::tt_metal;
 
 tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
     const Tensor& combined_activations,
+    const Tensor& token_idx_map,
     const Tensor& routed_tokens,
     const Tensor& num_routed_tokens,
     const Tensor& routed_token_weights,
@@ -32,6 +33,7 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
     Program program = CreateProgram();
     IDevice* device = combined_activations.device();
     auto* combined_buffer = combined_activations.buffer();
+    auto* token_idx_map_buffer = token_idx_map.buffer();
     auto* routed_buffer = routed_tokens.buffer();
     auto* num_routed_buffer = num_routed_tokens.buffer();
     auto* routed_weights_buffer = routed_token_weights.buffer();
@@ -45,6 +47,7 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
 
     // Calculate buffer sizes
     uint32_t combined_row_size = expert_dim * sizeof(uint16_t);
+    uint32_t token_idx_map_row_size = max_tokens_per_expert * sizeof(uint32_t);
     uint32_t routed_row_size = max_tokens_per_expert * sizeof(uint32_t);
     // NOTE: num_routed_tokens is (E/D, 1) with per-element pages
     uint32_t num_routed_element_size = sizeof(uint32_t);
@@ -58,24 +61,29 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
         .set_page_size(CBIndex::c_0, combined_row_size);
     CreateCircularBuffer(program, core_range, cb_combined_config);
 
-    CircularBufferConfig cb_routed_config = CircularBufferConfig(
+    CircularBufferConfig cb_token_idx_map_config = CircularBufferConfig(
         routed_row_size, {{CBIndex::c_1, DataFormat::UInt32}})
-        .set_page_size(CBIndex::c_1, routed_row_size);
+        .set_page_size(CBIndex::c_1, token_idx_map_row_size);
+    CreateCircularBuffer(program, core_range, cb_token_idx_map_config);
+
+    CircularBufferConfig cb_routed_config = CircularBufferConfig(
+        routed_row_size, {{CBIndex::c_2, DataFormat::UInt32}})
+        .set_page_size(CBIndex::c_2, routed_row_size);
     CreateCircularBuffer(program, core_range, cb_routed_config);
 
     CircularBufferConfig cb_num_routed_config = CircularBufferConfig(
-        num_routed_element_size, {{CBIndex::c_2, DataFormat::UInt32}})
-        .set_page_size(CBIndex::c_2, num_routed_element_size);
+        num_routed_element_size, {{CBIndex::c_3, DataFormat::UInt32}})
+        .set_page_size(CBIndex::c_3, num_routed_element_size);
     CreateCircularBuffer(program, core_range, cb_num_routed_config);
 
     CircularBufferConfig cb_weights_routing_config = CircularBufferConfig(
-        weights_routing_row_size, {{CBIndex::c_3, DataFormat::Float16_b}})
-        .set_page_size(CBIndex::c_3, weights_routing_row_size);
+        weights_routing_row_size, {{CBIndex::c_4, DataFormat::Float16_b}})
+        .set_page_size(CBIndex::c_4, weights_routing_row_size);
     CreateCircularBuffer(program, core_range, cb_weights_routing_config);
 
     CircularBufferConfig cb_weights_config = CircularBufferConfig(
-        weights_row_size, {{CBIndex::c_4, DataFormat::Float16_b}})
-        .set_page_size(CBIndex::c_4, weights_row_size);
+        weights_row_size, {{CBIndex::c_5, DataFormat::Float16_b}})
+        .set_page_size(CBIndex::c_5, weights_row_size);
     CreateCircularBuffer(program, core_range, cb_weights_config);
 
     CircularBufferConfig cb_output_config = CircularBufferConfig(
@@ -103,6 +111,7 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
 
     // Add tensor accessor args
     TensorAccessorArgs(combined_buffer).append_to(compile_time_args);
+    TensorAccessorArgs(token_idx_map_buffer).append_to(compile_time_args);
     TensorAccessorArgs(routed_buffer).append_to(compile_time_args);
     TensorAccessorArgs(num_routed_buffer).append_to(compile_time_args);
     TensorAccessorArgs(routed_weights_buffer).append_to(compile_time_args);
@@ -124,6 +133,7 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
     // Runtime args
     std::vector<uint32_t> runtime_args = {
         combined_buffer->address(),
+        token_idx_map_buffer->address(),
         routed_buffer->address(),
         num_routed_buffer->address(),
         routed_weights_buffer->address(),
@@ -148,19 +158,21 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
         const std::vector<Tensor>& output_tensors) {
 
         auto combined_buffer = input_tensors[0].buffer();
-        auto routed_buffer = input_tensors[1].buffer();
-        auto num_routed_buffer = input_tensors[2].buffer();
-        auto routed_weights_buffer = input_tensors[3].buffer();
-        auto weights_buffer = input_tensors[4].buffer();
+        auto token_idx_map_buffer = input_tensors[1].buffer();
+        auto routed_buffer = input_tensors[2].buffer();
+        auto num_routed_buffer = input_tensors[3].buffer();
+        auto routed_weights_buffer = input_tensors[4].buffer();
+        auto weights_buffer = input_tensors[5].buffer();
         auto output_buffer = output_tensors[0].buffer();
 
         auto& runtime_args = GetRuntimeArgs(program, kernel, core);
         runtime_args[0] = combined_buffer->address();
-        runtime_args[1] = routed_buffer->address();
-        runtime_args[2] = num_routed_buffer->address();
-        runtime_args[3] = routed_weights_buffer->address();
-        runtime_args[4] = weights_buffer->address();
-        runtime_args[5] = output_buffer->address();
+        runtime_args[1] = token_idx_map_buffer->address();
+        runtime_args[2] = routed_buffer->address();
+        runtime_args[3] = num_routed_buffer->address();
+        runtime_args[4] = routed_weights_buffer->address();
+        runtime_args[5] = weights_buffer->address();
+        runtime_args[6] = output_buffer->address();
     };
 
     return {std::move(program), override_runtime_args_callback};

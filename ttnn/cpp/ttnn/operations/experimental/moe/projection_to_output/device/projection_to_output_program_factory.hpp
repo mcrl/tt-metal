@@ -10,6 +10,7 @@ namespace ttnn::operations::experimental::moe {
 
 tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
     const Tensor& combined_activations,
+    const Tensor& token_idx_map,
     const Tensor& routed_tokens,
     const Tensor& num_routed_tokens,
     const Tensor& routed_token_weights,

@@ -30,7 +30,8 @@ Each expert processes its assigned tokens using device-local routing:
 Routing tensors are device-local from prepare_moe_routing_tensors.
 
 Args:
-    * :attr:`combined_activations`: (T_d, H') bfloat16 tensor - combined gate*up activations from Step 3
+    * :attr:`combined_activations`: (E/D, T, H') bfloat16 tensor - combined gate*up activations from Step 3
+    * :attr:`token_idx_map`: (E/D, max_tokens) uint32 tensor, mapping from expert-local token index to global token index
     * :attr:`routed_tokens`: (E/D, max_tokens) uint32 tensor - device-local token indices, sharded
     * :attr:`num_routed_tokens`: (E/D, 1) uint32 2D tensor - device-local token counts, sharded (access as [e, 0])
     * :attr:`routed_token_weights`: (E/D, max_tokens) bfloat16 tensor - device-local routing weights, sharded
@@ -43,12 +44,13 @@ Keyword Args:
     * :attr:`queue_id`: Command queue ID
 
 Returns:
-    * :attr:`output`: (T, H) bfloat16 tensor - partial MoE output (requires allreduce across devices)
+    * :attr:`output`: (E/D, T, H) bfloat16 tensor - partial MoE output (requires allreduce across devices)
 
 Example:
     >>> # Assuming we have combined activations from Step 3
     >>> output = ttnn.projection_to_output(
     ...     combined_activations,
+    ...     token_idx_map,
     ...     routed_tokens,
     ...     num_routed_tokens,
     ...     routed_token_weights,
@@ -66,6 +68,7 @@ Example:
         ttnn::pybind_overload_t{
             [](const OperationType& self,
                const ttnn::Tensor& combined_activations,
+               const ttnn::Tensor& token_idx_map,
                const ttnn::Tensor& routed_tokens,
                const ttnn::Tensor& num_routed_tokens,
                const ttnn::Tensor& routed_token_weights,
@@ -77,6 +80,7 @@ Example:
                 return self(
                     queue_id,
                     combined_activations,
+                    token_idx_map,
                     routed_tokens,
                     num_routed_tokens,
                     routed_token_weights,
@@ -87,6 +91,7 @@ Example:
                 );
             },
             py::arg("combined_activations").noconvert(),
+            py::arg("token_idx_map").noconvert(),
             py::arg("routed_tokens").noconvert(),
             py::arg("num_routed_tokens").noconvert(),
             py::arg("routed_token_weights").noconvert(),

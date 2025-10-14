@@ -342,7 +342,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         # Step 1: Prepare routing tensors with device-expert mapping
         with Profiler().trace_with_timer("prepare-routing-tensors", level=4):
-            num_routed, routed_tokens, routed_weights = ttnn.prepare_moe_routing_tensors(
+            num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
                 selected_experts, routing_weights, device_expert_mapping, self.num_experts
             )
 
@@ -405,6 +405,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             num_tokens = batch_size * sequence_length
             moe_output = ttnn.projection_to_output(
                 combined_activations,
+                token_idx_map,
                 routed_tokens,
                 num_routed,
                 routed_weights,
@@ -412,6 +413,11 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 num_tokens,
                 self.top_k
             )
+        
+        # Step 5: Local Reduce
+        with Profiler().trace_with_timer("sum", level=4):
+            moe_output = ttnn.to_layout(moe_output, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            moe_output = ttnn.sum(moe_output, 0)
 
         # Step 5: Allreduce across devices (sum partial outputs from all devices)
         with Profiler().trace_with_timer("allreduce", level=4):
