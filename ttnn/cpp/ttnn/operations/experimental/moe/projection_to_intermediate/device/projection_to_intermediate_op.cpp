@@ -72,13 +72,13 @@ std::vector<TensorSpec> ProjectionToIntermediate::compute_output_specs(
     const auto& hidden_shape = hidden_states.padded_shape();
     const auto& weights_shape = expert_weights.padded_shape();
 
+    const uint32_t num_local_experts = weights_shape[0];
     const uint32_t num_tokens = hidden_shape[0];
     const uint32_t expert_dim = weights_shape[2];
 
-    // Output shape: (output_size, expert_dim)
-    // output_size is K*T (conservative upper bound)
-    const uint32_t output_size = top_k * num_tokens;
-    ttnn::Shape output_shape({output_size, expert_dim});
+    // Output shape: (num_local_experts, max_tokens, expert hidden size)
+    // output_size is (E/D, T, H) (conservative upper bound)
+    ttnn::Shape output_shape({num_local_experts, num_tokens, expert_dim});
 
     auto output_spec = TensorSpec(
         output_shape,

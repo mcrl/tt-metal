@@ -30,23 +30,22 @@ def reference_projection_to_intermediate(
         top_k: number of experts per token (K)
 
     Returns:
-        output: (T * K, H') projection outputs (sparse, padded)
+        output: (E/D, T, H') projection outputs (sparse, padded)
     """
     T, H = hidden_states.shape
     experts_per_device, _, H_prime = expert_weights.shape
 
     # Calculate maximum possible output size
     # According to plan: Pre-allocated size is K * T (conservative upper bound for all token-expert pairs)
-    max_output_size = top_k * T
+    max_output_size = T
 
     # Pre-allocate output tensor
-    output = torch.zeros(max_output_size, H_prime, dtype=torch.bfloat16)
-
-    # Track write position
-    write_pos = 0
+    output = torch.zeros(experts_per_device, max_output_size, H_prime, dtype=torch.bfloat16)
 
     # Process experts assigned to this device (expert parallelism)
     for local_expert_idx in range(experts_per_device):
+        write_pos = 0
+
         # Use device-expert mapping to get global expert index
         global_expert_idx = device_expert_mapping[local_expert_idx].item()
         count = num_routed_tokens[global_expert_idx].item()
@@ -70,8 +69,7 @@ def reference_projection_to_intermediate(
         expert_output = expert_inputs @ weights  # (T_e, H')
 
         # Write to output tensor
-        output[write_pos:write_pos + count] = expert_output
-        write_pos += count
+        output[local_expert_idx, write_pos:write_pos + count] = expert_output
 
     # Return full pre-allocated output tensor
     # The actual valid data is in output[:write_pos], rest is zero-padded
@@ -166,7 +164,7 @@ def test_projection_to_intermediate(mesh_device, config):
     )
 
     # Get routed tokens tensor (now device-local, sharded by experts)
-    num_routed, routed_tokens, routed_weights = ttnn.prepare_moe_routing_tensors(
+    num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping_tt, num_experts
     )
 
@@ -224,7 +222,7 @@ def test_projection_to_intermediate(mesh_device, config):
     expert_weights_readback = ttnn.to_torch(expert_weights_tt, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
 
     # Calculate output size per device
-    max_output_size = top_k * num_tokens
+    max_output_size = num_tokens
 
     # Verify all device outputs
     for device_id in range(num_devices):
@@ -240,44 +238,41 @@ def test_projection_to_intermediate(mesh_device, config):
             device_expert_mapping,
             top_k,
         )
+        start_idx = device_id * experts_per_device
+        end_idx = (device_id + 1) * experts_per_device
 
-        # Extract this device's output
-        start_idx = device_id * max_output_size
-        end_idx = (device_id + 1) * max_output_size
         device_output = output_torch[start_idx:end_idx]
-        device_output_valid = device_output[:actual_output_size]
-        ref_output_valid = ref_output[:actual_output_size]
+        device_output_valid = device_output
+        ref_output_valid = ref_output
+
+        print(device_output, ref_output)
 
         # Debug output
         print(f"\nDevice {device_id} debug:")
         print(f"  device_expert_mapping: {device_expert_mapping.tolist()}")
-        print(f"  actual_output_size: {actual_output_size}")
 
-        if actual_output_size > 0:
-            # Compare with reference
-            diff = (device_output_valid - ref_output_valid).abs()
-            max_diff = diff.max()
-            mean_diff = diff.mean()
-            relative_error = (diff / (ref_output_valid.abs() + 1e-6)).mean() * 100
+        # Compare with reference
+        diff = (device_output_valid - ref_output_valid).abs()
+        max_diff = diff.max()
+        mean_diff = diff.mean()
+        relative_error = (diff / (ref_output_valid.abs() + 1e-6)).mean() * 100
 
-            print(f"  ref_output shape: {ref_output_valid.shape}")
-            print(f"  device_output shape: {device_output_valid.shape}")
-            print(f"  max_diff: {max_diff:.4f}")
-            print(f"  mean_diff: {mean_diff:.4f}")
-            print(f"  relative_error: {relative_error:.2f}%")
-            print(f"  ref_output[0][:10]: {ref_output_valid[0][:10]}")
-            print(f"  device_output[0][:10]: {device_output_valid[0][:10]}")
+        print(f"  ref_output shape: {ref_output_valid.shape}")
+        print(f"  device_output shape: {device_output_valid.shape}")
+        print(f"  max_diff: {max_diff:.4f}")
+        print(f"  mean_diff: {mean_diff:.4f}")
+        print(f"  relative_error: {relative_error:.2f}%")
+        print(f"  ref_output[0][:10]: {ref_output_valid[0][:10]}")
+        print(f"  device_output[0][:10]: {device_output_valid[0][:10]}")
 
-            # Tolerance based on observed precision with FP32 accumulation in kernel
-            # Our kernel uses FP32 accumulation then converts to bfloat16 at the end
-            # Typical precision: max_diff ≤0.5, relative_error ≤1%
-            assert torch.allclose(device_output_valid, ref_output_valid, atol=0.5, rtol=0.01), \
-                f"Output mismatch for device {device_id}:\n" \
-                f"Max diff: {max_diff:.4f}, Mean diff: {mean_diff:.4f}\n" \
-                f"Relative error: {relative_error:.2f}%\n" \
-                f"Expected shape: {ref_output_valid.shape}, Got shape: {device_output_valid.shape}"
-        else:
-            print(f"  No output for this device (no tokens routed to assigned experts)")
+        # Tolerance based on observed precision with FP32 accumulation in kernel
+        # Our kernel uses FP32 accumulation then converts to bfloat16 at the end
+        # Typical precision: max_diff ≤0.5, relative_error ≤1%
+        assert torch.allclose(device_output_valid, ref_output_valid, atol=0.5, rtol=0.01), \
+            f"Output mismatch for device {device_id}:\n" \
+            f"Max diff: {max_diff:.4f}, Mean diff: {mean_diff:.4f}\n" \
+            f"Relative error: {relative_error:.2f}%\n" \
+            f"Expected shape: {ref_output_valid.shape}, Got shape: {device_output_valid.shape}"
 
         print(f"✓ Device {device_id} output validated: output_size={actual_output_size}")
 
