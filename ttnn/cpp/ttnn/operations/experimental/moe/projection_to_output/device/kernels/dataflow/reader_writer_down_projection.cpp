@@ -150,11 +150,11 @@ void kernel_main() {
         // Process each token for this expert
         for (uint32_t token_idx = 0; token_idx < token_count; token_idx++) {
             // Read combined activation row sequentially
-            uint64_t combined_noc_addr = get_noc_addr(local_expert_idx * token_count + token_idx, combined_accessor);
+            uint64_t combined_noc_addr = get_noc_addr(local_expert_idx * num_tokens + token_idx, combined_accessor);
             noc_async_read(combined_noc_addr, l1_combined_addr, expert_dim * sizeof(uint16_t));
             noc_async_read_barrier();
 
-            DPRINT << "MOE: combined access=" << local_expert_idx * token_count + token_idx << ENDL();
+            DPRINT << "MOE: combined access=" << local_expert_idx * num_tokens + token_idx << ENDL();
 
             volatile uint16_t* activation = reinterpret_cast<volatile uint16_t*>(l1_combined_addr);
 
@@ -167,7 +167,7 @@ void kernel_main() {
             float routing_weight = bfloat16_to_float(routing_weights[token_idx]);
 
             // Read current output value for accumulation (read-modify-write pattern)
-            uint64_t output_noc_addr = get_noc_addr(local_expert_idx * token_count + output_token_idx, output_accessor);
+            uint64_t output_noc_addr = get_noc_addr(local_expert_idx * num_tokens + output_token_idx, output_accessor);
             noc_async_read(output_noc_addr, l1_output_addr, hidden_dim * sizeof(uint16_t));
             noc_async_read_barrier();
 
