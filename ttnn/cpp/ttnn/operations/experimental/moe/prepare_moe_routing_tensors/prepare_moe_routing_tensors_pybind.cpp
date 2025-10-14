@@ -14,7 +14,7 @@ namespace py = pybind11;
 
 void bind_prepare_moe_routing_tensors(py::module& module) {
     const auto doc = R"doc(
-prepare_moe_routing_tensors(selected_experts: ttnn.Tensor, routing_weights: ttnn.Tensor, device_expert_mapping: ttnn.Tensor, num_experts: int, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> Tuple[ttnn.Tensor, ttnn.Tensor, ttnn.Tensor]
+prepare_moe_routing_tensors(selected_experts: ttnn.Tensor, routing_weights: ttnn.Tensor, device_expert_mapping: ttnn.Tensor, num_experts: int, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> Tuple[ttnn.Tensor, ttnn.Tensor, ttnn.Tensor, ttnn.Tensor]
 
 Converts sparse MoE expert selection into device-local routing tensors for expert-parallel computation.
 
@@ -32,10 +32,11 @@ Keyword Args:
     * :attr:`queue_id`: Command queue ID (default: 0)
 
 Returns:
-    Tuple of three device-local tensors:
+    Tuple of four device-local tensors:
     * :attr:`num_routed_tokens`: (E/D, 1) uint32 2D tensor - count of tokens routed to each LOCAL expert (uses 2D shape for per-element pages)
     * :attr:`routed_tokens`: (E/D, max_tokens) uint32 2D tensor - token indices for each LOCAL expert (padded)
     * :attr:`routed_token_weights`: (E/D, max_tokens) bfloat16 2D tensor - routing weights for each LOCAL expert (padded)
+    * :attr:`tokenidx_expertlocal_to_global`: (E/D, max_tokens) uint32 2D tensor - mapping from expert-local token index to global token index
 
 Example:
     >>> # T=32 tokens, K=8 top experts, E=128 total experts, D=8 devices
@@ -43,7 +44,7 @@ Example:
     >>> routing_weights = ttnn.from_torch(torch.rand(32, 8, dtype=torch.bfloat16))
     >>> # Device 0 gets experts 0-15
     >>> device_expert_mapping = ttnn.from_torch(torch.arange(0, 16, dtype=torch.int32))
-    >>> num_routed, routed_tokens, routed_weights = ttnn.prepare_moe_routing_tensors(
+    >>> num_routed, routed_tokens, routed_weights, tokenidx_map = ttnn.prepare_moe_routing_tensors(
     ...     selected_experts, routing_weights, device_expert_mapping, num_experts=128
     ... )
 
@@ -52,6 +53,7 @@ Note:
     - Output tensors are device-local (only experts assigned to this device)
     - Invalid token indices are marked as 0xFFFFFFFF
     - Padding weights are set to 0
+    - tokenidx_expertlocal_to_global[e][t_e] = t_g where t_e is the expert-local index (0-based) and t_g is the global token index
 )doc";
 
     using OperationType = decltype(ttnn::prepare_moe_routing_tensors);

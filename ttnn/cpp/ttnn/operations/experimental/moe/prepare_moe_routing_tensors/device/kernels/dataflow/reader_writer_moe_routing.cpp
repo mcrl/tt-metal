@@ -24,6 +24,10 @@
 //   Token indices for each LOCAL expert (padded with invalid values)
 // - routed_token_weights: ROW_MAJOR, bfloat16, shape (num_local_experts, max_tokens_per_expert)
 //   Routing weights for each LOCAL expert (padded with zeros)
+// - tokenidx_expertlocal_to_global: ROW_MAJOR, uint32, shape (num_local_experts, max_tokens_per_expert)
+//   Mapping from expert-local token index to global token index
+//   For expert e, tokenidx_expertlocal_to_global[e][t_e] = t_g
+//   where t_e is the local index (0 to num_routed_tokens[e]-1) and t_g is the global token index
 //
 // Algorithm (per core):
 // 1. Load global expert ID for this core's assigned local expert
@@ -38,12 +42,13 @@ void kernel_main() {
     const uint32_t num_routed_tokens_addr = get_arg_val<uint32_t>(3);
     const uint32_t routed_tokens_addr = get_arg_val<uint32_t>(4);
     const uint32_t routed_token_weights_addr = get_arg_val<uint32_t>(5);
-    const uint32_t num_tokens = get_arg_val<uint32_t>(6);
-    const uint32_t top_k = get_arg_val<uint32_t>(7);
-    const uint32_t num_experts = get_arg_val<uint32_t>(8);
-    const uint32_t num_local_experts = get_arg_val<uint32_t>(9);
-    const uint32_t max_tokens_per_expert = get_arg_val<uint32_t>(10);
-    const uint32_t local_expert_id = get_arg_val<uint32_t>(11);  // NEW: This core's assigned expert
+    const uint32_t tokenidx_expertlocal_to_global_addr = get_arg_val<uint32_t>(6);
+    const uint32_t num_tokens = get_arg_val<uint32_t>(7);
+    const uint32_t top_k = get_arg_val<uint32_t>(8);
+    const uint32_t num_experts = get_arg_val<uint32_t>(9);
+    const uint32_t num_local_experts = get_arg_val<uint32_t>(10);
+    const uint32_t max_tokens_per_expert = get_arg_val<uint32_t>(11);
+    const uint32_t local_expert_id = get_arg_val<uint32_t>(12);  // NEW: This core's assigned expert
 
     // Circular buffer indices
     constexpr uint32_t cb_experts = tt::CBIndex::c_0;
@@ -52,6 +57,7 @@ void kernel_main() {
     constexpr uint32_t cb_num_routed = tt::CBIndex::c_16;
     constexpr uint32_t cb_routed_tokens = tt::CBIndex::c_17;
     constexpr uint32_t cb_routed_weights = tt::CBIndex::c_18;
+    constexpr uint32_t cb_tokenidx_map = tt::CBIndex::c_19;
     constexpr uint32_t cb_scratch = tt::CBIndex::c_24;
 
     // Create tensor accessors for proper DRAM access
@@ -61,6 +67,7 @@ void kernel_main() {
     constexpr auto num_routed_accessor_args = TensorAccessorArgs<mapping_accessor_args.next_compile_time_args_offset()>();
     constexpr auto routed_tokens_accessor_args = TensorAccessorArgs<num_routed_accessor_args.next_compile_time_args_offset()>();
     constexpr auto routed_weights_accessor_args = TensorAccessorArgs<routed_tokens_accessor_args.next_compile_time_args_offset()>();
+    constexpr auto tokenidx_map_accessor_args = TensorAccessorArgs<routed_weights_accessor_args.next_compile_time_args_offset()>();
 
     const auto experts_accessor = TensorAccessor(experts_accessor_args, selected_experts_addr, top_k * sizeof(uint32_t));
     const auto weights_accessor = TensorAccessor(weights_accessor_args, routing_weights_addr, top_k * sizeof(uint16_t));
@@ -68,6 +75,7 @@ void kernel_main() {
     const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, sizeof(uint32_t));  // Per-element page (2D tensor with width=1)
     const auto routed_tokens_accessor = TensorAccessor(routed_tokens_accessor_args, routed_tokens_addr, max_tokens_per_expert * sizeof(uint32_t));
     const auto routed_weights_accessor = TensorAccessor(routed_weights_accessor_args, routed_token_weights_addr, max_tokens_per_expert * sizeof(uint16_t));
+    const auto tokenidx_map_accessor = TensorAccessor(tokenidx_map_accessor_args, tokenidx_expertlocal_to_global_addr, max_tokens_per_expert * sizeof(uint32_t));
 
     // Reserve L1 buffers
     cb_reserve_back(cb_experts, 1);
@@ -139,20 +147,25 @@ void kernel_main() {
     // Write routed_tokens and routed_token_weights for this expert
     cb_reserve_back(cb_routed_tokens, 1);
     cb_reserve_back(cb_routed_weights, 1);
+    cb_reserve_back(cb_tokenidx_map, 1);
     uint32_t l1_routed_tokens_addr = get_write_ptr(cb_routed_tokens);
     uint32_t l1_routed_weights_addr = get_write_ptr(cb_routed_weights);
+    uint32_t l1_tokenidx_map_addr = get_write_ptr(cb_tokenidx_map);
 
     // Prepare routed_tokens row with padding
     uint32_t* routed_tokens_row = reinterpret_cast<uint32_t*>(l1_routed_tokens_addr);
     uint16_t* routed_weights_row = reinterpret_cast<uint16_t*>(l1_routed_weights_addr);
+    uint32_t* tokenidx_map_row = reinterpret_cast<uint32_t*>(l1_tokenidx_map_addr);
 
     for (uint32_t i = 0; i < max_tokens_per_expert; i++) {
         if (i < token_count) {
             routed_tokens_row[i] = scratch_tokens[i];
             routed_weights_row[i] = scratch_weights[i];
+            tokenidx_map_row[i] = scratch_tokens[i];  // The global token index is the same as what we stored in scratch_tokens
         } else {
             routed_tokens_row[i] = 0xFFFFFFFF;  // Invalid token index
             routed_weights_row[i] = 0;          // Zero weight for padding
+            tokenidx_map_row[i] = 0xFFFFFFFF;   // Invalid mapping for padding
         }
     }
 
@@ -163,6 +176,11 @@ void kernel_main() {
     // Write routed_token_weights row to DRAM
     uint64_t routed_weights_noc_addr = get_noc_addr(local_expert_id, routed_weights_accessor);
     noc_async_write(l1_routed_weights_addr, routed_weights_noc_addr, max_tokens_per_expert * sizeof(uint16_t));
+
+    // Write tokenidx_expertlocal_to_global row to DRAM
+    uint64_t tokenidx_map_noc_addr = get_noc_addr(local_expert_id, tokenidx_map_accessor);
+    noc_async_write(l1_tokenidx_map_addr, tokenidx_map_noc_addr, max_tokens_per_expert * sizeof(uint32_t));
+
     noc_async_write_barrier();
 
     // Release circular buffers
@@ -172,5 +190,6 @@ void kernel_main() {
     cb_push_back(cb_num_routed, 1);
     cb_push_back(cb_routed_tokens, 1);
     cb_push_back(cb_routed_weights, 1);
+    cb_push_back(cb_tokenidx_map, 1);
     cb_push_back(cb_scratch, 1);
 }

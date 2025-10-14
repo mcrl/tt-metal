@@ -15,6 +15,7 @@ tt::tt_metal::operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_
     Tensor& num_routed_tokens,
     Tensor& routed_tokens,
     Tensor& routed_token_weights,
+    Tensor& tokenidx_expertlocal_to_global,
     uint32_t num_experts,
     uint32_t num_local_experts,
     uint32_t max_tokens_per_expert);
