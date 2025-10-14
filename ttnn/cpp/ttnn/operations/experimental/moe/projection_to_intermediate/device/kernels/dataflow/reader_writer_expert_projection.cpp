@@ -85,16 +85,14 @@ void kernel_main() {
 
     // Process each local expert
     for (uint32_t local_expert_idx = 0; local_expert_idx < experts_per_device; local_expert_idx++) {
+        write_pos = 0;
+
         // Get token count for this expert (Per-element page access)
         uint64_t num_routed_noc_addr = get_noc_addr(local_expert_idx, num_routed_accessor);
         noc_async_read(num_routed_noc_addr, l1_num_routed_addr, sizeof(uint32_t));
         noc_async_read_barrier();
 
         uint32_t token_count = num_routed_local[0];
-
-        if (token_count == 0) {
-            continue;
-        }
 
         // Debug: Print what we're processing (will appear in device logs)
         DPRINT << "MOE: local_expert=" << local_expert_idx
@@ -111,20 +109,7 @@ void kernel_main() {
         volatile uint16_t* output_row = reinterpret_cast<volatile uint16_t*>(l1_output_addr);
 
         // Process each token assigned to this expert
-        for (uint32_t t = 0; t < token_count; t++) {
-            uint32_t token_idx = token_indices[t];
-
-            // Debug: verify token index is valid
-            if (token_idx >= num_tokens) {
-                DPRINT << "ERROR: Invalid token_idx=" << token_idx << " >= num_tokens=" << num_tokens << ENDL();
-            }
-            DPRINT << "  Processing token " << token_idx << ENDL();
-
-            // Read token's hidden state
-            uint64_t hidden_noc_addr = get_noc_addr(token_idx, hidden_accessor);
-            noc_async_read(hidden_noc_addr, l1_hidden_addr, hidden_dim * sizeof(uint16_t));
-            noc_async_read_barrier();
-
+        for (uint32_t t = 0; t < num_tokens; t++) {
             // Use L1 memory for FP32 accumulators (reuse buffer space after weights)
             float* accumulator = reinterpret_cast<float*>(l1_weights_addr + expert_dim * sizeof(uint16_t));
 
@@ -133,20 +118,35 @@ void kernel_main() {
                 accumulator[j] = 0.0f;
             }
 
-            // Compute matmul: output[j] = sum_k(hidden[k] * weight[k][j])
-            for (uint32_t k = 0; k < hidden_dim; k++) {
-                // Read weight row k for this expert
-                uint32_t weight_row_idx = local_expert_idx * hidden_dim + k;
-                uint64_t weights_noc_addr = get_noc_addr(weight_row_idx, weights_accessor);
-                noc_async_read(weights_noc_addr, l1_weights_addr, expert_dim * sizeof(uint16_t));
+            if (t < token_count){
+                uint32_t token_idx = token_indices[t];
+
+                // Debug: verify token index is valid
+                if (token_idx >= num_tokens) {
+                    DPRINT << "ERROR: Invalid token_idx=" << token_idx << " >= num_tokens=" << num_tokens << ENDL();
+                }
+                DPRINT << "  Processing token " << token_idx << ENDL();
+                
+                // Read token's hidden state
+                uint64_t hidden_noc_addr = get_noc_addr(token_idx, hidden_accessor);
+                noc_async_read(hidden_noc_addr, l1_hidden_addr, hidden_dim * sizeof(uint16_t));
                 noc_async_read_barrier();
 
-                float a_float = bfloat16_to_float(hidden_row[k]);
+                // Compute matmul: output[j] = sum_k(hidden[k] * weight[k][j])
+                for (uint32_t k = 0; k < hidden_dim; k++) {
+                    // Read weight row k for this expert
+                    uint32_t weight_row_idx = local_expert_idx * hidden_dim + k;
+                    uint64_t weights_noc_addr = get_noc_addr(weight_row_idx, weights_accessor);
+                    noc_async_read(weights_noc_addr, l1_weights_addr, expert_dim * sizeof(uint16_t));
+                    noc_async_read_barrier();
 
-                // Accumulate in FP32
-                for (uint32_t j = 0; j < expert_dim; j++) {
-                    float b_float = bfloat16_to_float(expert_weights_row[j]);
-                    accumulator[j] += a_float * b_float;
+                    float a_float = bfloat16_to_float(hidden_row[k]);
+
+                    // Accumulate in FP32
+                    for (uint32_t j = 0; j < expert_dim; j++) {
+                        float b_float = bfloat16_to_float(expert_weights_row[j]);
+                        accumulator[j] += a_float * b_float;
+                    }
                 }
             }
 
@@ -156,7 +156,7 @@ void kernel_main() {
             }
 
             // Write output row
-            uint64_t output_noc_addr = get_noc_addr(write_pos, output_accessor);
+            uint64_t output_noc_addr = get_noc_addr(local_expert_idx * num_tokens + write_pos, output_accessor);
             noc_async_write(l1_output_addr, output_noc_addr, expert_dim * sizeof(uint16_t));
             noc_async_write_barrier();
             write_pos++;
