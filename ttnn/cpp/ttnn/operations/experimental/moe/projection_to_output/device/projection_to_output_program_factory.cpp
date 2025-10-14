@@ -46,7 +46,8 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
     // Calculate buffer sizes
     uint32_t combined_row_size = expert_dim * sizeof(uint16_t);
     uint32_t routed_row_size = max_tokens_per_expert * sizeof(uint32_t);
-    uint32_t num_routed_size = experts_per_device * sizeof(uint32_t);  // Device-local 1D array size
+    // NOTE: num_routed_tokens is (E/D, 1) with per-element pages
+    uint32_t num_routed_element_size = sizeof(uint32_t);
     uint32_t weights_routing_row_size = max_tokens_per_expert * sizeof(uint16_t);
     uint32_t weights_row_size = hidden_dim * sizeof(uint16_t);
     uint32_t output_row_size = hidden_dim * sizeof(uint16_t);
@@ -63,8 +64,8 @@ tt::tt_metal::operation::ProgramWithCallbacks projection_to_output_single_core(
     CreateCircularBuffer(program, core_range, cb_routed_config);
 
     CircularBufferConfig cb_num_routed_config = CircularBufferConfig(
-        num_routed_size, {{CBIndex::c_2, DataFormat::UInt32}})
-        .set_page_size(CBIndex::c_2, num_routed_size);
+        num_routed_element_size, {{CBIndex::c_2, DataFormat::UInt32}})
+        .set_page_size(CBIndex::c_2, num_routed_element_size);
     CreateCircularBuffer(program, core_range, cb_num_routed_config);
 
     CircularBufferConfig cb_weights_routing_config = CircularBufferConfig(
