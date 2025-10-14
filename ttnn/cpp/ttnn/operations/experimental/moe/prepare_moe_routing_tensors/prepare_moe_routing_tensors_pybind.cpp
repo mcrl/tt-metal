@@ -36,7 +36,7 @@ Returns:
     * :attr:`num_routed_tokens`: (E/D, 1) uint32 2D tensor - count of tokens routed to each LOCAL expert (uses 2D shape for per-element pages)
     * :attr:`routed_tokens`: (E/D, max_tokens) uint32 2D tensor - token indices for each LOCAL expert (padded)
     * :attr:`routed_token_weights`: (E/D, max_tokens) bfloat16 2D tensor - routing weights for each LOCAL expert (padded)
-    * :attr:`tokenidx_expertlocal_to_global`: (E/D, max_tokens) uint32 2D tensor - mapping from expert-local token index to global token index
+    * :attr:`token_idx_map`: (E/D, max_tokens) uint32 2D tensor - mapping from expert-local token index to global token index
 
 Example:
     >>> # T=32 tokens, K=8 top experts, E=128 total experts, D=8 devices
@@ -53,7 +53,7 @@ Note:
     - Output tensors are device-local (only experts assigned to this device)
     - Invalid token indices are marked as 0xFFFFFFFF
     - Padding weights are set to 0
-    - tokenidx_expertlocal_to_global[e][t_e] = t_g where t_e is the expert-local index (0-based) and t_g is the global token index
+    - token_idx_map[e][t_e] = t_g where t_e is the expert-local index (0-based) and t_g is the global token index
 )doc";
 
     using OperationType = decltype(ttnn::prepare_moe_routing_tensors);

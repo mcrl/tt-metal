@@ -15,8 +15,10 @@
 //   Each expert processes its assigned tokens and accumulates weighted results to final output.
 //
 // INPUTS:
-//   - combined_activations: (T_d, H') bfloat16 tensor, ROW_MAJOR layout
+//   - combined_activations: (E/D, T, H') bfloat16 tensor, ROW_MAJOR layout
 //     Contains combined gate*up activations for all token-expert pairs on device
+//   - token_idx_map: (E/D, max_tokens) uint32 tensor, ROW_MAJOR layout, 
+//     mapping from expert-local token index to global token index
 //   - routed_tokens: (E/D, max_tokens) uint32 tensor, ROW_MAJOR layout, sharded (device-local)
 //   - num_routed_tokens: (E/D, 1) uint32 2D tensor, ROW_MAJOR layout, sharded (device-local)
 //                        Access as num_routed_tokens[e, 0] for local expert e
@@ -24,7 +26,7 @@
 //   - down_proj_weights: (E/D, H', H) bfloat16 tensor, ROW_MAJOR layout, sharded across devices
 //
 // OUTPUTS:
-//   - output: (T, H) bfloat16 tensor - partial MoE output (requires allreduce)
+//   - output: (E/D, T, H) bfloat16 tensor - partial MoE output (requires allreduce)
 //
 // COMPUTATION:
 //   For each local expert (0 to E/D-1):
@@ -48,6 +50,7 @@ struct ProjectionToOutputOperation {
     static ttnn::Tensor invoke(
         QueueId queue_id,
         const Tensor& combined_activations,
+        const Tensor& token_idx_map,
         const Tensor& routed_tokens,
         const Tensor& num_routed_tokens,
         const Tensor& routed_token_weights,

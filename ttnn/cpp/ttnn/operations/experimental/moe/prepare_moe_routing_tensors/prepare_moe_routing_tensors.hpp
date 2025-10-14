@@ -26,7 +26,7 @@
 //                        Uses 2D shape for per-element pages, enabling safe multi-core writes
 //   - routed_tokens: (E/D, max_tokens) uint32 2D tensor - token indices for each local expert (padded)
 //   - routed_token_weights: (E/D, max_tokens) bfloat16 2D tensor - routing weights for each local expert (padded)
-//   - tokenidx_expertlocal_to_global: (E/D, max_tokens) uint32 2D tensor - mapping from expert-local token index to global token index
+//   - token_idx_map: (E/D, max_tokens) uint32 2D tensor - mapping from expert-local token index to global token index
 //
 // NOTES:
 //   - Each token selects top_k unique experts (no duplicates)
@@ -34,7 +34,7 @@
 //   - routed_tokens and routed_token_weights shape: (E/D, T) where max_tokens = T
 //   - Padded with sentinel values: tokens=0xFFFFFFFF, weights=0.0
 //   - max_tokens = T (maximum tokens that can be routed to any single expert)
-//   - tokenidx_expertlocal_to_global[e][t_e] = t_g where t_e is the expert-local index (0-based within expert)
+//   - token_idx_map[e][t_e] = t_g where t_e is the expert-local index (0-based within expert)
 //     and t_g is the global token index in the original batch
 
 namespace ttnn {

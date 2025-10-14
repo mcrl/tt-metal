@@ -10,6 +10,7 @@ namespace ttnn::operations::experimental {
 ttnn::Tensor ProjectionToOutputOperation::invoke(
     QueueId queue_id,
     const Tensor& combined_activations,
+    const Tensor& token_idx_map,
     const Tensor& routed_tokens,
     const Tensor& num_routed_tokens,
     const Tensor& routed_token_weights,
@@ -26,8 +27,8 @@ ttnn::Tensor ProjectionToOutputOperation::invoke(
             .top_k = top_k,
             .output_mem_config = output_mem_config
         },
-        {combined_activations, routed_tokens, num_routed_tokens, routed_token_weights,
-         down_proj_weights},
+        {combined_activations, token_idx_map, routed_tokens, 
+         num_routed_tokens, routed_token_weights, down_proj_weights},
         {},
         {},
         queue_id

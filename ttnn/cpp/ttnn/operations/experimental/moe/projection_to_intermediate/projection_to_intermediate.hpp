@@ -22,7 +22,7 @@
 //   - expert_weights: (E/D, H, H') bfloat16 tensor, ROW_MAJOR layout, sharded across devices
 //
 // OUTPUTS:
-//   - output: (K*T, H') bfloat16 tensor - projection outputs (compacted, padded)
+//   - output: (E/D, T, H') bfloat16 tensor - projection outputs (compacted, padded)
 //
 // COMPUTATION:
 //   For each local expert (0 to E/D-1):

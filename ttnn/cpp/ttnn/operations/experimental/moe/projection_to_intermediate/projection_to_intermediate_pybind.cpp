@@ -38,7 +38,7 @@ Keyword Args:
     * :attr:`queue_id`: Command queue ID
 
 Returns:
-    (K*T, H') bfloat16 tensor containing projection outputs (compacted, zero-padded)
+    (E/D, T, H') bfloat16 tensor containing projection outputs (compacted, zero-padded)
 
 Example:
     >>> # After preparing routing tensors (device-local)

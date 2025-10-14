@@ -21,7 +21,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     Tensor& num_routed_tokens,
     Tensor& routed_tokens,
     Tensor& routed_token_weights,
-    Tensor& tokenidx_expertlocal_to_global,
+    Tensor& token_idx_map,
     uint32_t num_experts,
     uint32_t num_local_experts,
     uint32_t max_tokens_per_expert) {
@@ -124,7 +124,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     TensorAccessorArgs(*num_routed_tokens.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*routed_tokens.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*routed_token_weights.buffer()).append_to(compile_time_args);
-    TensorAccessorArgs(*tokenidx_expertlocal_to_global.buffer()).append_to(compile_time_args);
+    TensorAccessorArgs(*token_idx_map.buffer()).append_to(compile_time_args);
 
     // Create kernel (shared across all cores)
     auto kernel = CreateKernel(
@@ -151,7 +151,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
             num_routed_tokens.buffer()->address(),
             routed_tokens.buffer()->address(),
             routed_token_weights.buffer()->address(),
-            tokenidx_expertlocal_to_global.buffer()->address(),
+            token_idx_map.buffer()->address(),
             num_tokens,
             top_k,
             num_experts,
@@ -175,7 +175,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
         const auto& num_routed_tokens = output_tensors[0];
         const auto& routed_tokens = output_tensors[1];
         const auto& routed_token_weights = output_tensors[2];
-        const auto& tokenidx_expertlocal_to_global = output_tensors[3];
+        const auto& token_idx_map = output_tensors[3];
 
         // Update runtime args for all cores
         for (const auto& core : cores) {
@@ -186,7 +186,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
             runtime_args[3] = num_routed_tokens.buffer()->address();
             runtime_args[4] = routed_tokens.buffer()->address();
             runtime_args[5] = routed_token_weights.buffer()->address();
-            runtime_args[6] = tokenidx_expertlocal_to_global.buffer()->address();
+            runtime_args[6] = token_idx_map.buffer()->address();
         }
     };
 
