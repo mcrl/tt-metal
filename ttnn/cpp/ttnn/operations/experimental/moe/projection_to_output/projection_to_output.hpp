@@ -37,9 +37,9 @@
 //     5. ACCUMULATE (not overwrite) to output tensor at token positions
 //
 // NOTES:
-//   - This is Step 4 of the MoE computation pipeline
+//   - This is Step 3 of the MoE computation pipeline (followed by Step 4: local reduce, Step 5: allreduce)
 //   - Results are accumulated to handle multiple experts per token
-//   - Input activations are already compacted (T_d size, not T*K)
+//   - Input activations are padded per expert (E/D, T, H') with valid data up to num_routed_tokens[e, 0]
 //   - Output is initialized to zeros before accumulation
 //   - Routing tensors are device-local (E/D per device) from prepare_moe_routing_tensors
 

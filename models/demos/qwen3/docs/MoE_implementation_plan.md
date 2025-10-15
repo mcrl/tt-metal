@@ -45,7 +45,7 @@ The device-expert mapping is **only used in `prepare_moe_routing_tensors`** to f
 
 **Python API**
 ```python
-num_routed_tokens, routed_tokens, routed_token_weights = ttnn.prepare_moe_routing_tensors(
+num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
     selected_experts,         # (T, K) uint32 tensor
     routing_weights,          # (T, K) bfloat16 tensor
     device_expert_mapping,    # (E/D,) int32 tensor
@@ -88,6 +88,11 @@ num_routed_tokens, routed_tokens, routed_token_weights = ttnn.prepare_moe_routin
 	- Routing weights for each local expert (padded)
 	- `routed_token_weights[e, k]` = routing weight for k-th token assigned to local expert e
 	- Padded entries are set to `0.0`
+- **token_idx_map**: `(E/D, max_tokens)` uint32 2D tensor
+	- Mapping from expert-local token index to global token index
+	- `token_idx_map[e, k]` = global token index for k-th token assigned to local expert e
+	- For expert e, `token_idx_map[e][t_e] = t_g` where t_e is the local index (0 to num_routed_tokens[e]-1) and t_g is the global token index in the original batch
+	- Used by `projection_to_output` to map expert-local results back to global token positions
 
 **Behavior**
 - Filters global routing information to only include experts assigned to this device
@@ -158,31 +163,35 @@ output = ttnn.projection_to_intermediate(
 	- Number of experts selected per token (K)
 
 **Output**
-- **output**: `(K * T, H')` bfloat16 tensor, ROW_MAJOR layout
-	- Pre-allocated tensor of size K × T rows
-	- Only the first `sum(num_routed_tokens)` rows contain valid data
-	- Remaining rows are zero-padded
-	- Rows are filled sequentially by local expert index
+- **output**: `(E/D, T, H')` bfloat16 tensor, ROW_MAJOR layout
+	- Projection outputs organized by expert
+	- Shape: E/D experts × T tokens × H' intermediate dimensions
+	- Each expert processes its routed tokens and writes to its dedicated slice
+	- Only the first `num_routed_tokens[e, 0]` rows contain valid data for expert e
+	- Remaining rows are zero-padded to maintain uniform tensor shape
+	- Output is compacted per expert: expert e's outputs are at `output[e, 0:num_routed_tokens[e, 0], :]`
 
 **Computation**
 For each local expert e in [0, E/D-1):
 1. Read `T_e = num_routed_tokens[e, 0]` (number of tokens for this expert)
 2. Read `token_indices = routed_tokens[e, :T_e]` (which tokens to process)
-3. For each of the T_e tokens:
-   - Gather input: `x = hidden_states[token_indices[i], :]` (shape: 1 × H)
-   - Compute: `y = x @ expert_weights[e, :, :]` (shape: 1 × H')
-   - Write to output at position: `write_pos = sum(num_routed_tokens[0:e, 0]) + i`
-   - `output[write_pos, :] = y`
+3. For each token position t in [0, T):
+   - If t < T_e:
+     - Gather input: `x = hidden_states[token_indices[t], :]` (shape: 1 × H)
+     - Compute: `y = x @ expert_weights[e, :, :]` (shape: 1 × H')
+     - Write to output at position: `output[e, t, :] = y`
+   - Else:
+     - Write zero padding: `output[e, t, :] = 0`
 
 **Memory Layout**
-- Output rows are organized by local expert:
+- Output rows are organized by expert with padding:
   ```
-  [expert_0_token_0, expert_0_token_1, ..., expert_0_token_{T0-1},
-   expert_1_token_0, expert_1_token_1, ..., expert_1_token_{T1-1},
+  [expert_0: [token_0, token_1, ..., token_{T0-1}, <padding to T>],
+   expert_1: [token_0, token_1, ..., token_{T1-1}, <padding to T>],
    ...,
-   expert_{E/D-1}_token_0, ..., expert_{E/D-1}_token_{T-1},
-   <zero padding>]
+   expert_{E/D-1}: [token_0, ..., token_{T-1}, <padding to T>]]
   ```
+- Each expert's slice has T rows, but only the first `num_routed_tokens[e, 0]` contain valid data
 
 **Usage**
 - Used for both `gate_proj` and `up_proj` in MoE layers
@@ -201,7 +210,8 @@ For each local expert e in [0, E/D-1):
 **Python API**
 ```python
 output = ttnn.projection_to_output(
-    combined_activations,     # (T_d, H') bfloat16 tensor - replicated
+    combined_activations,     # (E/D, T, H') bfloat16 tensor - sharded
+    token_idx_map,            # (E/D, max_tokens) uint32 tensor - sharded
     routed_tokens,            # (E/D, max_tokens) uint32 tensor - sharded
     num_routed_tokens,        # (E/D, 1) uint32 tensor - sharded
     routed_token_weights,     # (E/D, max_tokens) bfloat16 tensor - sharded
@@ -215,11 +225,18 @@ output = ttnn.projection_to_output(
 ```
 
 **Input**
-- **combined_activations**: `(T_d, H')` bfloat16 tensor, ROW_MAJOR layout
+- **combined_activations**: `(E/D, T, H')` bfloat16 tensor, ROW_MAJOR layout
 	- Combined gate × up activations from previous MoE layer
-	- `T_d = sum(num_routed_tokens)` across all local experts on this device
-	- Only the first T_d rows contain valid data (compacted format)
-	- Typically replicated across devices (but could be distributed)
+	- Shape: E/D experts × T tokens × H' intermediate dimensions
+	- Each expert's slice contains outputs for its routed tokens (padded to T)
+	- Only the first `num_routed_tokens[e, 0]` rows contain valid data for expert e
+	- Sharded across devices (each device has different E/D experts)
+- **token_idx_map**: `(E/D, max_tokens)` uint32 tensor, ROW_MAJOR layout
+	- Mapping from expert-local token index to global token index
+	- Device-local mapping from `prepare_moe_routing_tensors`
+	- `token_idx_map[e, k]` = global token index for k-th token assigned to local expert e
+	- Used to write expert outputs to correct positions in global output tensor
+	- Sharded across devices
 - **routed_tokens**: `(E/D, max_tokens)` uint32 tensor, ROW_MAJOR layout
 	- Device-local token indices from `prepare_moe_routing_tensors`
 	- Sharded across devices
@@ -241,37 +258,47 @@ output = ttnn.projection_to_output(
 	- Number of experts per token (K)
 
 **Output**
-- **output**: `(T, H)` bfloat16 tensor, ROW_MAJOR layout
-	- Final MoE output for all tokens
+- **output**: `(E/D, T, H)` bfloat16 tensor, ROW_MAJOR layout
+	- Partial MoE output for all tokens
+	- Shape: E/D experts × T tokens × H hidden dimensions
 	- Initialized to zeros, then accumulated
-	- Each device produces partial results that need **allreduce** across devices
+	- Each device produces partial results for its E/D experts
+	- Requires **allreduce** across devices to get complete result
+	- Each expert e writes to positions determined by `token_idx_map[e, :]`
 
 **Computation**
 For each local expert e in [0, E/D-1):
 1. Read `T_e = num_routed_tokens[e, 0]` (number of tokens for this expert)
-2. Read `token_indices = routed_tokens[e, :T_e]` (which tokens)
+2. Read `token_indices = token_idx_map[e, :T_e]` (global token indices)
 3. Read `weights = routed_token_weights[e, :T_e]` (routing weights)
-4. Calculate input start: `input_start = sum(num_routed_tokens[0:e, 0])`
-5. For each of the T_e tokens:
-   - Read input: `x = combined_activations[input_start + i, :]` (shape: 1 × H')
-   - Compute: `y = x @ down_proj_weights[e, :, :]` (shape: 1 × H)
-   - Apply routing weight: `y_weighted = y * weights[i]`
-   - **Accumulate** (not overwrite): `output[token_indices[i], :] += y_weighted`
+4. For each token position t in [0, T):
+   - If t < T_e:
+     - Read input: `x = combined_activations[e, t, :]` (shape: 1 × H')
+     - Compute: `y = x @ down_proj_weights[e, :, :]` (shape: 1 × H)
+     - Apply routing weight: `y_weighted = y * weights[t]`
+     - Get global token index: `global_idx = token_indices[t]`
+     - **Accumulate** (not overwrite): `output[e, global_idx, :] += y_weighted`
+   - Else: skip (padding position)
 
 **Key Behavior**
 - **Accumulation**: Each token receives contributions from multiple experts (up to K)
 - **Partial results**: Each device computes partial sums for its assigned experts
-- **Requires allreduce**: Final step (Step 5) sums outputs across all devices to get complete result
+- **Local reduce**: After expert computation, sum across expert dimension to reduce (E/D, T, H) → (T, H)
+- **Requires allreduce**: Final step sums local outputs across all devices to get complete result
 - **Single-core**: Current implementation uses single core (no atomic operations needed)
 
 **Multi-Device Flow**
 ```
-Device 0: Processes experts [0, 1, ..., E/D-1]     → partial_output_0
-Device 1: Processes experts [E/D, E/D+1, ..., 2E/D-1] → partial_output_1
+Device 0: Processes experts [0, 1, ..., E/D-1]     → partial_output_0 (E/D, T, H)
+                                                    → local_sum → (T, H)
+Device 1: Processes experts [E/D, E/D+1, ..., 2E/D-1] → partial_output_1 (E/D, T, H)
+                                                      → local_sum → (T, H)
 ...
-Device D-1: Processes experts [E-E/D, ..., E-1]    → partial_output_{D-1}
+Device D-1: Processes experts [E-E/D, ..., E-1]    → partial_output_{D-1} (E/D, T, H)
+                                                    → local_sum → (T, H)
 
-Final: allreduce(partial_output_0, ..., partial_output_{D-1}) → final_output
+Local Reduce: ttnn.sum(partial_output, dim=0) on each device
+Final: allreduce(local_output_0, ..., local_output_{D-1}) → final_output (T, H)
 ```
 
 **Implementation Notes**
@@ -293,7 +320,7 @@ routing_weights       # (T, K) - routing weights for each expert
 device_expert_mapping # (E/D,) - which experts this device owns
 
 # Output: Device-local routing information
-num_routed_tokens, routed_tokens, routed_token_weights = \
+num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map = \
     ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping, num_experts
     )
@@ -304,27 +331,34 @@ num_routed_tokens, routed_tokens, routed_token_weights = \
 # Gate projection
 gate_output = ttnn.projection_to_intermediate(
     hidden_states, routed_tokens, num_routed_tokens, gate_weights, top_k
-)  # Shape: (K*T, H')
+)  # Shape: (E/D, T, H')
 
 # Up projection
 up_output = ttnn.projection_to_intermediate(
     hidden_states, routed_tokens, num_routed_tokens, up_weights, top_k
-)  # Shape: (K*T, H')
+)  # Shape: (E/D, T, H')
 
 # Combine: gate * up (element-wise)
-combined = gate_output * up_output  # Shape: (K*T, H')
+combined = gate_output * up_output  # Shape: (E/D, T, H')
 ```
 
 ### Step 3: Projection to Output (down_proj)
 ```python
 # Down projection with accumulation
 partial_output = ttnn.projection_to_output(
-    combined, routed_tokens, num_routed_tokens, routed_token_weights,
+    combined, token_idx_map, routed_tokens, num_routed_tokens, routed_token_weights,
     down_weights, num_tokens, top_k
-)  # Shape: (T, H) - partial result per device
+)  # Shape: (E/D, T, H) - partial result per device
 ```
 
-### Step 4: Allreduce (multi-device)
+### Step 4: Local Reduce (sum across expert dimension)
+```python
+# Reduce expert dimension locally on each device before allreduce
+# Sum across dim=0 (expert dimension) to combine contributions from all local experts
+partial_output = ttnn.sum(partial_output, dim=0)  # Shape: (T, H) - per device
+```
+
+### Step 5: Allreduce (multi-device)
 ```python
 # Sum partial outputs across all devices
 final_output = ttnn.all_reduce(partial_output, mesh_device)  # Shape: (T, H)
@@ -338,23 +372,32 @@ Global Routing Info (T, K)
     [prepare_moe_routing_tensors]
          ↓
 Device-Local Routing (E/D, max_tokens) - SHARDED
+    + token_idx_map for global position mapping
          ↓
     ┌────────────────────────────────┐
     │                                │
     ↓                                ↓
 [projection_to_intermediate]    [projection_to_intermediate]
    gate_proj (T→H')                up_proj (T→H')
+   Output: (E/D, T, H')            Output: (E/D, T, H')
     ↓                                ↓
     └──────────→ gate * up ←─────────┘
                    ↓
-         combined (K*T, H') - COMPACTED
+         combined (E/D, T, H') - PADDED
                    ↓
         [projection_to_output]
            down_proj (H'→H)
+         uses token_idx_map for positioning
                    ↓
-         partial_output (T, H) per device
+         partial_output (E/D, T, H) per device
+                   ↓
+              [local sum]
+         sum across expert dim (dim=0)
+                   ↓
+         local_output (T, H) per device
                    ↓
              [allreduce]
+         sum across devices
                    ↓
          final_output (T, H) - COMPLETE
 ```
@@ -363,6 +406,8 @@ Device-Local Routing (E/D, max_tokens) - SHARDED
 
 1. **Expert Parallelism**: Each device processes E/D experts independently
 2. **Device-Local Routing**: Routing tensors filtered once, reused for all projections
-3. **Compacted Format**: Intermediate activations stored densely (no padding between expert outputs)
-4. **Accumulation Pattern**: Output accumulates contributions from multiple experts per token
-5. **Allreduce Required**: Final step sums partial results across devices
+3. **Padded Format**: Intermediate activations stored with padding to uniform shape (E/D, T, H')
+4. **Token Index Mapping**: `token_idx_map` enables correct positioning of expert outputs in global token space
+5. **Accumulation Pattern**: Output accumulates contributions from multiple experts per token
+6. **Local Reduce First**: Sum across expert dimension (E/D→1) on each device before allreduce to reduce communication overhead
+7. **Allreduce Required**: Final step sums partial results across devices to combine all expert contributions
