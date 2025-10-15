@@ -216,6 +216,7 @@ set(TTNN_SRC_PYBIND
     ${CMAKE_CURRENT_SOURCE_DIR}/cpp/ttnn/operations/experimental/moe/projection_to_intermediate/projection_to_intermediate_${PY_BINDING}.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cpp/ttnn/operations/experimental/moe/projection_to_output/projection_to_output_${PY_BINDING}.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cpp/ttnn/operations/experimental/moe/scatter_moe_input/scatter_moe_input_${PY_BINDING}.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/cpp/ttnn/operations/experimental/moe/local_reduce_moe_output/local_reduce_moe_output_${PY_BINDING}.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cpp/ttnn/operations/experimental/paged_cache/paged_cache_${PY_BINDING}.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cpp/ttnn/operations/experimental/plusone/plusone_${PY_BINDING}.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cpp/ttnn/operations/experimental/reduction/fast_reduce_nc/fast_reduce_nc_${PY_BINDING}.cpp
