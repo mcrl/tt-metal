@@ -22,6 +22,9 @@ target_sources(
         local_reduce_moe_output/local_reduce_moe_output.cpp
         local_reduce_moe_output/device/local_reduce_moe_output_op.cpp
         local_reduce_moe_output/device/local_reduce_moe_output_program_factory.cpp
+        moe_bmm/moe_bmm.cpp
+        moe_bmm/device/moe_bmm_op.cpp
+        moe_bmm/device/moe_bmm_program_factory.cpp
 )
 
 target_include_directories(ttnn_op_experimental_moe PRIVATE ${FixmeOpIncDirs})
