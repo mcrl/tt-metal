@@ -16,6 +16,9 @@ target_sources(
         projection_to_output/projection_to_output.cpp
         projection_to_output/device/projection_to_output_op.cpp
         projection_to_output/device/projection_to_output_program_factory.cpp
+        scatter_moe_input/scatter_moe_input.cpp
+        scatter_moe_input/device/scatter_moe_input_op.cpp
+        scatter_moe_input/device/scatter_moe_input_program_factory.cpp
 )
 
 target_include_directories(ttnn_op_experimental_moe PRIVATE ${FixmeOpIncDirs})

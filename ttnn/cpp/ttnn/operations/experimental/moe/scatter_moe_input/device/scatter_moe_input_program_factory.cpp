@@ -1,0 +1,128 @@
+// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+#include "scatter_moe_input_program_factory.hpp"
+
+#include <algorithm>
+#include <tt-metalium/constants.hpp>
+#include <tt-metalium/host_api.hpp>
+#include <tt-metalium/util.hpp>
+#include <tt-metalium/work_split.hpp>
+#include "ttnn/operation.hpp"
+#include "ttnn/operations/math.hpp"
+
+namespace ttnn::operations::experimental::moe::detail {
+
+using namespace tt::constants;
+using namespace tt::tt_metal;
+
+tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_single_core(
+    const Tensor& input_hidden_state,
+    const Tensor& num_routed_tokens,
+    const Tensor& routed_tokens,
+    Tensor& output) {
+
+    Program program{};
+
+    // Get tensor shapes
+    const auto& input_shape = input_hidden_state.padded_shape();
+    uint32_t num_tokens = input_shape[-2];
+    uint32_t hidden_dim = input_shape[-1];
+
+    const auto& num_routed_shape = num_routed_tokens.padded_shape();
+    uint32_t num_local_experts = num_routed_shape[-2];
+
+    // Get buffers
+    auto input_buffer = input_hidden_state.buffer();
+    auto num_routed_buffer = num_routed_tokens.buffer();
+    auto routed_tokens_buffer = routed_tokens.buffer();
+    auto output_buffer = output.buffer();
+
+    // Determine buffer types (DRAM vs L1)
+    bool input_is_dram = input_buffer->buffer_type() == BufferType::DRAM;
+    bool num_routed_is_dram = num_routed_buffer->buffer_type() == BufferType::DRAM;
+    bool routed_tokens_is_dram = routed_tokens_buffer->buffer_type() == BufferType::DRAM;
+    bool output_is_dram = output_buffer->buffer_type() == BufferType::DRAM;
+
+    // Data formats
+    DataFormat input_cb_data_format = datatype_to_dataformat_converter(input_hidden_state.dtype());
+    uint32_t input_element_size = input_hidden_state.element_size();
+
+    // Single core execution
+    CoreRangeSet all_cores = CoreRangeSet(std::vector{CoreRange({0, 0}, {0, 0})});
+
+    // Circular buffer for input row (H elements)
+    uint32_t row_size_bytes = hidden_dim * input_element_size;
+    uint32_t aligned_row_size_bytes = round_up_to_mul32(row_size_bytes);
+
+    // CB 0: Input buffer for reading rows
+    uint32_t cb_id_input = tt::CBIndex::c_0;
+    CircularBufferConfig cb_input_config =
+        CircularBufferConfig(aligned_row_size_bytes * 2, {{cb_id_input, input_cb_data_format}})
+            .set_page_size(cb_id_input, aligned_row_size_bytes);
+    CreateCircularBuffer(program, all_cores, cb_input_config);
+
+    // CB 1: Output buffer for zero-padding
+    uint32_t cb_id_output = tt::CBIndex::c_1;
+    CircularBufferConfig cb_output_config =
+        CircularBufferConfig(aligned_row_size_bytes, {{cb_id_output, input_cb_data_format}})
+            .set_page_size(cb_id_output, aligned_row_size_bytes);
+    CreateCircularBuffer(program, all_cores, cb_output_config);
+
+    // Compile-time arguments
+    std::vector<uint32_t> compile_time_args = {
+        cb_id_input,
+        cb_id_output,
+        (uint32_t)input_is_dram,
+        (uint32_t)num_routed_is_dram,
+        (uint32_t)routed_tokens_is_dram,
+        (uint32_t)output_is_dram,
+        hidden_dim,
+        num_tokens,
+        num_local_experts,
+        row_size_bytes,
+    };
+
+    // Create kernel
+    KernelHandle reader_writer_kernel_id = CreateKernel(
+        program,
+        "ttnn/cpp/ttnn/operations/experimental/moe/scatter_moe_input/device/kernels/dataflow/"
+        "reader_writer_scatter_moe_input.cpp",
+        all_cores,
+        ReaderDataMovementConfig(compile_time_args));
+
+    // Runtime arguments
+    std::vector<uint32_t> runtime_args = {
+        input_buffer->address(),
+        num_routed_buffer->address(),
+        routed_tokens_buffer->address(),
+        output_buffer->address(),
+    };
+
+    SetRuntimeArgs(program, reader_writer_kernel_id, CoreCoord{0, 0}, runtime_args);
+
+    // Callback to update buffer addresses when tensors move
+    auto override_runtime_args_callback =
+        [reader_writer_kernel_id](
+            const void* operation,
+            Program& program,
+            const std::vector<Tensor>& input_tensors,
+            const std::vector<std::optional<const Tensor>>& optional_tensors,
+            const std::vector<Tensor>& output_tensors) {
+            auto input_buffer = input_tensors.at(0).buffer();
+            auto num_routed_buffer = input_tensors.at(1).buffer();
+            auto routed_tokens_buffer = input_tensors.at(2).buffer();
+            auto output_buffer = output_tensors.at(0).buffer();
+
+            auto& runtime_args = GetRuntimeArgs(program, reader_writer_kernel_id, CoreCoord{0, 0});
+            runtime_args[0] = input_buffer->address();
+            runtime_args[1] = num_routed_buffer->address();
+            runtime_args[2] = routed_tokens_buffer->address();
+            runtime_args[3] = output_buffer->address();
+        };
+
+    return {std::move(program), override_runtime_args_callback};
+}
+
+}  // namespace ttnn::operations::experimental::moe::detail
