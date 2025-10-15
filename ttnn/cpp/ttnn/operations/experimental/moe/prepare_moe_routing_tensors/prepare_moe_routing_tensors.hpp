@@ -13,7 +13,7 @@
 // PURPOSE:
 //   Converts sparse MoE expert selection into device-local routing tensors for expert-parallel computation.
 //   Filters global routing information to only include experts assigned to this device.
-//   Creates three device-local tensors: num_routed_tokens, routed_tokens, and routed_token_weights.
+//   Creates four device-local tensors: num_routed_tokens, routed_tokens, routed_token_weights, and token_idx_map.
 //
 // INPUTS:
 //   - selected_experts: (T, K) uint32 tensor, ROW_MAJOR layout - global expert IDs selected by each token

@@ -34,7 +34,7 @@
 // NOTES:
 //   - Used for both gate_proj and up_proj in MoE layers
 //   - Each device processes E/D experts in parallel (expert parallelism)
-//   - Output is zero-padded to K*T size
+//   - Output is zero-padded per expert (each expert has T rows with padding after num_routed_tokens[e, 0])
 //   - Routing tensors are device-local (E/D per device) from prepare_moe_routing_tensors
 
 namespace ttnn {
