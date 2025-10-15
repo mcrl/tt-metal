@@ -50,6 +50,7 @@
 #include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors_pybind.hpp"
 #include "ttnn/operations/experimental/moe/projection_to_intermediate/projection_to_intermediate_pybind.hpp"
 #include "ttnn/operations/experimental/moe/projection_to_output/projection_to_output_pybind.hpp"
+#include "ttnn/operations/experimental/moe/scatter_moe_input/scatter_moe_input_pybind.hpp"
 
 namespace py = pybind11;
 
@@ -118,6 +119,7 @@ void py_module(py::module& module) {
     moe::detail::bind_prepare_moe_routing_tensors(module);
     projection_to_intermediate::detail::bind_projection_to_intermediate(module);
     projection_to_output::detail::bind_projection_to_output(module);
+    scatter_moe_input::detail::bind_scatter_moe_input(module);
 }
 
 }  // namespace ttnn::operations::experimental
