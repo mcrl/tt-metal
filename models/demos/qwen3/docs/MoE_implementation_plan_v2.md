@@ -8,6 +8,21 @@ This document describes the V2 API design for MoE operations, which simplifies t
 3. **Optimizing layout conversions** by keeping intermediate results in TILE_LAYOUT
 4. **Simplifying accumulation** with dedicated local_reduce operation
 
+## Implementation Status (2025-10-16)
+
+### ✅ Completed
+- **`scatter_moe_input`**: Fully implemented with V2 API
+- **`local_reduce_moe_output`**: Fully implemented with V2 API
+  - Multi-core parallelization (token-parallel approach)
+  - Each core processes different output token rows
+  - Always uses multi-core for optimal performance
+
+### ⚠️ Pending
+- **`projection_to_intermediate`**: Still uses V1 interface (includes scatter logic)
+- **`projection_to_output`**: Still uses V1 interface (includes gather logic)
+- **Unified `moe_bmm`**: Not yet implemented
+- **`forward_v3()` integration**: Not yet implemented in moe.py
+
 ---
 
 ## API Call Sequence

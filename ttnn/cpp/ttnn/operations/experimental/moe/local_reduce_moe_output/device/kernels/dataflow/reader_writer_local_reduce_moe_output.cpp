@@ -51,6 +51,10 @@ void kernel_main() {
     uint32_t num_routed_tokens_addr = get_arg_val<uint32_t>(3);
     uint32_t output_buffer_addr = get_arg_val<uint32_t>(4);
 
+    // Token range for this core (always provided as runtime args 5 and 6)
+    uint32_t start_token_idx = get_arg_val<uint32_t>(5);
+    uint32_t end_token_idx = get_arg_val<uint32_t>(6);
+
     // Compile-time arguments
     constexpr uint32_t cb_id_input = get_compile_time_arg_val(0);
     constexpr uint32_t cb_id_output = get_compile_time_arg_val(1);
@@ -92,8 +96,8 @@ void kernel_main() {
         .page_size = row_size_bytes
     };
 
-    // Token-stationary approach: process each output token
-    for (uint32_t token_idx = 0; token_idx < num_tokens; token_idx++) {
+    // Token-stationary approach: process only assigned token range
+    for (uint32_t token_idx = start_token_idx; token_idx < end_token_idx; token_idx++) {
         // Initialize accumulator to zero in L1
         cb_reserve_back(cb_id_output, 1);
         uint32_t accumulator_l1_addr = get_write_ptr(cb_id_output);

@@ -156,7 +156,8 @@ operation::ProgramWithCallbacks LocalReduceMoeOutput::create_program(
     const auto& num_routed_tokens = input_tensors.at(3);
     auto& output = output_tensors.at(0);
 
-    return detail::local_reduce_moe_output_single_core(
+    // Always use multi-core implementation
+    return detail::local_reduce_moe_output_multi_core(
         input_hidden_state, token_idx_map, routed_token_weights,
         num_routed_tokens, num_tokens, output);
 }

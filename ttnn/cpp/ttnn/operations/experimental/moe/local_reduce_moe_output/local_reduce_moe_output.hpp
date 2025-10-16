@@ -14,6 +14,11 @@
 //   Performs intra-device reduction by gathering expert outputs back to token order
 //   and applying routing weights. Part of MoE V2 pipeline.
 //
+// IMPLEMENTATION (2025-10-16):
+//   - Multi-core parallelization with token-parallel distribution
+//   - Always uses multi-core for optimal performance
+//   - Each core processes independent token range for linear scaling
+//
 // INPUTS:
 //   - input_hidden_state: (E/D, T, H) bfloat16 tensor, ROW_MAJOR layout - expert outputs (organized by expert)
 //   - token_idx_map: (E/D, T) uint32 tensor, ROW_MAJOR layout - mapping from expert-local position to global token index
