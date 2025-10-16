@@ -47,6 +47,10 @@ void MAIN {
         // For each expert, process Mt_max * Nt output tiles
         // (dataflow only sends tiles for active Mt rows based on num_routed_tokens)
         uint32_t Mt = (get_arg_val<uint32_t>(expert_idx) + 32 - 1) / 32;
+
+        DPRINT << "MOE: local_expert=" << expert_idx
+               << " token_count=" << get_arg_val<uint32_t>(expert_idx) << ENDL();
+
         for (uint32_t mt = 0; mt < Mt; mt++) {
             for (uint32_t nt = 0; nt < Nt; nt++) {
                 // Acquire destination register for accumulation

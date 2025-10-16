@@ -108,8 +108,23 @@ operation::ProgramWithCallbacks moe_bmm_single_core(
         Mt_max
     };
 
-    tt::tt_metal::Tensor single_tensor = ttnn::distributed::get_device_tensors(num_routed_tokens).front();
-    std::vector<uint32_t> compute_runtime_args = single_tensor.to_vector<uint32_t>();
+    // Gather all device tensors and combine their values
+    std::vector<uint32_t> compute_runtime_args;
+    auto device_tensors = ttnn::distributed::get_device_tensors(num_routed_tokens);
+    for (const auto& tensor : device_tensors) {
+        auto tensor_values = tensor.to_vector<uint32_t>();
+        compute_runtime_args.insert(compute_runtime_args.end(), tensor_values.begin(), tensor_values.end());
+    }
+
+    // Debug: Print compute_runtime_args
+    std::cout << "compute_runtime_args: [";
+    for (size_t i = 0; i < compute_runtime_args.size(); ++i) {
+        std::cout << compute_runtime_args[i];
+        if (i < compute_runtime_args.size() - 1) {
+            std::cout << ", ";
+        }
+    }
+    std::cout << "]" << std::endl;
 
     // Create kernels
     auto reader_writer_id = CreateKernel(
