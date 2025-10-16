@@ -37,19 +37,33 @@ void MAIN {
 
     constexpr tt::CBIndex cb_in0 = tt::CBIndex::c_0;
     constexpr tt::CBIndex cb_in1 = tt::CBIndex::c_1;
+    constexpr tt::CBIndex cb_num_routed = tt::CBIndex::c_2;
     constexpr tt::CBIndex cb_out = tt::CBIndex::c_16;
+
+    volatile uint32_t* num_routed_addr_ptr;
 
     // Initialize matrix multiplication unit
     mm_init(cb_in0, cb_in1, cb_out);
+
+    cb_wait_front(cb_num_routed, 1);
+    tensix_sync();
+    cb_get_tile(cb_num_routed, 0, &num_routed_addr_ptr);
+    cb_release_tile(cb_num_routed);
+    cb_pop_front(cb_num_routed, 1);
 
     // Process all experts
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
         // For each expert, process Mt_max * Nt output tiles
         // (dataflow only sends tiles for active Mt rows based on num_routed_tokens)
-        uint32_t Mt = (get_arg_val<uint32_t>(expert_idx) + 32 - 1) / 32;
 
-        DPRINT << "MOE: local_expert=" << expert_idx
-               << " token_count=" << get_arg_val<uint32_t>(expert_idx) << ENDL();
+        DPRINT << "MOE: expert_idx=" << expert_idx << ENDL();
+
+        // volatile tt_l1_ptr uint32_t* num_tokens = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(num_routed_addr_ptr[expert_idx]);
+
+        uint32_t num_tokens = num_routed_addr_ptr[expert_idx];
+        DPRINT << " token_count=" << num_tokens << ENDL();
+
+        uint32_t Mt = (num_tokens + 32 - 1) / 32;
 
         for (uint32_t mt = 0; mt < Mt; mt++) {
             for (uint32_t nt = 0; nt < Nt; nt++) {

@@ -118,7 +118,7 @@ def test_moe_bmm(mesh_device, config):
         num_routed,
         device=mesh_device,
         dtype=ttnn.uint32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
+        layout=ttnn.TILE_LAYOUT,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
