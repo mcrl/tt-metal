@@ -5,6 +5,7 @@
 #include <cstdint>
 #include "compute_kernel_api/tile_move_copy.h"
 #include "compute_kernel_api/matmul.h"
+#include "debug/dprint.h"
 
 namespace NAMESPACE {
 
@@ -45,7 +46,8 @@ void MAIN {
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
         // For each expert, process Mt_max * Nt output tiles
         // (dataflow only sends tiles for active Mt rows based on num_routed_tokens)
-        for (uint32_t mt = 0; mt < Mt_max; mt++) {
+        uint32_t Mt = (get_arg_val<uint32_t>(expert_idx) + 32 - 1) / 32;
+        for (uint32_t mt = 0; mt < Mt; mt++) {
             for (uint32_t nt = 0; nt < Nt; nt++) {
                 // Acquire destination register for accumulation
                 acquire_dst();
