@@ -63,7 +63,7 @@ Example:
     >>> scattered_tile = ttnn.to_layout(scattered_input, ttnn.TILE_LAYOUT)
     >>>
     >>> # Now ready for efficient BMM operations
-    >>> gate_output = ttnn.projection_to_intermediate(scattered_tile, num_routed, gate_weights)
+    >>> gate_output = ttnn.experimental.moe_bmm(scattered_tile, gate_weights, num_routed)
 )doc";
 
     using OperationType = decltype(ttnn::scatter_moe_input);

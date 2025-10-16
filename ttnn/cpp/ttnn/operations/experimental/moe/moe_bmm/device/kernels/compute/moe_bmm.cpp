@@ -57,8 +57,6 @@ void MAIN {
         cb_release_tile(cb_num_rows);
         cb_pop_front(cb_num_rows, 1);
 
-        // volatile tt_l1_ptr uint32_t* num_tokens = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(num_routed_addr_ptr[expert_idx]);
-
         uint32_t Mt = (num_tokens + 32 - 1) / 32;
 
         for (uint32_t mt = 0; mt < Mt; mt++) {
@@ -68,7 +66,6 @@ void MAIN {
                 
                 // Accumulate over K dimension
                 for (uint32_t kt = 0; kt < Kt; kt++) {
-                    DPRINT << "COMPUTE: expert=" << expert_idx << " mt=" << mt << " nt=" << nt << " kt=" << kt << ENDL();
                     // Wait for input tiles
                     cb_wait_front(cb_in0, 1);
                     cb_wait_front(cb_in1, 1);

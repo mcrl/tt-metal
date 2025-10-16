@@ -49,19 +49,19 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
     TT_FATAL(input_shape[0] == weights_shape[0],
         "input dim [0] ({}) must match weights dim [0] ({})",
         input_shape[0], weights_shape[0]);
-    // TT_FATAL(input_shape[0] == num_routed_shape[0],
-    //     "input dim [0] ({}) must match num_routed_tokens dim [0] ({})",
-    //     input_shape[0], num_routed_shape[0]);
+    TT_FATAL(input_shape[0] == num_routed_shape[0],
+        "input dim [0] ({}) must match num_routed_tokens dim [0] ({})",
+        input_shape[0], num_routed_shape[0]);
 
     // Validate H_in consistency
     TT_FATAL(input_shape[2] == weights_shape[1],
         "input dim [2] ({}) must match weights dim [1] ({})",
         input_shape[2], weights_shape[1]);
 
-    // Validate num_routed_tokens shape
-    // TT_FATAL(num_routed_shape[1] == 1,
-    //     "num_routed_tokens dim [1] must be 1, got {}",
-    //     num_routed_shape[1]);
+    Validate num_routed_tokens shape
+    TT_FATAL(num_routed_shape[1] == 1,
+        "num_routed_tokens dim [1] must be 1, got {}",
+        num_routed_shape[1]);
 
     // Validate TILE alignment for input and weights
     TT_FATAL(input_shape[1] % tt::constants::TILE_HEIGHT == 0,
