@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include "dataflow_api.h"
+#include "debug/dprint.h"
 
 void kernel_main() {
     // Runtime arguments
@@ -23,6 +24,7 @@ void kernel_main() {
     constexpr uint32_t cb_in0 = 0;
     constexpr uint32_t cb_in1 = 1;
     constexpr uint32_t cb_num_routed = 2;
+    constexpr uint32_t cb_num_rows = 3;
     constexpr uint32_t cb_out = 16;
 
     // Create tensor accessors for DRAM buffers
@@ -66,8 +68,14 @@ void kernel_main() {
         // Read the value from L1
         volatile tt_l1_ptr uint32_t* num_routed_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_write_addr_num_routed);
         uint32_t num_routed = num_routed_ptr[0];
+
         cb_push_back(cb_num_routed, 1);
         cb_pop_front(cb_num_routed, 1);
+
+        cb_reserve_back(cb_num_rows, 1);
+        auto num_rows_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(cb_num_rows));
+        num_rows_ptr[0] = num_routed;
+        cb_push_back(cb_num_rows, 1);
 
         // Calculate number of active tile rows for this expert
         // Round up to nearest tile boundary (TILE_HEIGHT = 32)
@@ -80,23 +88,19 @@ void kernel_main() {
         uint32_t output_expert_base = expert_idx * output_expert_stride;
 
         // Perform batched matmul for this expert
-        // Process ALL Mt_max rows to keep compute kernel synchronized
-        for (uint32_t mt = 0; mt < Mt_max; mt++) {
-            // Check if this row is active or should be zero-padded
-            bool is_active_row = (mt < Mt);
-            
+        // Process ALL Mt rows to keep compute kernel synchronized
+        for (uint32_t mt = 0; mt < Mt; mt++) {        
             for (uint32_t nt = 0; nt < Nt; nt++) {
                 // Inner loop over K dimension
                 for (uint32_t kt = 0; kt < Kt; kt++) {
-                    if (is_active_row) {
-                        // Read input tile at (expert, mt, kt)
-                        uint32_t input_tile_idx = input_expert_base + mt * input_row_stride + kt;
-                        cb_reserve_back(cb_in0, 1);
-                        uint32_t l1_write_addr_in0 = get_write_ptr(cb_in0);
-                        noc_async_read_tile(input_tile_idx, input_accessor, l1_write_addr_in0);
-                        noc_async_read_barrier();
-                        cb_push_back(cb_in0, 1);
-                    }
+                    DPRINT << "READER: expert=" << expert_idx << " mt=" << mt << " nt=" << nt << " kt=" << kt << ENDL();
+                    // Read input tile at (expert, mt, kt)
+                    uint32_t input_tile_idx = input_expert_base + mt * input_row_stride + kt;
+                    cb_reserve_back(cb_in0, 1);
+                    uint32_t l1_write_addr_in0 = get_write_ptr(cb_in0);
+                    noc_async_read_tile(input_tile_idx, input_accessor, l1_write_addr_in0);
+                    noc_async_read_barrier();
+                    cb_push_back(cb_in0, 1);
 
                     // Read weight tile at (expert, kt, nt) - always needed for compute sync
                     uint32_t weight_tile_idx = weights_expert_base + kt * weights_row_stride + nt;

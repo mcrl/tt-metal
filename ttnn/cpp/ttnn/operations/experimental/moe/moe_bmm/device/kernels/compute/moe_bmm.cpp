@@ -37,31 +37,27 @@ void MAIN {
 
     constexpr tt::CBIndex cb_in0 = tt::CBIndex::c_0;
     constexpr tt::CBIndex cb_in1 = tt::CBIndex::c_1;
-    constexpr tt::CBIndex cb_num_routed = tt::CBIndex::c_2;
+    constexpr tt::CBIndex cb_num_rows = tt::CBIndex::c_3;
     constexpr tt::CBIndex cb_out = tt::CBIndex::c_16;
 
-    volatile uint32_t* num_routed_addr_ptr;
+    volatile uint32_t* num_rows_addr_ptr;
 
     // Initialize matrix multiplication unit
     mm_init(cb_in0, cb_in1, cb_out);
-
-    cb_wait_front(cb_num_routed, 1);
-    tensix_sync();
-    cb_get_tile(cb_num_routed, 0, &num_routed_addr_ptr);
-    cb_release_tile(cb_num_routed);
-    cb_pop_front(cb_num_routed, 1);
 
     // Process all experts
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
         // For each expert, process Mt_max * Nt output tiles
         // (dataflow only sends tiles for active Mt rows based on num_routed_tokens)
 
-        DPRINT << "MOE: expert_idx=" << expert_idx << ENDL();
+        cb_wait_front(cb_num_rows, 1);
+        tensix_sync();
+        cb_get_tile(cb_num_rows, 0, &num_rows_addr_ptr);
+        uint32_t num_tokens = num_rows_addr_ptr[4];
+        cb_release_tile(cb_num_rows);
+        cb_pop_front(cb_num_rows, 1);
 
         // volatile tt_l1_ptr uint32_t* num_tokens = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(num_routed_addr_ptr[expert_idx]);
-
-        uint32_t num_tokens = num_routed_addr_ptr[expert_idx];
-        DPRINT << " token_count=" << num_tokens << ENDL();
 
         uint32_t Mt = (num_tokens + 32 - 1) / 32;
 
@@ -72,6 +68,7 @@ void MAIN {
                 
                 // Accumulate over K dimension
                 for (uint32_t kt = 0; kt < Kt; kt++) {
+                    DPRINT << "COMPUTE: expert=" << expert_idx << " mt=" << mt << " nt=" << nt << " kt=" << kt << ENDL();
                     // Wait for input tiles
                     cb_wait_front(cb_in0, 1);
                     cb_wait_front(cb_in1, 1);
