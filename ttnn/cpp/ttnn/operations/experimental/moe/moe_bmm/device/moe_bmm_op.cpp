@@ -58,7 +58,7 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
         "input dim [2] ({}) must match weights dim [1] ({})",
         input_shape[2], weights_shape[1]);
 
-    Validate num_routed_tokens shape
+    // Validate num_routed_tokens shape
     TT_FATAL(num_routed_shape[1] == 1,
         "num_routed_tokens dim [1] must be 1, got {}",
         num_routed_shape[1]);

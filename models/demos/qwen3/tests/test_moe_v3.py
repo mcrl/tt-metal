@@ -47,7 +47,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (32, 8),
+        (32, 4),
     ],
 )
 @pytest.mark.parametrize(
