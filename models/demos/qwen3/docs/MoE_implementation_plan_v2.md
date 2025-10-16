@@ -15,13 +15,13 @@ This document describes the V2 API design for MoE operations, which simplifies t
 ```
 1. scatter_moe_input           : Rearrange input by expert assignment
 2. ttnn.to_layout              : ROW_MAJOR → TILE_LAYOUT
-3. projection_to_intermediate  : Gate projection (BMM on TILE)
-4. projection_to_intermediate  : Up projection (BMM on TILE)
+3. ttnn.experimental.moe_bmm   : Gate projection (BMM on TILE)
+4. ttnn.experimental.moe_bmm   : Up projection (BMM on TILE)
 5. silu & elementwise multiply : Activation (elementwise on TILE)
-6. projection_to_output        : Down projection (BMM on TILE)
+6. ttnn.experimental.moe_bmm   : Down projection (BMM on TILE)
 7. ttnn.to_layout              : TILE_LAYOUT → ROW_MAJOR
 8. local_reduce_moe_output     : Intra-device reduce and accumulation
-9. inter-device reduce         : Allreduce across devices
+9. inter-device reduce         : All-reduce across devices
 ```
 
 ---
@@ -92,16 +92,16 @@ output[E/D-1, :t_{E/D-1}, :] ← tokens assigned to expert E/D-1 (padded to T)
 
 ---
 
-## `projection_to_intermediate` (V2)
+## `ttnn.experimental.moe_bmm`
 
-**Purpose**: Performs batched matrix multiplication for MoE projections. Operates on already-scattered input in TILE_LAYOUT.
+**Purpose**: Unified batched matrix multiplication operation for MoE projections. Operates on already-scattered input in TILE_LAYOUT. Used for gate projection, up projection, and down projection.
 
 **Python API**
 ```python
-output = ttnn.projection_to_intermediate(
-    input_hidden_state,   # (E/D, T, H) bfloat16 tensor - TILE layout
+output = ttnn.experimental.moe_bmm(
+    input_hidden_state,   # (E/D, T, H_in) bfloat16 tensor - TILE layout
+    expert_weights,       # (E/D, H_in, H_out) bfloat16 tensor - TILE layout
     num_routed_tokens,    # (E/D, 1) uint32 tensor
-    expert_weights,       # (E/D, H, H') bfloat16 tensor - TILE layout
     *,
     memory_config=None,
     queue_id=0
@@ -109,139 +109,95 @@ output = ttnn.projection_to_intermediate(
 ```
 
 **Input**
-- **input_hidden_state**: `(E/D, T, H)` bfloat16 tensor, TILE_LAYOUT
+- **input_hidden_state**: `(E/D, T, H_in)` bfloat16 tensor, TILE_LAYOUT
 	- Scattered input from `scatter_moe_input` (after layout conversion)
-	- Shape: E/D experts × T tokens × H hidden dimensions
+	- Shape: E/D experts × T tokens × H_in input dimensions
 	- For expert e, only first `num_routed_tokens[e, 0]` rows contain valid data
 	- Already in TILE_LAYOUT for efficient BMM
-- **num_routed_tokens**: `(E/D, 1)` uint32 2D tensor, ROW_MAJOR layout
-	- Device-local token counts
-	- Used for determining number of valid output tiles per expert
-- **expert_weights**: `(E/D, H, H')` bfloat16 tensor, TILE_LAYOUT
+	- For gate/up_proj: H_in = H (hidden dimension)
+	- For down_proj: H_in = H' (intermediate dimension)
+- **expert_weights**: `(E/D, H_in, H_out)` bfloat16 tensor, TILE_LAYOUT
 	- Expert weight matrices, sharded across devices by expert dimension
 	- `expert_weights[e, :, :]` contains weights for local expert e
-	- H = input hidden dimension, H' = intermediate dimension
+	- For gate/up_proj: (H, H') - projects to intermediate dimension
+	- For down_proj: (H', H) - projects back to hidden dimension
+- **num_routed_tokens**: `(E/D, 1)` uint32 2D tensor, ROW_MAJOR layout
+	- Device-local token counts from `prepare_moe_routing_tensors`
+	- `num_routed_tokens[e, 0]` = number of tokens assigned to local expert e
+	- Used for determining number of valid output tiles per expert
 
 **Output**
-- **output**: `(E/D, T, H')` bfloat16 tensor, TILE_LAYOUT
+- **output**: `(E/D, T, H_out)` bfloat16 tensor, TILE_LAYOUT
 	- Projection outputs organized by expert
-	- Shape: E/D experts × T tokens × H' intermediate dimensions
+	- Shape: E/D experts × T tokens × H_out output dimensions
 	- For expert e, only first `num_routed_tokens[e, 0]` rows contain valid data
 	- Remaining rows are zero (due to padded input)
 	- Stays in TILE_LAYOUT for subsequent operations
+	- For gate/up_proj: H_out = H' (intermediate dimension)
+	- For down_proj: H_out = H (hidden dimension)
 
 **Computation**
 For each local expert e in [0, E/D-1):
 - Compute batched matmul: `output[e, :, :] = input[e, :, :] @ expert_weights[e, :, :]`
-- This multiplies (T × H) @ (H × H') → (T × H')
+- This multiplies (T × H_in) @ (H_in × H_out) → (T × H_out)
 - Only first `num_routed_tokens[e, 0]` rows produce non-zero results
+- Remaining rows produce zeros (due to zero-padded input)
 
-**Parallelization Strategy: Output-Stationary**
+**Parallelization Strategy: Single-Core (Current Implementation)**
 
-1. **Calculate tiles per expert**:
+The current implementation uses a **single Tensix core** to sequentially process all experts:
+
+1. **Sequential expert processing**:
+   - Loop through each expert e in [0, E/D-1)
+   - For each expert, perform full matrix multiplication
+
+2. **Per-expert computation**:
    - For expert e with `t_e = num_routed_tokens[e, 0]` tokens:
+   - Compute: `output[e, :t_e, :] = input[e, :t_e, :] @ expert_weights[e, :, :]`
+   - This multiplies (t_e × H_in) @ (H_in × H_out) → (t_e × H_out)
+
+3. **Tile-level operations**:
    - Number of token tiles: `num_token_tiles[e] = ceil(t_e / 32)`
-   - Number of output dimension tiles: `num_output_tiles = ceil(H' / 32)`
-   - Total tiles for expert e: `tiles[e] = num_token_tiles[e] * num_output_tiles`
+   - Number of input dimension tiles: `num_input_tiles = ceil(H_in / 32)`
+   - Number of output dimension tiles: `num_output_tiles = ceil(H_out / 32)`
+   - For each output tile `(token_tile_idx, output_dim_tile_idx)`:
+     - Accumulate across input dimension tiles: `sum over k in [0, num_input_tiles)`
+     - Load input tile: `input[e, token_tile_idx*32:(token_tile_idx+1)*32, k*32:(k+1)*32]`
+     - Load weight tile: `expert_weights[e, k*32:(k+1)*32, output_dim_tile_idx*32:(output_dim_tile_idx+1)*32]`
+     - Compute: `output_tile += matmul_tiles(input_tile, weight_tile)`
+     - Write: `output[e, token_tile_idx*32:(token_tile_idx+1)*32, output_dim_tile_idx*32:(output_dim_tile_idx+1)*32] = output_tile`
 
-2. **Total device tiles**: `total_tiles = sum(tiles[0:E/D])`
+**Future Multi-Core Optimization**
 
-3. **Core distribution**:
-   - Distribute `total_tiles` across 64 Tensix cores
-   - Each core computes a subset of output tiles
-   - Cores process tiles in a round-robin or block distribution
+For future multi-core implementation, use **output-stationary parallelization**:
 
-4. **Per-tile computation**:
-   - To compute output tile at `output[e, i:i+32, h':h'+32]`:
-   - Load input tiles: `input[e, i:i+32, 0:H]` (multiple tiles across H dimension)
-   - Load weight tiles: `expert_weights[e, 0:H, h':h'+32]` (multiple tiles across H dimension)
-   - Compute: `output_tile = matmul_tiles(input_tiles, weight_tiles)`
-   - Write: `output[e, i:i+32, h':h'+32] = output_tile`
+1. **Calculate total tiles across all experts**:
+   - For expert e: `tiles[e] = ceil(num_routed_tokens[e, 0] / 32) * ceil(H_out / 32)`
+   - Total tiles: `total_tiles = sum(tiles[0:E/D])`
+
+2. **Distribute tiles across 64 Tensix cores**:
+   - Assign each output tile to a core
+   - Use round-robin or block distribution
+   - Each core independently computes its assigned output tiles
+
+3. **Core-local computation**:
+   - Each core loads input tiles, weight tiles for its assigned output tiles
+   - Performs matmul and writes results
+   - No inter-core communication needed during compute
 
 **Usage**
-- Used for **gate_proj** and **up_proj** in MoE layers
-- Both projections use identical logic (only weights differ)
-- Can be called twice or potentially unified into single `moe_bmm` operation
+- **Gate projection**: `gate_output = moe_bmm(scattered_input, gate_weights, num_routed_tokens)`
+- **Up projection**: `up_output = moe_bmm(scattered_input, up_weights, num_routed_tokens)`
+- **Down projection**: `down_output = moe_bmm(combined_activations, down_weights, num_routed_tokens)`
 
-**Changes from V1**
-- ✅ No longer needs `routed_tokens` (scattering already done)
-- ✅ Input already organized by expert (no gathering needed)
-- ✅ Operates on TILE_LAYOUT (no layout conversion during compute)
-- ✅ Simpler implementation (pure BMM without gather logic)
+All three projections use the same unified operation with different weight matrices.
 
----
-
-## `projection_to_output` (V2)
-
-**Purpose**: Performs down projection for MoE. Produces pre-gathered output (still organized by expert).
-
-**Python API**
-```python
-output = ttnn.projection_to_output(
-    input_hidden_state,   # (E/D, T, H') bfloat16 tensor - TILE layout
-    num_routed_tokens,    # (E/D, 1) uint32 tensor
-    expert_weights,       # (E/D, H', H) bfloat16 tensor - TILE layout
-    *,
-    memory_config=None,
-    queue_id=0
-)
-```
-
-**Input**
-- **input_hidden_state**: `(E/D, T, H')` bfloat16 tensor, TILE_LAYOUT
-	- Combined gate × up activations (after SiLU and elementwise multiply)
-	- Shape: E/D experts × T tokens × H' intermediate dimensions
-	- For expert e, only first `num_routed_tokens[e, 0]` rows contain valid data
-	- In TILE_LAYOUT for efficient BMM
-- **num_routed_tokens**: `(E/D, 1)` uint32 2D tensor, ROW_MAJOR layout
-	- Device-local token counts
-	- Used for determining number of valid output tiles per expert
-- **expert_weights**: `(E/D, H', H)` bfloat16 tensor, TILE_LAYOUT
-	- Down projection weight matrices, sharded across devices
-	- `expert_weights[e, :, :]` contains weights for local expert e
-	- H' = intermediate dimension, H = output hidden dimension
-
-**Output**
-- **output**: `(E/D, T, H)` bfloat16 tensor, TILE_LAYOUT
-	- Projection outputs organized by expert (pre-gathered)
-	- Shape: E/D experts × T tokens × H hidden dimensions
-	- For expert e, only first `num_routed_tokens[e, 0]` rows contain valid data
-	- Remains in TILE_LAYOUT for layout conversion
-	- **Note**: Does NOT apply routing weights or accumulate across experts
-
-**Computation**
-For each local expert e in [0, E/D-1):
-- Compute batched matmul: `output[e, :, :] = input[e, :, :] @ expert_weights[e, :, :]`
-- This multiplies (T × H') @ (H' × H) → (T × H)
-- Only first `num_routed_tokens[e, 0]` rows produce non-zero results
-
-**Parallelization Strategy: Output-Stationary**
-
-Same strategy as `projection_to_intermediate`:
-
-1. **Calculate tiles per expert**:
-   - For expert e with `t_e = num_routed_tokens[e, 0]` tokens:
-   - Number of token tiles: `num_token_tiles[e] = ceil(t_e / 32)`
-   - Number of output dimension tiles: `num_output_tiles = ceil(H / 32)`
-   - Total tiles for expert e: `tiles[e] = num_token_tiles[e] * num_output_tiles`
-
-2. **Total device tiles**: `total_tiles = sum(tiles[0:E/D])`
-
-3. **Core distribution**: Distribute across 64 Tensix cores
-
-4. **Per-tile computation**: Standard tile matmul
-
-**Changes from V1**
-- ✅ No longer needs `routed_tokens` (already scattered)
-- ✅ No longer needs `token_idx_map` (gathering deferred to reduce stage)
-- ✅ No longer needs `routed_token_weights` (weighting deferred to reduce stage)
-- ✅ No longer performs accumulation (deferred to `local_reduce_moe_output`)
-- ✅ Simpler implementation (pure BMM without scatter-gather logic)
-
-**Unification Note**
-- `projection_to_intermediate` and `projection_to_output` have **identical logic**
-- Both perform: `output[e] = input[e] @ weights[e]` for each expert e
-- Could be unified into single `moe_bmm` operation with different weight parameters
+**Key Features**
+- **Unified operation**: Single implementation for all MoE projections
+- **Pure BMM**: No scatter/gather logic embedded
+- **TILE_LAYOUT native**: Operates efficiently on tile layout
+- **Simple interface**: Only requires input, weights, and token counts
+- **Flexible dimensions**: Works with any H_in, H_out dimensions
 
 ---
 
@@ -265,7 +221,7 @@ output_hidden_state = ttnn.local_reduce_moe_output(
 
 **Input**
 - **input_hidden_state**: `(E/D, T, H)` bfloat16 tensor, ROW_MAJOR layout
-	- Expert outputs from `projection_to_output` (after layout conversion)
+	- Expert outputs from `moe_bmm` (after layout conversion)
 	- Shape: E/D experts × T tokens × H hidden dimensions
 	- For expert e, only first `num_routed_tokens[e, 0]` rows contain valid data
 	- Organized by expert (not yet gathered by token)
@@ -389,19 +345,19 @@ scattered_input_tile = ttnn.to_layout(
 
 ### Step 3: Gate Projection
 ```python
-gate_output = ttnn.projection_to_intermediate(
+gate_output = ttnn.experimental.moe_bmm(
     scattered_input_tile,  # (E/D, T, H) TILE
-    num_routed_tokens,     # (E/D, 1)
-    gate_weights           # (E/D, H, H') TILE
+    gate_weights,          # (E/D, H, H') TILE
+    num_routed_tokens      # (E/D, 1)
 )  # Shape: (E/D, T, H') TILE
 ```
 
 ### Step 4: Up Projection
 ```python
-up_output = ttnn.projection_to_intermediate(
+up_output = ttnn.experimental.moe_bmm(
     scattered_input_tile,  # (E/D, T, H) TILE
-    num_routed_tokens,     # (E/D, 1)
-    up_weights             # (E/D, H, H') TILE
+    up_weights,            # (E/D, H, H') TILE
+    num_routed_tokens      # (E/D, 1)
 )  # Shape: (E/D, T, H') TILE
 ```
 
@@ -413,10 +369,10 @@ combined = ttnn.mul(gate_activated, up_output)  # (E/D, T, H') TILE
 
 ### Step 6: Down Projection
 ```python
-down_output = ttnn.projection_to_output(
+down_output = ttnn.experimental.moe_bmm(
     combined,           # (E/D, T, H') TILE
-    num_routed_tokens,  # (E/D, 1)
-    down_weights        # (E/D, H', H) TILE
+    down_weights,       # (E/D, H', H) TILE
+    num_routed_tokens   # (E/D, 1)
 )  # Shape: (E/D, T, H) TILE
 ```
 
@@ -472,7 +428,7 @@ Device-Local Routing Tables
     ┌────────────────────────────────┐
     │                                │
     ↓                                ↓
-[projection_to_intermediate]    [projection_to_intermediate]
+[ttnn.experimental.moe_bmm]    [ttnn.experimental.moe_bmm]
    gate_proj                        up_proj
    (E/D, T, H')                     (E/D, T, H')
     ↓                                ↓
@@ -480,7 +436,7 @@ Device-Local Routing Tables
                 ↓
          combined (E/D, T, H') TILE
                 ↓
-      [projection_to_output]
+   [ttnn.experimental.moe_bmm]
          down_proj
                 ↓
          (E/D, T, H) TILE
@@ -502,120 +458,23 @@ Device-Local Routing Tables
 
 ---
 
-## Key Improvements in V2
-
-### 1. **Cleaner Separation of Concerns**
-- **V1**: Scatter/gather logic embedded in projection operations
-- **V2**: Dedicated `scatter_moe_input` and `local_reduce_moe_output` operations
-- **Benefit**: Simpler projection kernels, easier to optimize
-
-### 2. **Unified Projection Operations**
-- **V1**: `projection_to_intermediate` and `projection_to_output` had different interfaces
-- **V2**: Both are identical pure BMM operations (can unify into `moe_bmm`)
-- **Benefit**: Code reuse, single kernel to optimize
-
-### 3. **Reduced Layout Conversions**
-- **V1**: Multiple conversions between ROW_MAJOR and TILE throughout pipeline
-- **V2**: Convert to TILE once, stay in TILE through all BMMs, convert back once
-- **Benefit**: 4 fewer layout conversions, significant performance improvement
-
-### 4. **Optimized Parallelization**
-- **V1**: Complex gather/scatter in kernels made parallelization difficult
-- **V2**: 
-  - Projections: Output-stationary parallelization (simple tile distribution)
-  - Reduce: Token-stationary parallelization (easy to distribute across cores)
-- **Benefit**: Better utilization of 64 Tensix cores
-
-### 5. **Deferred Accumulation**
-- **V1**: `projection_to_output` performed accumulation during compute
-- **V2**: Accumulation deferred to `local_reduce_moe_output`
-- **Benefit**: BMM kernels don't need atomic operations or special accumulation logic
-
-### 6. **Clearer Tensor Naming**
-- **V1**: Mixed usage of `routed_tokens`, `token_idx_map` in different contexts
-- **V2**: Clear separation:
-  - `routed_tokens`: Used only for scatter (which token to gather)
-  - `token_idx_map`: Used only for reduce (where to accumulate)
-- **Benefit**: Less confusion, easier to understand data flow
-
----
-
-## Comparison: V1 vs V2
-
-| Aspect | V1 | V2 |
-|--------|----|----|
-| **Scatter/Gather** | Embedded in projections | Dedicated operations |
-| **Projection Operations** | Different interfaces | Unified (can use single `moe_bmm`) |
-| **Layout Conversions** | ~6 conversions | 2 conversions |
-| **Compute Layout** | Mixed ROW_MAJOR/TILE | Stay in TILE |
-| **Accumulation** | During projection | Separate reduce operation |
-| **Parallelization** | Complex (gather + compute) | Simple (pure BMM or pure reduce) |
-| **Code Complexity** | High (interleaved logic) | Low (separated concerns) |
-| **Performance** | Baseline | Expected improvement from layout reduction |
-
----
-
 ## Implementation Recommendations
 
-### 1. **Unify Projection Operations**
-Consider implementing a single `moe_bmm` operation:
-```python
-output = ttnn.moe_bmm(
-    input,              # (E/D, T, H_in) TILE
-    weights,            # (E/D, H_in, H_out) TILE
-    num_routed_tokens,  # (E/D, 1)
-)  # Returns: (E/D, T, H_out) TILE
-```
-- Use for gate_proj, up_proj, and down_proj
-- Only weights differ between calls
-
-### 2. **Optimize Layout Conversions**
+### 1. **Optimize Layout Conversions**
 - Minimize conversions by staying in TILE_LAYOUT as long as possible
-- Consider if any operations can work directly on TILE (e.g., scatter/reduce)
+- Consider if any operations can work directly on TILE
 
-### 3. **Multi-Core Parallelization**
-- **BMM operations**: Distribute output tiles across 64 cores
-- **Reduce operation**: Distribute output tokens across 64 cores
+### 2. **Multi-Core Parallelization** (Future Work)
+- **Current**: Single-core implementation, processes experts sequentially
+- **Future BMM operations**: Distribute output tiles across 64 cores
+  - Calculate total output tiles across all experts
+  - Assign tiles to cores using round-robin or block distribution
+  - Each core independently computes its assigned tiles
+- **Future Reduce operation**: Distribute output tokens across 64 cores
 - Balance work to avoid stragglers
 
-### 4. **Memory Management**
+### 3. **Memory Management**
 - Pre-allocate output tensors to avoid runtime allocation
 - Reuse buffers where possible (e.g., gate/up can share output buffer after consumed)
 
-### 5. **Profiling Points**
-Key operations to profile:
-1. `scatter_moe_input` (gather overhead)
-2. Layout conversions (ROW_MAJOR ↔ TILE)
-3. BMM operations (compute time)
-4. `local_reduce_moe_output` (accumulation overhead)
-5. Allreduce (communication time)
-
 ---
-
-## Migration Path from V1 to V2
-
-For existing code using V1 API:
-
-1. **Add scatter step** before projections:
-   ```python
-   scattered = ttnn.scatter_moe_input(hidden_states, num_routed, routed_tokens)
-   ```
-
-2. **Move layout conversion** outside projection loop:
-   ```python
-   scattered_tile = ttnn.to_layout(scattered, TILE_LAYOUT)
-   ```
-
-3. **Update projection calls** (remove routed_tokens parameter):
-   ```python
-   # V1: projection_to_intermediate(hidden_states, routed_tokens, num_routed, weights, top_k)
-   # V2: projection_to_intermediate(scattered_tile, num_routed, weights)
-   ```
-
-4. **Replace local sum + allreduce** with reduce operation:
-   ```python
-   # V1: local = ttnn.sum(output, dim=0); final = ttnn.all_reduce(local)
-   # V2: local = ttnn.local_reduce_moe_output(...); final = ttnn.all_reduce(local)
-   ```
-
-5. **Remove intermediate layout conversions** between operations

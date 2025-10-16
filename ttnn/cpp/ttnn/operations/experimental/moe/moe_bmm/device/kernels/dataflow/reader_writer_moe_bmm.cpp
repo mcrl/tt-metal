@@ -93,7 +93,6 @@ void kernel_main() {
             for (uint32_t nt = 0; nt < Nt; nt++) {
                 // Inner loop over K dimension
                 for (uint32_t kt = 0; kt < Kt; kt++) {
-                    DPRINT << "READER: expert=" << expert_idx << " mt=" << mt << " nt=" << nt << " kt=" << kt << ENDL();
                     // Read input tile at (expert, mt, kt)
                     uint32_t input_tile_idx = input_expert_base + mt * input_row_stride + kt;
                     cb_reserve_back(cb_in0, 1);

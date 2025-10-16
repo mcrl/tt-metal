@@ -31,7 +31,7 @@ For each global token index t in [0, T):
 
 Args:
     * :attr:`input_hidden_state`: (E/D, T, H) bfloat16 tensor, ROW_MAJOR, sharded across devices
-        Expert outputs from projection_to_output (after layout conversion)
+        Expert outputs from moe_bmm (after layout conversion)
         For expert e, only first num_routed_tokens[e, 0] rows contain valid data
     * :attr:`token_idx_map`: (E/D, T) uint32 tensor, ROW_MAJOR, sharded across devices
         Mapping from expert-local position to global token index
@@ -58,7 +58,7 @@ Returns:
 
 Example:
     >>> # After down projection
-    >>> down_output = ttnn.projection_to_output(combined, num_routed, down_weights)
+    >>> down_output = ttnn.experimental.moe_bmm(combined, down_weights, num_routed)
     >>>
     >>> # Convert to ROW_MAJOR for reduce
     >>> down_output_rm = ttnn.to_layout(down_output, ttnn.ROW_MAJOR_LAYOUT)
