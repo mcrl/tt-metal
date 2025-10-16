@@ -16,13 +16,10 @@ This document describes the V2 API design for MoE operations, which simplifies t
   - Multi-core parallelization (token-parallel approach)
   - Each core processes different output token rows
   - Always uses multi-core for optimal performance
+- **Unified `moe_bmm`**: Single-core implementation
 
 ### ⚠️ Pending
-- **`projection_to_intermediate`**: Still uses V1 interface (includes scatter logic)
-- **`projection_to_output`**: Still uses V1 interface (includes gather logic)
-- **Unified `moe_bmm`**: Not yet implemented
-- **`forward_v3()` integration**: Not yet implemented in moe.py
-
+- **Multi-core `moe_bmm`**
 ---
 
 ## API Call Sequence
@@ -286,8 +283,6 @@ output[t, :H] = sum over all (e, i) where token_idx_map[e, i] = t:
 
 **Parallelization Strategy: Token-Stationary**
 
-**Recommended Implementation** (easier for parallelization):
-
 1. **Outer loop over tokens** (t from 0 to T-1):
    - Each token can be processed independently
    - Enables easy multi-core parallelization (distribute T tokens across cores)
@@ -321,7 +316,8 @@ for t in range(T):
 - Each token t appears at most K times across all experts (where K = top_k, typically 4-8)
 - The inner expert loop (E/D iterations) is small (typically 16)
 - Most time is spent in the vectorized accumulation over H dimension
-- Multi-core: Assign each core a subset of T tokens to process
+- Multi-core implementation: Each core processes an independent subset of T tokens
+- Token distribution uses `split_work_to_cores()` for balanced load
 
 **Key Features**
 - **Token-order restoration**: Converts from expert-organized to token-organized
