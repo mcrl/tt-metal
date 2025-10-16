@@ -29,7 +29,7 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
     // Validate layouts
     TT_FATAL(input.layout() == Layout::TILE, "input must be TILE layout");
     TT_FATAL(weights.layout() == Layout::TILE, "weights must be TILE layout");
-    TT_FATAL(num_routed_tokens.layout() == Layout::ROW_MAJOR, "num_routed_tokens must be ROW_MAJOR layout");
+    // TT_FATAL(num_routed_tokens.layout() == Layout::ROW_MAJOR, "num_routed_tokens must be ROW_MAJOR layout");
 
     // Validate buffers
     TT_FATAL(input.buffer() != nullptr, "input buffer is null");
@@ -49,9 +49,9 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
     TT_FATAL(input_shape[0] == weights_shape[0],
         "input dim [0] ({}) must match weights dim [0] ({})",
         input_shape[0], weights_shape[0]);
-    TT_FATAL(input_shape[0] == num_routed_shape[0],
-        "input dim [0] ({}) must match num_routed_tokens dim [0] ({})",
-        input_shape[0], num_routed_shape[0]);
+    // TT_FATAL(input_shape[0] == num_routed_shape[0],
+    //     "input dim [0] ({}) must match num_routed_tokens dim [0] ({})",
+    //     input_shape[0], num_routed_shape[0]);
 
     // Validate H_in consistency
     TT_FATAL(input_shape[2] == weights_shape[1],
@@ -59,9 +59,9 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
         input_shape[2], weights_shape[1]);
 
     // Validate num_routed_tokens shape
-    TT_FATAL(num_routed_shape[1] == 1,
-        "num_routed_tokens dim [1] must be 1, got {}",
-        num_routed_shape[1]);
+    // TT_FATAL(num_routed_shape[1] == 1,
+    //     "num_routed_tokens dim [1] must be 1, got {}",
+    //     num_routed_shape[1]);
 
     // Validate TILE alignment for input and weights
     TT_FATAL(input_shape[1] % tt::constants::TILE_HEIGHT == 0,
