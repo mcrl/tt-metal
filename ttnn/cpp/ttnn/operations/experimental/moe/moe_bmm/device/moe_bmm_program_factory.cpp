@@ -39,12 +39,14 @@ operation::ProgramWithCallbacks moe_bmm_single_core(
     const uint32_t cb_in0 = CBIndex::c_0;            // Input tiles from input tensor
     const uint32_t cb_in1 = CBIndex::c_1;            // Weight tiles from weights tensor
     const uint32_t cb_num_routed = CBIndex::c_2;     // num_routed_tokens values
+    const uint32_t cb_num_rows = CBIndex::c_3;       // num_rows buffer
     const uint32_t cb_out = CBIndex::c_16;           // Output tiles
 
     // Data formats
     tt::DataFormat input_data_format = tt_metal::datatype_to_dataformat_converter(input.dtype());
     tt::DataFormat weights_data_format = tt_metal::datatype_to_dataformat_converter(weights.dtype());
     tt::DataFormat num_routed_data_format = tt_metal::datatype_to_dataformat_converter(num_routed_tokens.dtype());
+    tt::DataFormat num_rows_data_format = tt_metal::datatype_to_dataformat_converter(num_routed_tokens.dtype());
     tt::DataFormat output_data_format = tt_metal::datatype_to_dataformat_converter(output.dtype());
 
     // Tile sizes
@@ -68,9 +70,14 @@ operation::ProgramWithCallbacks moe_bmm_single_core(
 
     // cb_num_routed: num_routed_tokens values (one element per expert)
     CircularBufferConfig cb_num_routed_config =
-        CircularBufferConfig(num_experts * num_routed_element_size, {{cb_num_routed, num_routed_data_format}})
+        CircularBufferConfig(num_routed_element_size, {{cb_num_routed, num_routed_data_format}})
             .set_page_size(cb_num_routed, num_routed_element_size);
     CreateCircularBuffer(program, core, cb_num_routed_config);
+
+    CircularBufferConfig cb_num_rows_config =
+        CircularBufferConfig(sizeof(uint32_t), {{cb_num_rows, num_rows_data_format}})
+            .set_page_size(cb_num_rows, sizeof(uint32_t));
+    CreateCircularBuffer(program, core, cb_num_rows_config);
 
     // cb_out: Output tiles (double buffered)
     CircularBufferConfig cb_out_config =
