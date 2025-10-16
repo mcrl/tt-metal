@@ -12,6 +12,7 @@
 namespace ttnn::operations::experimental::moe {
 
 using namespace tt;
+using namespace ttnn;
 using namespace tt::tt_metal;
 
 operation::ProgramWithCallbacks moe_bmm_single_core(
@@ -67,7 +68,7 @@ operation::ProgramWithCallbacks moe_bmm_single_core(
 
     // cb_num_routed: num_routed_tokens values (one element per expert)
     CircularBufferConfig cb_num_routed_config =
-        CircularBufferConfig(num_routed_element_size, {{cb_num_routed, num_routed_data_format}})
+        CircularBufferConfig(num_experts * num_routed_element_size, {{cb_num_routed, num_routed_data_format}})
             .set_page_size(cb_num_routed, num_routed_element_size);
     CreateCircularBuffer(program, core, cb_num_routed_config);
 
@@ -107,6 +108,9 @@ operation::ProgramWithCallbacks moe_bmm_single_core(
         Mt_max
     };
 
+    tt::tt_metal::Tensor single_tensor = ttnn::distributed::get_device_tensors(num_routed_tokens).front();
+    std::vector<uint32_t> compute_runtime_args = single_tensor.to_vector<uint32_t>();
+
     // Create kernels
     auto reader_writer_id = CreateKernel(
         program,
@@ -127,6 +131,7 @@ operation::ProgramWithCallbacks moe_bmm_single_core(
 
     // Set runtime arguments
     SetRuntimeArgs(program, reader_writer_id, core, reader_writer_runtime_args);
+    SetRuntimeArgs(program, compute_id, core, compute_runtime_args);
 
     auto override_runtime_arguments_callback = [reader_writer_id, compute_id](
         const void* operation,

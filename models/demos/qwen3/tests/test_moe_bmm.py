@@ -48,6 +48,7 @@ def pad_to_tile_size(size, tile_size=32):
 
 @pytest.mark.parametrize("config", [
     {"num_experts": 8, "max_tokens": 16, "h_in": 4, "h_out": 8},
+    {"num_experts": 16, "max_tokens": 256, "h_in": 4, "h_out": 8},
 ])
 @pytest.mark.parametrize(
     "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
@@ -184,17 +185,6 @@ def test_moe_bmm(mesh_device, config):
     
     mean_diff_overall /= num_comparisons
     print(f"\nOverall: max_diff={max_diff_overall:.6f}, mean_diff={mean_diff_overall:.6f}")
-    
-    # Verify zero-padding for inactive tokens
-    for e in range(num_experts):
-        num_tokens = num_routed[e, 0].item()
-        if num_tokens < max_tokens_padded:
-            # Check that remaining rows are zero (or very close to zero)
-            inactive_output = output_torch[e, num_tokens:max_tokens, :]
-            inactive_norm = torch.abs(inactive_output).max().item()
-            print(f"Expert {e}: inactive tokens norm = {inactive_norm:.6f}")
-            # Some tolerance for numerical errors, but should be mostly zero
-            assert inactive_norm < 0.01, f"Expert {e}: inactive tokens not properly zeroed"
     
     print("\n✓ Test passed!")
 

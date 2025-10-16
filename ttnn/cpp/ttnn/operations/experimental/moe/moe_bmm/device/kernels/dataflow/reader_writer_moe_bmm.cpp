@@ -73,9 +73,6 @@ void kernel_main() {
         // Round up to nearest tile boundary (TILE_HEIGHT = 32)
         constexpr uint32_t TILE_HEIGHT = 32;
         uint32_t Mt = (num_routed + TILE_HEIGHT - 1) / TILE_HEIGHT;
-        if (Mt > Mt_max) {
-            Mt = Mt_max;
-        }
 
         // Calculate base tile indices for this expert
         uint32_t input_expert_base = expert_idx * input_expert_stride;
@@ -98,16 +95,6 @@ void kernel_main() {
                         uint32_t l1_write_addr_in0 = get_write_ptr(cb_in0);
                         noc_async_read_tile(input_tile_idx, input_accessor, l1_write_addr_in0);
                         noc_async_read_barrier();
-                        cb_push_back(cb_in0, 1);
-                    } else {
-                        // Feed zero tile to compute for inactive row
-                        cb_reserve_back(cb_in0, 1);
-                        uint32_t l1_write_addr_in0 = get_write_ptr(cb_in0);
-                        volatile tt_l1_ptr uint16_t* zero_ptr = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(l1_write_addr_in0);
-                        constexpr uint32_t TILE_SIZE = 32 * 32;
-                        for (uint32_t i = 0; i < TILE_SIZE; i++) {
-                            zero_ptr[i] = 0;
-                        }
                         cb_push_back(cb_in0, 1);
                     }
 
