@@ -477,14 +477,14 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("softmax-topk-div", level=4):
-            routing_weights = ttnn.softmax(router_logits, dim=1, memory_config=mem_cfg)
+            routing_weights = ttnn.softmax(router_logits, memory_config=mem_cfg)
             routing_weights, selected_experts = ttnn.topk(
-                routing_weights, self.top_k, dim=1, largest=True, memory_config=mem_cfg
+                routing_weights, self.top_k, largest=True, memory_config=mem_cfg
             )
             if self.norm_topk_prob:
                 routing_weights = ttnn.div(
                     routing_weights,
-                    ttnn.sum(routing_weights, dim=1, keepdim=True, memory_config=mem_cfg),
+                    ttnn.sum(routing_weights, dim=-1, keepdim=True, memory_config=mem_cfg),
                     memory_config=mem_cfg,
                 )
 
@@ -566,7 +566,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             gate_silu = ttnn.silu(gate_output, memory_config=mem_cfg)
 
             # Elementwise multiply
-            combined_activations = ttnn.mul(gate_silu, up_output, memory_config=mem_cfg)
+            combined_activations = ttnn.multiply(gate_silu, up_output, memory_config=mem_cfg)
 
         # Step 4: Down Projection with routing weights and accumulation
         with Profiler().trace_with_timer("down-projection", level=4):
@@ -592,7 +592,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         # Step 5: Allreduce across devices (sum partial outputs from all devices)
         with Profiler().trace_with_timer("allreduce", level=4):
             T, H = moe_output.shape
-            final_output = ttnn.reshape(moe_output, shape=(1, 1, T * H // 256, 256), memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            final_output = ttnn.reshape(moe_output, shape=(1, 1, T, H), memory_config=mem_cfg)
 
             final_output = ttnn.experimental.reduce_scatter_minimal_async(
                 final_output,
@@ -618,27 +618,10 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-            """
-            final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
-            final_output = ttnn.experimental.all_reduce_async(
-                final_output,
-                math_op=ttnn.ReduceType.Sum,
-                memory_config=mem_cfg,
-                topology=ttnn.Topology.Linear,
-                from_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
-                to_remote_multi_device_global_semaphore=self.ccl.get_semaphore(0),
-                gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
-                num_links=1,
-            )
-            """
             ttnn.synchronize_device(self.mesh_device)
 
         # Reshape to original shape
         with Profiler().trace_with_timer("reshape", level=4):
-            # Convert to ROW_MAJOR before reshaping
-            # final_output = ttnn.to_layout(final_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
-            # Reshape from (1, 1, T*H//256, 256) back to (T, H)
-            num_tokens = batch_size * sequence_length
             final_output = ttnn.reshape(final_output, (T, H), memory_config=mem_cfg)
 
             if mode == InferenceMode.PREFILL:
