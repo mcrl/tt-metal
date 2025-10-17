@@ -8,7 +8,9 @@ import tt_lock
 import ttnn
 
 from transformers import AutoConfig
-from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeDecoderLayer
+from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeDecoderLayer
+
+# from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeDecoderLayer
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
@@ -47,7 +49,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (32, 4),
+        (32, 32),
     ],
 )
 @pytest.mark.parametrize(
@@ -80,7 +82,7 @@ def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
     tt_mlp.setup_tt()
 
     hidden_states = torch.randn(batch_size, seq_len, config.hidden_size, dtype=torch.bfloat16)
-    ref_output = ref_mlp(hidden_states)
+    ref_output = ref_mlp(hidden_states)[0]
 
     hidden_states_tt = ttnn.from_torch(
         hidden_states,

@@ -4,6 +4,8 @@ import ttnn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.ccl_1d import CCL1D
+from models.tt_transformers.tt.ccl import TT_CCL
+
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
@@ -60,7 +62,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             return
 
         with Profiler().trace_with_timer("CCL", level=4):
-            self.ccl = CCL1D(self.mesh_device)
+            self.ccl = TT_CCL(self.mesh_device)
 
         with Profiler().trace_with_timer("gate_weight_tt", level=4):
             self.gate_weight = ttnn.as_tensor(
@@ -590,7 +592,33 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         # Step 5: Allreduce across devices (sum partial outputs from all devices)
         with Profiler().trace_with_timer("allreduce", level=4):
             T, H = moe_output.shape
-            final_output = ttnn.reshape(moe_output, shape=(1, 1, T * H // 256, 256), memory_config=mem_cfg)
+            final_output = ttnn.reshape(moe_output, shape=(1, 1, T * H // 256, 256), memory_config=ttnn.DRAM_MEMORY_CONFIG)
+
+            final_output = ttnn.experimental.reduce_scatter_minimal_async(
+                final_output,
+                persistent_output_buffers=None,
+                dim=3,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(),
+                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(),
+                num_links=1,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                topology=ttnn.Topology.Linear,
+                chunks_per_sync=10,
+                num_workers_per_link=2,
+                num_buffers_per_channel=2,
+            )
+            final_output = ttnn.experimental.all_gather_async(
+                final_output,
+                3,
+                cluster_axis=1,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                num_links=1,
+            )
+            """
             final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
             final_output = ttnn.experimental.all_reduce_async(
                 final_output,
@@ -602,15 +630,16 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 gather_multi_device_global_semaphore=self.ccl.get_semaphore(0),
                 num_links=1,
             )
+            """
             ttnn.synchronize_device(self.mesh_device)
 
         # Reshape to original shape
         with Profiler().trace_with_timer("reshape", level=4):
             # Convert to ROW_MAJOR before reshaping
-            final_output = ttnn.to_layout(final_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
+            # final_output = ttnn.to_layout(final_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
             # Reshape from (1, 1, T*H//256, 256) back to (T, H)
             num_tokens = batch_size * sequence_length
-            final_output = ttnn.reshape(final_output, (num_tokens, hidden_dim), memory_config=mem_cfg)
+            final_output = ttnn.reshape(final_output, (T, H), memory_config=mem_cfg)
 
             if mode == InferenceMode.PREFILL:
                 final_hidden_states = ttnn.reshape(
