@@ -49,6 +49,8 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
+        (32, 8),
+        (32, 16),
         (32, 32),
     ],
 )
@@ -92,7 +94,7 @@ def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
-    output_tt = tt_mlp.forward_v3(hidden_states_tt)
+    output_tt = tt_mlp.forward(hidden_states_tt)
     # After allreduce in forward_v3, output is replicated across all devices
     # Convert to ROW_MAJOR before converting to torch
     output_tt = ttnn.to_layout(output_tt, ttnn.ROW_MAJOR_LAYOUT)
