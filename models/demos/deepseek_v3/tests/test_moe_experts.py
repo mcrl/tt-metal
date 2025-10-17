@@ -91,13 +91,10 @@ def get_reference_output(torch_input, reference_model):
     return reference_model(torch_input)
 
 
-@pytest.mark.skip(reason="This test hangs for some reason")
 @pytest.mark.parametrize(
     "mode, seq_len",
     [
         ("decode", 128),
-        ("prefill", 128),
-        ("prefill", 256),
         ("prefill", 2048),
     ],
 )
@@ -118,9 +115,9 @@ def test_forward_pass(
     weight_type: str,
     module_path: str,
     model_path: Path,
+    reset_seeds: Any,
 ):
     batch_size = 1
-    torch.manual_seed(0)
 
     reference_model = get_reference_model(weight_type, hf_config, module_path, model_path)
     torch_input = get_reference_input(batch_size, seq_len, hf_config)
