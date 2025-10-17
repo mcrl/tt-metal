@@ -95,8 +95,6 @@ class Qwen3MoeDecoderLayer(nn.Module):
         """attn result: [1, 1, B, H]"""
 
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
-            print(f"{hidden_states.shape=}")
-            print(f"{attn_result.shape=}")
             hidden_states = ttnn.add(attn_result, hidden_states)
         """Hidden states: [1, 1, B, H]"""
 
