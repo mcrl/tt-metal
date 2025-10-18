@@ -196,11 +196,12 @@ num_routed_torch = num_routed_torch.squeeze(-1)
 ### Production Usage
 
 ```python
-# API returns 2D tensor (E/D, 1)
-num_routed_tokens, routed_tokens, routed_weights = ttnn.prepare_moe_routing_tensors(...)
+# API returns 2D tensors (E/D, 1) for num_routed_tokens and num_tiled_tokens
+num_routed_tokens, routed_tokens, routed_weights, token_idx_map, num_tiled_tokens = ttnn.prepare_moe_routing_tensors(...)
 
 # Squeeze to 1D if needed for subsequent operations
 num_routed_tokens = num_routed_tokens.squeeze(-1)  # (E/D, 1) → (E/D,)
+num_tiled_tokens = num_tiled_tokens.squeeze(-1)    # (E/D, 1) → (E/D,)
 ```
 
 ---

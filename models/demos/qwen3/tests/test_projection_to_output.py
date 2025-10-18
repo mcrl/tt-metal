@@ -164,8 +164,8 @@ def test_projection_to_output(mesh_device, config):
     )
 
     # Get routed tokens tensor (now device-local, sharded by experts)
-    # Returns 4 tensors: num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map
-    num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
+    # Returns 5 tensors: num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map, num_tiled_tokens
+    num_routed, routed_tokens, routed_weights, token_idx_map, num_tiled = ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping_tt, num_experts
     )
 
