@@ -21,6 +21,7 @@ def reference_prepare_moe_routing_tensors(selected_experts, routing_weights, dev
         - routed_tokens: (E/D, max_tokens) token indices per LOCAL expert
         - routed_token_weights: (E/D, max_tokens) weights per LOCAL expert
         - tokenidx_expertlocal_to_global: (E/D, max_tokens) mapping from expert-local to global token index
+        - num_tiled_tokens: (E/D,) per-expert tiled tokens, computed as (num_routed_tokens[e] + 31) // 32 for each expert
     """
     num_tokens, top_k = selected_experts.shape
     num_local_experts = device_expert_mapping.shape[0]
@@ -133,7 +134,7 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
     )
 
     # Call the operation
-    num_routed, routed_tokens, routed_weights, tokenidx_map = ttnn.prepare_moe_routing_tensors(
+    num_routed, routed_tokens, routed_weights, tokenidx_map, num_tiled = ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping_tt, num_experts
     )
 
@@ -144,19 +145,25 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
     assert routed_tokens.shape[1] == num_tokens  # max_tokens_per_expert
     assert routed_weights.shape == routed_tokens.shape
     assert tokenidx_map.shape == routed_tokens.shape  # Same shape as routed_tokens
+    assert num_tiled.shape[0] == experts_per_device  # (E/D, 1) tensor per device
+    assert num_tiled.shape[1] == 1
 
     # Convert to PyTorch for verification (sharded outputs)
     num_routed_torch = ttnn.to_torch(num_routed, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
     routed_tokens_torch = ttnn.to_torch(routed_tokens, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
     routed_weights_torch = ttnn.to_torch(routed_weights, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
     tokenidx_map_torch = ttnn.to_torch(tokenidx_map, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
+    num_tiled_torch = ttnn.to_torch(num_tiled, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
 
     # Squeeze num_routed_torch to 1D for comparison
     num_routed_torch = num_routed_torch.squeeze(-1)
+    
+    # Squeeze num_tiled_torch to 1D for comparison
+    num_tiled_torch = num_tiled_torch.squeeze(-1)
 
     # Each device has different output (sharded by experts)
     # Verify first device's output
-    print(tokenidx_map_torch)
+    # print(tokenidx_map_torch)
     
     num_routed_torch_device0 = num_routed_torch[:experts_per_device]  # First device, all values (1D after squeeze)
     routed_tokens_torch_device0 = routed_tokens_torch[:experts_per_device]  # First E/D experts
@@ -227,4 +234,23 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
             assert torch.all((padding_tokenidx == -1) | (padding_tokenidx == 0xFFFFFFFF)), \
                 f"Local expert {local_expert_idx} tokenidx mapping padding not properly set"
 
+    # Verify num_tiled_tokens for device 0 - per-expert tiled counts
+    # Compute expected value: (num_routed_tokens[e] + 31) // 32 for each local expert
+    TILE_SIZE = 32
+    num_tiled_torch_device0 = num_tiled_torch[:experts_per_device]  # First device, all experts
+    
+    for local_expert_idx in range(experts_per_device):
+        count = ref_num_routed[local_expert_idx].item()
+        expected_tiled = (count + TILE_SIZE - 1) // TILE_SIZE
+        actual_tiled = num_tiled_torch_device0[local_expert_idx].item()
+        
+        assert actual_tiled == expected_tiled, \
+            f"num_tiled_tokens mismatch for device 0, expert {local_expert_idx}:\n" \
+            f"Expected: {expected_tiled} (from {count} tokens)\nGot: {actual_tiled}"
+
+    total_tiled = num_tiled_torch_device0.sum().item()
+    expected_total = sum((count.item() + TILE_SIZE - 1) // TILE_SIZE for count in ref_num_routed)
+    
     print(f"✓ Test passed: num_tokens={num_tokens}, top_k={top_k}, num_experts={num_experts}")
+    print(f"  num_tiled_tokens (device 0): {num_tiled_torch_device0.tolist()}, total={total_tiled} (expected total: {expected_total})")
+
