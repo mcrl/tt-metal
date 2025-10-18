@@ -332,7 +332,7 @@ for t in range(T):
 ### Step 0: Prepare Routing (once per forward pass)
 ```python
 # Same as V1 - prepares device-local routing information
-num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map = \
+num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map, num_tiled_tokens = \
     ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping, num_experts
     )

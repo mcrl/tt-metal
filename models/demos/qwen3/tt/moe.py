@@ -344,7 +344,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         # Step 1: Prepare routing tensors with device-expert mapping
         with Profiler().trace_with_timer("prepare-routing-tensors", level=4):
-            num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
+            num_routed, routed_tokens, routed_weights, token_idx_map, num_tiled = ttnn.prepare_moe_routing_tensors(
                 selected_experts, routing_weights, device_expert_mapping, self.num_experts
             )
 
@@ -527,7 +527,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         # Step 1: Prepare routing tensors with device-expert mapping
         with Profiler().trace_with_timer("prepare-routing-tensors", level=4):
-            num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
+            num_routed, routed_tokens, routed_weights, token_idx_map, num_tiled = ttnn.prepare_moe_routing_tensors(
                 selected_experts, routing_weights, device_expert_mapping, self.num_experts
             )
         

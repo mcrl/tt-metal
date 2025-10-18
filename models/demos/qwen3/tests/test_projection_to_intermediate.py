@@ -164,14 +164,15 @@ def test_projection_to_intermediate(mesh_device, config):
     )
 
     # Get routed tokens tensor (now device-local, sharded by experts)
-    num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
+    num_routed, routed_tokens, routed_weights, token_idx_map, num_tiled = ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping_tt, num_experts
     )
 
     # Convert routing info to torch for reference
     # prepare_moe_routing_tensors outputs are SHARDED across devices (device-local):
-    # After concat: num_routed shape is (D * E/D) = (E,) - 1D tensor concatenated from all devices
+    # After concat: num_routed shape is (D * E/D, 1) = (E, 1) - 2D tensor concatenated from all devices
     # After concat: routed_tokens shape is (D*(E/D), max_tokens) = (E, max_tokens)
+    # After concat: num_tiled shape is (D * E/D, 1) = (E, 1) - per-expert tiled counts
     num_routed_torch = ttnn.to_torch(num_routed, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
     routed_tokens_torch = ttnn.to_torch(routed_tokens, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
 

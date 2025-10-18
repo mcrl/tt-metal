@@ -45,7 +45,7 @@ The device-expert mapping is **only used in `prepare_moe_routing_tensors`** to f
 
 **Python API**
 ```python
-num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
+num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map, num_tiled_tokens = ttnn.prepare_moe_routing_tensors(
     selected_experts,         # (T, K) uint32 tensor
     routing_weights,          # (T, K) bfloat16 tensor
     device_expert_mapping,    # (E/D,) int32 tensor
@@ -93,6 +93,11 @@ num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map = ttnn.pre
 	- `token_idx_map[e, k]` = global token index for k-th token assigned to local expert e
 	- For expert e, `token_idx_map[e][t_e] = t_g` where t_e is the local index (0 to num_routed_tokens[e]-1) and t_g is the global token index in the original batch
 	- Used by `projection_to_output` to map expert-local results back to global token positions
+- **num_tiled_tokens**: `(E/D, 1)` uint32 2D tensor
+	- Number of tiled tokens for each local expert
+	- `num_tiled_tokens[e, 0] = (num_routed_tokens[e, 0] + 31) // 32` where TILE_SIZE=32
+	- Used for efficient tile allocation in subsequent operations
+	- Total tiled tokens across all experts can be computed as `num_tiled_tokens.sum()`
 
 **Behavior**
 - Filters global routing information to only include experts assigned to this device

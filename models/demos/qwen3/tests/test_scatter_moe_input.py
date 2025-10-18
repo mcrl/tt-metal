@@ -121,7 +121,7 @@ def test_scatter_moe_input(mesh_device, num_tokens, top_k, num_experts, hidden_d
     )
 
     # Get routing tensors
-    num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
+    num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map, num_tiled_tokens = ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping, num_experts
     )
 
