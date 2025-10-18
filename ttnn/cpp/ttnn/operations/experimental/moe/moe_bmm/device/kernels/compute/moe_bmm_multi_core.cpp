@@ -20,7 +20,9 @@ namespace NAMESPACE {
  *   - Nt: Number of tiles in N dimension (output columns)
  *
  * Runtime arguments:
- *   - work_per_core: Number of output tiles this core should process
+ *   - total_token_tiles: Total number of token tiles
+ *   - core_x: X coordinate of this core
+ *   - core_y: Y coordinate of this core
  *
  * Circular buffers:
  *   - cb_in0: Input tiles from input tensor
@@ -31,11 +33,35 @@ void MAIN {
     const uint32_t Kt = get_compile_time_arg_val(0);
     const uint32_t Nt = get_compile_time_arg_val(1);
     
-    const uint32_t work_per_core = get_arg_val<uint32_t>(0);
+    const uint32_t core_x = get_arg_val<uint32_t>(0);
+    const uint32_t core_y = get_arg_val<uint32_t>(1);
 
     constexpr tt::CBIndex cb_in0 = tt::CBIndex::c_0;
     constexpr tt::CBIndex cb_in1 = tt::CBIndex::c_1;
+    constexpr tt::CBIndex cb_num_tiles = tt::CBIndex::c_2;
     constexpr tt::CBIndex cb_out = tt::CBIndex::c_16;
+
+    volatile uint32_t* num_tiles_addr_ptr;
+
+    cb_wait_front(cb_num_tiles, 1);
+    tensix_sync();
+    cb_get_tile(cb_num_tiles, 0, &num_tiles_addr_ptr);
+    uint32_t total_token_tiles = num_tiles_addr_ptr[4];
+    DPRINT << total_token_tiles << ENDL();
+    cb_release_tile(cb_num_tiles);
+    cb_pop_front(cb_num_tiles, 1);
+
+    // Calculate work for this core dynamically
+    const uint32_t num_output_tiles_total = total_token_tiles;
+    constexpr uint32_t NUM_CORES = 64;  // 8x8 grid
+    const uint32_t core_id = core_y * 8 + core_x;
+    uint32_t work_per_core = num_output_tiles_total / NUM_CORES;
+    const uint32_t remainder = num_output_tiles_total % NUM_CORES;
+    
+    // Cores with id < remainder get one extra tile
+    if (core_id < remainder) {
+        work_per_core += 1;
+    }
 
     // Initialize matrix multiplication unit
     mm_init(cb_in0, cb_in1, cb_out);

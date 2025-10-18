@@ -4,7 +4,6 @@
 
 #include "moe_bmm_program_factory.hpp"
 
-#include <tt-metalium/work_split.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 #include "ttnn/operations/cb_utils.hpp"
@@ -180,25 +179,17 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
     uint32_t Nt = h_out / tt::constants::TILE_WIDTH;     // Number of tiles in N dimension (output columns)
     uint32_t Mt_max = max_tokens / tt::constants::TILE_HEIGHT;  // Maximum number of tiles in M dimension (tokens)
 
-    // Read num_tiled_tokens from device
-    // This is a (1, 1) tensor containing the total number of token tiles across all experts
-    // For distributed tensors, we need to get device tensors and read from current device
-    auto device_tensors = ttnn::distributed::get_device_tensors(num_tiled_tokens);
-    uint32_t device_id = device->id();
-    auto num_tiled_tokens_vec = device_tensors[device_id].to_vector<uint32_t>();
-    uint32_t total_token_tiles = num_tiled_tokens_vec[0];
-
-    // Calculate total output tiles: total_token_tiles * Nt
-    uint32_t num_output_tiles_total = total_token_tiles * Nt;
-
     // Get the compute grid and split work across cores
     auto core_grid = device->compute_with_storage_grid_size();
-    auto [num_cores, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2] =
-        split_work_to_cores(core_grid, num_output_tiles_total);
+
+    CoreRangeSet all_cores;
+    uint32_t num_cores_x = core_grid.x, num_cores_y = core_grid.y;
+    all_cores = CoreRangeSet(CoreRange({0, 0}, {num_cores_x - 1, num_cores_y - 1}));
 
     // Circular buffer indices
     const uint32_t cb_in0 = CBIndex::c_0;            // Input tiles from input tensor
     const uint32_t cb_in1 = CBIndex::c_1;            // Weight tiles from weights tensor
+    const uint32_t cb_num_tiles = CBIndex::c_2;       // num_tiled_tokens values
     const uint32_t cb_out = CBIndex::c_16;           // Output tiles
 
     // Data formats
@@ -221,6 +212,11 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
         CircularBufferConfig(2 * weights_tile_size, {{cb_in1, weights_data_format}})
             .set_page_size(cb_in1, weights_tile_size);
     CreateCircularBuffer(program, all_cores, cb_in1_config);
+
+    CircularBufferConfig cb_num_tiles_config =
+        CircularBufferConfig(sizeof(uint32_t), {{cb_num_tiles, tt::DataFormat::UInt32}})
+            .set_page_size(cb_num_tiles, sizeof(uint32_t));
+    CreateCircularBuffer(program, all_cores, cb_num_tiles_config);
 
     CircularBufferConfig cb_out_config =
         CircularBufferConfig(2 * output_tile_size, {{cb_out, output_data_format}})
@@ -273,51 +269,44 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
             .math_fidelity = MathFidelity::HiFi4,
             .compile_args = compute_compile_time_args});
 
-    // Set runtime arguments for each core
-    uint32_t work_offset = 0;
-    auto work_groups = {std::make_pair(core_group_1, work_per_core1), std::make_pair(core_group_2, work_per_core2)};
+    for (const auto& range : all_cores.ranges()) {
+        for (const auto& core : range) {
+            // Reader kernel arguments
+            std::vector<uint32_t> reader_runtime_args = {
+                input.buffer()->address(),
+                weights.buffer()->address(),
+                num_routed_tokens.buffer()->address(),
+                num_experts,
+                max_tokens,
+                h_in,
+                h_out,
+                Kt,
+                Nt,
+                Mt_max,
+                core.x,
+                core.y
+            };
 
-    for (const auto& [core_range, work_per_core] : work_groups) {
-        for (const auto& range : core_range.ranges()) {
-            for (const auto& core : range) {
-                // Reader kernel arguments
-                std::vector<uint32_t> reader_runtime_args = {
-                    input.buffer()->address(),
-                    weights.buffer()->address(),
-                    num_routed_tokens.buffer()->address(),
-                    num_experts,
-                    max_tokens,
-                    h_in,
-                    h_out,
-                    Kt,
-                    Nt,
-                    Mt_max,
-                    work_offset,
-                    work_per_core
-                };
+            // Writer kernel arguments
+            std::vector<uint32_t> writer_runtime_args = {
+                output.buffer()->address(),
+                num_routed_tokens.buffer()->address(),
+                num_experts,
+                Nt,
+                Mt_max,
+                core.x,
+                core.y
+            };
 
-                // Writer kernel arguments
-                std::vector<uint32_t> writer_runtime_args = {
-                    output.buffer()->address(),
-                    num_routed_tokens.buffer()->address(),
-                    num_experts,
-                    Nt,
-                    Mt_max,
-                    work_offset,
-                    work_per_core
-                };
+            // Compute kernel arguments
+            std::vector<uint32_t> compute_runtime_args = {
+                core.x,
+                core.y
+            };
 
-                // Compute kernel arguments
-                std::vector<uint32_t> compute_runtime_args = {
-                    work_per_core
-                };
-
-                SetRuntimeArgs(program, reader_id, core, reader_runtime_args);
-                SetRuntimeArgs(program, writer_id, core, writer_runtime_args);
-                SetRuntimeArgs(program, compute_id, core, compute_runtime_args);
-
-                work_offset += work_per_core;
-            }
+            SetRuntimeArgs(program, reader_id, core, reader_runtime_args);
+            SetRuntimeArgs(program, writer_id, core, writer_runtime_args);
+            SetRuntimeArgs(program, compute_id, core, compute_runtime_args);
         }
     }
 
