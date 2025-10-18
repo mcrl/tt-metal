@@ -52,6 +52,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
         (32, 8),
         (32, 16),
         (32, 32),
+        (32, 128)
     ],
 )
 @pytest.mark.parametrize(

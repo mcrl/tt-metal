@@ -54,23 +54,26 @@ void kernel_main() {
     }
 
     // Calculate the cumulative tile offset for each expert
-    uint32_t expert_tile_offsets[64];
+    // Note: expert_tile_offsets[e] is the starting global tile ID for expert e
+    // expert_tile_offsets[e+1] is the ending global tile ID (exclusive) for expert e
+    uint32_t expert_tile_offsets[65];  // Need num_experts + 1 entries
     expert_tile_offsets[0] = 0;
-    for (uint32_t expert_idx = 1; expert_idx < num_experts; expert_idx++) {
-        expert_tile_offsets[expert_idx] = expert_tile_offsets[expert_idx - 1] + Mt_cache[expert_idx - 1] * Nt;
+    for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
+        expert_tile_offsets[expert_idx + 1] = expert_tile_offsets[expert_idx] + Mt_cache[expert_idx] * Nt;
     }
 
     // Process work_per_core output tiles starting from work_offset
     for (uint32_t work_idx = 0; work_idx < work_per_core; work_idx++) {
         uint32_t global_output_tile_id = work_offset + work_idx;
         
-        // Find which expert this tile belongs to using binary-like search
-        uint32_t expert_idx = 0;
-        for (uint32_t e = 1; e < num_experts; e++) {
-            if (global_output_tile_id < expert_tile_offsets[e]) {
+        // Find which expert this tile belongs to
+        // Handle empty experts (those with 0 tiles) correctly
+        uint32_t expert_idx = num_experts - 1;  // Default to last expert
+        for (uint32_t e = 0; e < num_experts; e++) {
+            if (global_output_tile_id < expert_tile_offsets[e + 1]) {
+                expert_idx = e;
                 break;
             }
-            expert_idx = e;
         }
         
         // Calculate local tile position within expert's output
