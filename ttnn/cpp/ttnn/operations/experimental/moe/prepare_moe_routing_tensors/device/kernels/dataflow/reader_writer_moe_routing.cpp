@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "dataflow_api.h"
+#include "debug/dprint.h"
 
 // This kernel prepares device-local MoE routing tensors for efficient expert-parallel computation
 // MULTI-CORE VERSION: Each core processes one local expert independently
@@ -28,6 +29,8 @@
 //   Mapping from expert-local token index to global token index
 //   For expert e, token_idx_map[e][t_e] = t_g
 //   where t_e is the local index (0 to num_routed_tokens[e]-1) and t_g is the global token index
+// - num_tiled_tokens: ROW_MAJOR, uint32, shape (num_local_experts, 1)
+//   Number of tiled tokens for each LOCAL expert, computed as (num_routed_tokens + 31) // 32
 //
 // Algorithm (per core):
 // 1. Load global expert ID for this core's assigned local expert
@@ -43,12 +46,13 @@ void kernel_main() {
     const uint32_t routed_tokens_addr = get_arg_val<uint32_t>(4);
     const uint32_t routed_token_weights_addr = get_arg_val<uint32_t>(5);
     const uint32_t token_idx_map_addr = get_arg_val<uint32_t>(6);
-    const uint32_t num_tokens = get_arg_val<uint32_t>(7);
-    const uint32_t top_k = get_arg_val<uint32_t>(8);
-    const uint32_t num_experts = get_arg_val<uint32_t>(9);
-    const uint32_t num_local_experts = get_arg_val<uint32_t>(10);
-    const uint32_t max_tokens_per_expert = get_arg_val<uint32_t>(11);
-    const uint32_t local_expert_id = get_arg_val<uint32_t>(12);  // NEW: This core's assigned expert
+    const uint32_t num_tiled_tokens_addr = get_arg_val<uint32_t>(7);
+    const uint32_t num_tokens = get_arg_val<uint32_t>(8);
+    const uint32_t top_k = get_arg_val<uint32_t>(9);
+    const uint32_t num_experts = get_arg_val<uint32_t>(10);
+    const uint32_t num_local_experts = get_arg_val<uint32_t>(11);
+    const uint32_t max_tokens_per_expert = get_arg_val<uint32_t>(12);
+    const uint32_t local_expert_id = get_arg_val<uint32_t>(13);  // NEW: This core's assigned expert
 
     // Circular buffer indices
     constexpr uint32_t cb_experts = tt::CBIndex::c_0;
@@ -58,6 +62,7 @@ void kernel_main() {
     constexpr uint32_t cb_routed_tokens = tt::CBIndex::c_17;
     constexpr uint32_t cb_routed_weights = tt::CBIndex::c_18;
     constexpr uint32_t cb_tokenidx_map = tt::CBIndex::c_19;
+    constexpr uint32_t cb_num_tiled = tt::CBIndex::c_20;
     constexpr uint32_t cb_scratch = tt::CBIndex::c_24;
 
     // Create tensor accessors for proper DRAM access
@@ -68,6 +73,7 @@ void kernel_main() {
     constexpr auto routed_tokens_accessor_args = TensorAccessorArgs<num_routed_accessor_args.next_compile_time_args_offset()>();
     constexpr auto routed_weights_accessor_args = TensorAccessorArgs<routed_tokens_accessor_args.next_compile_time_args_offset()>();
     constexpr auto tokenidx_map_accessor_args = TensorAccessorArgs<routed_weights_accessor_args.next_compile_time_args_offset()>();
+    constexpr auto num_tiled_accessor_args = TensorAccessorArgs<tokenidx_map_accessor_args.next_compile_time_args_offset()>();
 
     const auto experts_accessor = TensorAccessor(experts_accessor_args, selected_experts_addr, top_k * sizeof(uint32_t));
     const auto weights_accessor = TensorAccessor(weights_accessor_args, routing_weights_addr, top_k * sizeof(uint16_t));
@@ -76,6 +82,7 @@ void kernel_main() {
     const auto routed_tokens_accessor = TensorAccessor(routed_tokens_accessor_args, routed_tokens_addr, max_tokens_per_expert * sizeof(uint32_t));
     const auto routed_weights_accessor = TensorAccessor(routed_weights_accessor_args, routed_token_weights_addr, max_tokens_per_expert * sizeof(uint16_t));
     const auto tokenidx_map_accessor = TensorAccessor(tokenidx_map_accessor_args, token_idx_map_addr, max_tokens_per_expert * sizeof(uint32_t));
+    const auto num_tiled_accessor = TensorAccessor(num_tiled_accessor_args, num_tiled_tokens_addr, sizeof(uint32_t));
 
     // Reserve L1 buffers
     cb_reserve_back(cb_experts, 1);
@@ -182,6 +189,23 @@ void kernel_main() {
     noc_async_write(l1_tokenidx_map_addr, tokenidx_map_noc_addr, max_tokens_per_expert * sizeof(uint32_t));
 
     noc_async_write_barrier();
+
+    // Compute tiled token count for this expert: (token_count + 31) // 32
+    constexpr uint32_t TILE_SIZE = 32;
+    uint32_t tiled_count = (token_count + TILE_SIZE - 1) / TILE_SIZE;
+
+    // Write num_tiled_tokens for this expert (per-element page, same as num_routed_tokens)
+    cb_reserve_back(cb_num_tiled, 1);
+    uint32_t l1_num_tiled_addr = get_write_ptr(cb_num_tiled);
+    uint32_t* num_tiled_ptr = reinterpret_cast<uint32_t*>(l1_num_tiled_addr);
+    num_tiled_ptr[0] = tiled_count;
+
+    // Write to page ID = local_expert_id (each page contains 1 element)
+    uint64_t num_tiled_noc_addr = get_noc_addr(local_expert_id, num_tiled_accessor);
+    noc_async_write(l1_num_tiled_addr, num_tiled_noc_addr, sizeof(uint32_t));
+    noc_async_write_barrier();
+
+    cb_push_back(cb_num_tiled, 1);
 
     // Release circular buffers
     cb_push_back(cb_experts, 1);

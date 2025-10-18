@@ -22,6 +22,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     Tensor& routed_tokens,
     Tensor& routed_token_weights,
     Tensor& token_idx_map,
+    Tensor& num_tiled_tokens,
     uint32_t num_experts,
     uint32_t num_local_experts,
     uint32_t max_tokens_per_expert) {
@@ -48,6 +49,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     const uint32_t cb_routed_tokens = CBIndex::c_17;
     const uint32_t cb_routed_weights = CBIndex::c_18;
     const uint32_t cb_tokenidx_map = CBIndex::c_19;
+    const uint32_t cb_num_tiled = CBIndex::c_20;
     const uint32_t cb_scratch = CBIndex::c_24;
 
     // Data formats
@@ -58,6 +60,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     tt::DataFormat routed_tokens_data_format = tt_metal::datatype_to_dataformat_converter(DataType::UINT32);
     tt::DataFormat routed_weights_data_format = tt_metal::datatype_to_dataformat_converter(DataType::BFLOAT16);
     tt::DataFormat tokenidx_map_data_format = tt_metal::datatype_to_dataformat_converter(DataType::UINT32);
+    tt::DataFormat num_tiled_data_format = tt_metal::datatype_to_dataformat_converter(DataType::UINT32);
 
     // Buffer sizes (per-core, each core processes one expert)
     const uint32_t experts_row_bytes = top_k * sizeof(uint32_t);
@@ -67,6 +70,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     const uint32_t routed_tokens_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
     const uint32_t routed_weights_row_bytes = max_tokens_per_expert * sizeof(uint16_t);
     const uint32_t tokenidx_map_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
+    const uint32_t num_tiled_bytes = sizeof(uint32_t);  // Single tiled count per expert
 
     // Scratch buffer for collecting tokens for single expert (per-core)
     // Size: max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t))
@@ -108,6 +112,11 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
             .set_page_size(cb_tokenidx_map, tokenidx_map_row_bytes);
     CreateCircularBuffer(program, all_cores, tokenidx_map_cb_config);
 
+    tt_metal::CircularBufferConfig num_tiled_cb_config =
+        tt_metal::CircularBufferConfig(num_tiled_bytes, {{cb_num_tiled, num_tiled_data_format}})
+            .set_page_size(cb_num_tiled, num_tiled_bytes);
+    CreateCircularBuffer(program, all_cores, num_tiled_cb_config);
+
     // Scratch buffer for intermediate data (per core)
     tt_metal::CircularBufferConfig scratch_cb_config =
         tt_metal::CircularBufferConfig(scratch_bytes, {{cb_scratch, num_routed_data_format}})
@@ -125,6 +134,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     TensorAccessorArgs(*routed_tokens.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*routed_token_weights.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*token_idx_map.buffer()).append_to(compile_time_args);
+    TensorAccessorArgs(*num_tiled_tokens.buffer()).append_to(compile_time_args);
 
     // Create kernel (shared across all cores)
     auto kernel = CreateKernel(
@@ -152,6 +162,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
             routed_tokens.buffer()->address(),
             routed_token_weights.buffer()->address(),
             token_idx_map.buffer()->address(),
+            num_tiled_tokens.buffer()->address(),
             num_tokens,
             top_k,
             num_experts,
@@ -176,6 +187,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
         const auto& routed_tokens = output_tensors[1];
         const auto& routed_token_weights = output_tensors[2];
         const auto& token_idx_map = output_tensors[3];
+        const auto& num_tiled_tokens = output_tensors[4];
 
         // Update runtime args for all cores
         for (const auto& core : cores) {
@@ -187,6 +199,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
             runtime_args[4] = routed_tokens.buffer()->address();
             runtime_args[5] = routed_token_weights.buffer()->address();
             runtime_args[6] = token_idx_map.buffer()->address();
+            runtime_args[7] = num_tiled_tokens.buffer()->address();
         }
     };
 
