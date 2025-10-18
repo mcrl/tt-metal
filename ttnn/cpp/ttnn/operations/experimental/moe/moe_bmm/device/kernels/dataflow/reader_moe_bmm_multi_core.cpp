@@ -18,12 +18,13 @@ void kernel_main() {
     uint32_t Kt = get_arg_val<uint32_t>(7);
     uint32_t Nt = get_arg_val<uint32_t>(8);
     uint32_t Mt_max = get_arg_val<uint32_t>(9);
-    uint32_t work_offset = get_arg_val<uint32_t>(10);  // Starting output tile for this core
-    uint32_t work_per_core = get_arg_val<uint32_t>(11);  // Number of output tiles to process
+    uint32_t core_x = get_arg_val<uint32_t>(10);
+    uint32_t core_y = get_arg_val<uint32_t>(11);
 
     // Circular buffer indices
     constexpr uint32_t cb_in0 = 0;
     constexpr uint32_t cb_in1 = 1;
+    constexpr uint32_t cb_num_tiles = 2;
 
     // Create tensor accessors for DRAM buffers
     constexpr auto input_args = TensorAccessorArgs<0>();
@@ -44,14 +45,13 @@ void kernel_main() {
     uint32_t weights_expert_stride = Kt * Nt;    // Tiles per expert weight matrix
     uint32_t weights_row_stride = Nt;            // Tiles per weight row
 
-    // Cache for num_routed_tokens per expert
-    constexpr uint32_t TILE_HEIGHT = 32;
-    uint32_t num_routed_cache[64];  // Assuming max 64 experts per device
-    uint32_t Mt_cache[64];  // Cached Mt values per expert
+    // Cache for Mt (number of token tiles) per expert
+    uint32_t num_tiled[num_experts];  // Number of token tiles per expert
+    uint32_t total_tiles = 0;
     
-    // Pre-fetch all num_routed_tokens values directly to L1
+    // Pre-fetch all num_routed_tokens values and calculate Mt per expert
     // Allocate temporary L1 space for reading num_routed_tokens
-    uint64_t temp_l1_addr = get_write_ptr(cb_in0);  // Reuse cb_in0 space temporarily
+    uint64_t temp_l1_addr = get_write_ptr(cb_in0);  // Use cb_in0 space temporarily
     
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
         noc_async_read(
@@ -59,20 +59,41 @@ void kernel_main() {
             temp_l1_addr,
             sizeof(uint32_t));
         noc_async_read_barrier();
-        
+
         volatile tt_l1_ptr uint32_t* num_routed_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(temp_l1_addr);
-        num_routed_cache[expert_idx] = num_routed_ptr[0];
-        Mt_cache[expert_idx] = (num_routed_cache[expert_idx] + TILE_HEIGHT - 1) / TILE_HEIGHT;
+        uint32_t num_routed_value = num_routed_ptr[0];
+        num_tiled[expert_idx] = (num_routed_value + 31) / 32;
+        total_tiles += num_tiled[expert_idx];
+    }
+
+    uint32_t num_output_tiles_total = total_tiles * Nt;
+
+    cb_reserve_back(cb_num_tiles, 1);
+    auto num_tiles_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(cb_num_tiles));
+    num_tiles_ptr[0] = num_output_tiles_total;
+    cb_push_back(cb_num_tiles, 1);
+
+    // Calculate work for this core dynamically
+    constexpr uint32_t NUM_CORES = 64;  // 8x8 grid
+    uint32_t core_id = core_y * 8 + core_x;
+    uint32_t work_per_core = num_output_tiles_total / NUM_CORES;
+    uint32_t remainder = num_output_tiles_total % NUM_CORES;
+    
+    uint32_t work_offset;
+    if (core_id < remainder) {
+        work_per_core += 1;
+        work_offset = core_id * work_per_core;
+    } else {
+        work_offset = remainder * (work_per_core + 1) + (core_id - remainder) * work_per_core;
     }
 
     // Calculate the cumulative tile offset for each expert
-    // Calculate the cumulative tile offset for each expert
     // Note: expert_tile_offsets[e] is the starting global tile ID for expert e
     // expert_tile_offsets[e+1] is the ending global tile ID (exclusive) for expert e
-    uint32_t expert_tile_offsets[65];  // Need num_experts + 1 entries
+    uint32_t expert_tile_offsets[num_experts + 1];  // Need num_experts + 1 entries
     expert_tile_offsets[0] = 0;
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
-        expert_tile_offsets[expert_idx + 1] = expert_tile_offsets[expert_idx] + Mt_cache[expert_idx] * Nt;
+        expert_tile_offsets[expert_idx + 1] = expert_tile_offsets[expert_idx] + num_tiled[expert_idx] * Nt;
     }
 
     // Process work_per_core output tiles starting from work_offset
