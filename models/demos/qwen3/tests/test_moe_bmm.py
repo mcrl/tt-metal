@@ -49,7 +49,7 @@ def pad_to_tile_size(size, tile_size=32):
 @pytest.mark.parametrize("config", [
     {"num_experts": 8, "max_tokens": 16, "h_in": 4, "h_out": 8},
     {"num_experts": 16, "max_tokens": 256, "h_in": 4, "h_out": 8},
-    {"num_experts": 32, "max_tokens": 64, "h_in": 2048, "h_out": 768},
+    {"num_experts": 32, "max_tokens": 1024, "h_in": 2048, "h_out": 768},
 ])
 @pytest.mark.parametrize(
     "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
@@ -85,6 +85,18 @@ def test_moe_bmm(mesh_device, config):
         num_routed[e, 0] = torch.randint(1, max_tokens + 1, (1,)).item()
     
     print(f"Token counts per expert: {num_routed.squeeze().tolist()}")
+    
+    # Calculate num_tiled_tokens: sum of ceiling(num_routed[e] / 32) for all experts
+    total_token_tiles = 0
+    for e in range(num_experts):
+        num_tokens = num_routed[e, 0].item()
+        num_tiles = (num_tokens + 31) // 32  # Ceiling division
+        total_token_tiles += num_tiles
+    
+    print(f"Total token tiles: {total_token_tiles}")
+    
+    # Create num_tiled_tokens tensor (1, 1)
+    num_tiled_tokens = torch.tensor([[total_token_tiles]], dtype=torch.int32)
     
     # Compute reference output (on non-padded dimensions conceptually)
     reference_output = reference_moe_bmm(input_torch, weights_torch, num_routed)
@@ -124,11 +136,22 @@ def test_moe_bmm(mesh_device, config):
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
     
+    # Create num_tiled_tokens tensor (1, 1) - replicated on all devices
+    num_tiled_tokens_tt = ttnn.from_torch(
+        num_tiled_tokens,
+        device=mesh_device,
+        dtype=ttnn.uint32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+    )
+    
     # Run moe_bmm operation
     output_tt = ttnn.experimental.moe_bmm(
         input_tt,
         weights_tt,
         num_routed_tt,
+        num_tiled_tokens_tt,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
     

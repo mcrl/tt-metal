@@ -12,7 +12,7 @@ namespace py = pybind11;
 
 void bind_moe_bmm(py::module& module) {
     const auto doc = R"doc(
-moe_bmm(input: ttnn.Tensor, weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> ttnn.Tensor
+moe_bmm(input: ttnn.Tensor, weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, num_tiled_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> ttnn.Tensor
 
 Performs batched matrix multiplication for Mixture-of-Experts (MoE) processing.
 
@@ -29,6 +29,9 @@ Args:
                        Expert weight matrices (one per local expert)
     * :attr:`num_routed_tokens`: (E/D, 1) uint32 2D tensor, ROW_MAJOR layout, sharded
                                  Access as num_routed_tokens[e, 0] for local expert e
+    * :attr:`num_tiled_tokens`: (1, 1) uint32 scalar tensor, ROW_MAJOR layout, replicated
+                                Total number of token tiles across all local experts
+                                = sum over experts of ceil(num_routed_tokens[e, 0] / 32)
 
 Keyword Args:
     * :attr:`memory_config`: Memory configuration for output tensor
@@ -38,7 +41,8 @@ Returns:
     (E/D, T, H_out) bfloat16 tensor containing batched matmul outputs (zero-padded after active tokens)
 
 Notes:
-    - Single-core implementation using TILE_LAYOUT for efficient computation
+    - Multi-core implementation using output-stationary parallelization
+    - Work distributed across Tensix cores using split_work_to_cores
     - Each device processes E/D experts in parallel (expert parallelism)
     - Output rows beyond num_routed_tokens[e, 0] are zero for each expert
 
@@ -47,12 +51,19 @@ Example:
     >>> expert_input = ...  # (E/D, T, H_in) TILE_LAYOUT
     >>> expert_weights = ...  # (E/D, H_in, H_out) TILE_LAYOUT
     >>> num_routed = ...  # (E/D, 1) ROW_MAJOR
+    >>> 
+    >>> # Calculate total tiled tokens
+    >>> num_routed_host = ttnn.to_torch(num_routed)
+    >>> total_tiled_tokens = sum([(n + 31) // 32 for n in num_routed_host[:, 0]])
+    >>> num_tiled = ttnn.from_torch(torch.tensor([[total_tiled_tokens]], dtype=torch.int32), 
+    ...                             layout=ttnn.ROW_MAJOR_LAYOUT, device=device, replicate=True)
     >>>
     >>> # Perform batched matmul per expert
     >>> output = ttnn.experimental.moe_bmm(
     ...     expert_input,
     ...     expert_weights,
     ...     num_routed,
+    ...     num_tiled,
     ...     memory_config=ttnn.DRAM_MEMORY_CONFIG,
     ...     queue_id=0
     >>> )
@@ -70,13 +81,15 @@ Example:
                const ttnn::Tensor& input,
                const ttnn::Tensor& weights,
                const ttnn::Tensor& num_routed_tokens,
+               const ttnn::Tensor& num_tiled_tokens,
                const std::optional<MemoryConfig>& memory_config,
                QueueId queue_id) {
-                return self(queue_id, input, weights, num_routed_tokens, memory_config);
+                return self(queue_id, input, weights, num_routed_tokens, num_tiled_tokens, memory_config);
             },
             py::arg("input").noconvert(),
             py::arg("weights").noconvert(),
             py::arg("num_routed_tokens").noconvert(),
+            py::arg("num_tiled_tokens").noconvert(),
             py::kw_only(),
             py::arg("memory_config") = std::nullopt,
             py::arg("queue_id") = DefaultQueueId,
