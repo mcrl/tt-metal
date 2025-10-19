@@ -115,7 +115,6 @@ output = ttnn.experimental.moe_bmm(
     input_hidden_state,   # (E/D, T, H_in) bfloat16 tensor - TILE layout
     expert_weights,       # (E/D, H_in, H_out) bfloat16 tensor - TILE layout
     num_routed_tokens,    # (E/D, 1) uint32 tensor
-    num_tiled_tokens,     # (1, 1) uint32 scalar tensor - total token tiles
     *,
     memory_config=None,
     queue_id=0
@@ -139,10 +138,7 @@ output = ttnn.experimental.moe_bmm(
 	- Device-local token counts from `prepare_moe_routing_tensors`
 	- `num_routed_tokens[e, 0]` = number of tokens assigned to local expert e
 	- Used for determining number of valid output tiles per expert
-- **num_tiled_tokens**: `(1, 1)` uint32 scalar tensor, ROW_MAJOR layout, replicated
-	- Total number of token tiles across all local experts: `sum(ceil(num_routed_tokens[e] / 32))`
-	- From `prepare_moe_routing_tensors`
-	- Used for work distribution across cores
+	- Total tiles computed internally: `sum(ceil(num_routed_tokens[e] / 32))`
 
 **Output**
 - **output**: `(E/D, T, H_out)` bfloat16 tensor, TILE_LAYOUT
@@ -168,12 +164,14 @@ The implementation uses **output-stationary parallelization** across all availab
 1. **Calculate total output tiles across all experts**:
    - For expert e: `tiles[e] = ceil(num_routed_tokens[e, 0] / 32) * ceil(H_out / 32)`
    - Total tiles: `total_tiles = sum(tiles[0:E/D])`
-   - This is passed as `num_tiled_tokens` parameter
+   - Computed internally by reading num_routed_tokens from device memory
 
 2. **Distribute tiles across Tensix cores**:
-   - Use `split_work_to_cores()` to distribute `total_tiles * Nt` across available cores
-   - Each core gets `work_per_core` output tiles to compute
-   - Work is assigned with `work_offset` to identify starting tile
+   - Manual work distribution in kernel using core ID
+   - `work_per_core = total_tiles / NUM_CORES`
+   - `remainder = total_tiles % NUM_CORES`
+   - Cores with `core_id < remainder` get one extra tile
+   - Each core calculates its `work_offset` based on core_id
 
 3. **Per-core computation**:
    - Each core maps its global tile IDs to (expert, mt, nt) coordinates
@@ -330,8 +328,8 @@ for t in range(T):
 
 ### Step 0: Prepare Routing (once per forward pass)
 ```python
-# Same as V1 - prepares device-local routing information
-num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map, num_tiled_tokens = \
+# Prepares device-local routing information
+num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map = \
     ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping, num_experts
     )
@@ -358,8 +356,7 @@ scattered_input_tile = ttnn.to_layout(
 gate_output = ttnn.experimental.moe_bmm(
     scattered_input_tile,  # (E/D, T, H) TILE
     gate_weights,          # (E/D, H, H') TILE
-    num_routed_tokens,     # (E/D, 1)
-    num_tiled_tokens       # (1, 1) - total token tiles
+    num_routed_tokens      # (E/D, 1)
 )  # Shape: (E/D, T, H') TILE
 ```
 
@@ -368,8 +365,7 @@ gate_output = ttnn.experimental.moe_bmm(
 up_output = ttnn.experimental.moe_bmm(
     scattered_input_tile,  # (E/D, T, H) TILE
     up_weights,            # (E/D, H, H') TILE
-    num_routed_tokens,     # (E/D, 1)
-    num_tiled_tokens       # (1, 1) - total token tiles
+    num_routed_tokens      # (E/D, 1)
 )  # Shape: (E/D, T, H') TILE
 ```
 
@@ -384,8 +380,7 @@ combined = ttnn.mul(gate_activated, up_output)  # (E/D, T, H') TILE
 down_output = ttnn.experimental.moe_bmm(
     combined,           # (E/D, T, H') TILE
     down_weights,       # (E/D, H', H) TILE
-    num_routed_tokens,  # (E/D, 1)
-    num_tiled_tokens    # (1, 1) - total token tiles
+    num_routed_tokens   # (E/D, 1)
 )  # Shape: (E/D, T, H) TILE
 ```
 
