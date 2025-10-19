@@ -491,16 +491,16 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         # Convert selected_experts to UINT32 and ROW_MAJOR for routing tensor preparation
         with Profiler().trace_with_timer("typecast-selected-experts", level=4):
             # typecast requires TILE layout
-            selected_experts = ttnn.typecast(selected_experts, ttnn.uint32, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            selected_experts = ttnn.typecast(selected_experts, ttnn.uint32, memory_config=mem_cfg)
             # Convert to ROW_MAJOR after typecast
             selected_experts = ttnn.to_layout(
-                selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG
+                selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg
             )
-
+    
         # Convert routing_weights to ROW_MAJOR
         with Profiler().trace_with_timer("to-layout-routing-weights", level=4):
             routing_weights = ttnn.to_layout(
-                routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG
+                routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg
             )
 
         # Create device-expert mapping (uniform partitioning)
@@ -521,7 +521,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 device=self.mesh_device,
                 dtype=ttnn.int32,
                 layout=ttnn.ROW_MAJOR_LAYOUT,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                memory_config=mem_cfg,
                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=0),
             )
 
@@ -602,7 +602,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(),
                 barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(),
                 num_links=1,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                memory_config=mem_cfg,
                 intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 topology=ttnn.Topology.Linear,
                 chunks_per_sync=10,
@@ -616,7 +616,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 mesh_device=self.mesh_device,
                 topology=ttnn.Topology.Linear,
                 multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                memory_config=mem_cfg,
                 num_links=1,
             )
             ttnn.synchronize_device(self.mesh_device)

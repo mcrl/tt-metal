@@ -11,7 +11,7 @@ import tracy
 from transformers import AutoConfig
 from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeDecoderLayer
 
-from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
+from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
 from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
@@ -134,7 +134,7 @@ def test_moe_decode(batch_size, seq_len, mesh_device):
             tt_expert.down_proj.weight.data = ref_expert.down_proj.weight.data.clone()
     tt_mlp.setup_tt()
 
-    hidden_states = torch.randn(batch_size, seq_len, config.hidden_size, dtype=torch.bfloat16)
+    hidden_states = torch.randn(1, seq_len, batch_size, config.hidden_size, dtype=torch.bfloat16)
 
     hidden_states_tt = ttnn.from_torch(
         hidden_states,
@@ -142,15 +142,15 @@ def test_moe_decode(batch_size, seq_len, mesh_device):
         layout=ttnn.TILE_LAYOUT,
         device=mesh_device,
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
     )
 
     tracy.signpost("Warmup")
     for _ in range(5):
-        output_tt = tt_mlp(hidden_states_tt)
+        output_tt = tt_mlp(hidden_states_tt, mode=InferenceMode.DECODE)
 
     tracy.signpost("Run")
-    output_tt = tt_mlp(hidden_states_tt)
+    output_tt = tt_mlp(hidden_states_tt, mode=InferenceMode.DECODE)
 
 
 if __name__ == "__main__":
