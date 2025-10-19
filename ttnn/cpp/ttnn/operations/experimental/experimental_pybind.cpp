@@ -125,7 +125,7 @@ void py_module(py::module& module) {
     projection_to_intermediate::detail::bind_projection_to_intermediate(module);
     projection_to_output::detail::bind_projection_to_output(module);
     scatter_moe_input::detail::bind_scatter_moe_input(module);
-    local_reduce_moe_output::detail::bind_local_reduce_moe_output(module);
+    detail::bind_local_reduce_moe_output(module);
     moe_bmm::detail::bind_moe_bmm(module);
 }
 

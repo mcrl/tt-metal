@@ -7,7 +7,7 @@
 #include <pybind11/pybind11.h>
 #include "ttnn-pybind/decorators.hpp"
 
-namespace ttnn::operations::experimental::local_reduce_moe_output::detail {
+namespace ttnn::operations::experimental::detail {
 namespace py = pybind11;
 
 void bind_local_reduce_moe_output(py::module& module) {
@@ -108,4 +108,4 @@ Example:
         });
 }
 
-}  // namespace ttnn::operations::experimental::local_reduce_moe_output::detail
+}  // namespace ttnn::operations::experimental::detail

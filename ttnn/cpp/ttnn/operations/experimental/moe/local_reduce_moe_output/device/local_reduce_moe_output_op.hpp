@@ -4,8 +4,6 @@
 
 #pragma once
 
-#include <optional>
-
 #include "ttnn/tensor/tensor.hpp"
 #include "ttnn/run_operation.hpp"
 
@@ -14,8 +12,8 @@ namespace ttnn::operations::experimental::moe {
 using namespace tt::tt_metal;
 
 struct LocalReduceMoeOutput {
-    const uint32_t num_tokens;
-    const MemoryConfig output_mem_config;
+    uint32_t num_tokens;
+    MemoryConfig output_mem_config;
 
     void validate_with_output_tensors(
         const std::vector<Tensor>& input_tensors,
