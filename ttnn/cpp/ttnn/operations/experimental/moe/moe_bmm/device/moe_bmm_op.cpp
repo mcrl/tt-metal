@@ -10,12 +10,11 @@
 namespace ttnn::operations::experimental::moe {
 
 void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
-    TT_FATAL(input_tensors.size() == 4, "Expected 4 input tensors");
+    TT_FATAL(input_tensors.size() == 3, "Expected 3 input tensors");
 
     const auto& input = input_tensors.at(0);
     const auto& weights = input_tensors.at(1);
     const auto& num_routed_tokens = input_tensors.at(2);
-    const auto& num_tiled_tokens = input_tensors.at(3);
 
     // Validate storage
     TT_FATAL(input.storage_type() == StorageType::DEVICE, "input must be on device");
@@ -37,20 +36,14 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
     TT_FATAL(weights.buffer() != nullptr, "weights buffer is null");
     TT_FATAL(num_routed_tokens.buffer() != nullptr, "num_routed_tokens buffer is null");
 
-    // Validate num_tiled_tokens
-    TT_FATAL(num_tiled_tokens.storage_type() == StorageType::DEVICE, "num_tiled_tokens must be on device");
-    TT_FATAL(num_tiled_tokens.dtype() == DataType::UINT32, "num_tiled_tokens must be UINT32");
-
     // Validate shapes and consistency
     const auto& input_shape = input.padded_shape();
     const auto& weights_shape = weights.padded_shape();
     const auto& num_routed_shape = num_routed_tokens.padded_shape();
-    const auto& num_tiled_shape = num_tiled_tokens.padded_shape();
 
     TT_FATAL(input_shape.rank() == 3, "input must be 3D (E/D, T, H_in)");
     TT_FATAL(weights_shape.rank() == 3, "weights must be 3D (E/D, H_in, H_out)");
     TT_FATAL(num_routed_shape.rank() == 2, "num_routed_tokens must be 2D (E/D, 1)");
-    TT_FATAL(num_tiled_shape.rank() == 2, "num_tiled_tokens must be 2D (1, 1)");
 
     // Validate num_experts consistency
     TT_FATAL(input_shape[0] == weights_shape[0],
@@ -69,11 +62,6 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
     TT_FATAL(num_routed_shape[1] == 1,
         "num_routed_tokens dim [1] must be 1, got {}",
         num_routed_shape[1]);
-
-    // Validate num_tiled_tokens shape
-    TT_FATAL(num_tiled_shape[0] == 1 && num_tiled_shape[1] == 1,
-        "num_tiled_tokens must be shape (1, 1), got ({}, {})",
-        num_tiled_shape[0], num_tiled_shape[1]);
 
     // Validate TILE alignment for input and weights
     TT_FATAL(input_shape[1] % tt::constants::TILE_HEIGHT == 0,
@@ -131,7 +119,6 @@ operation::ProgramWithCallbacks MoEBMM::create_program(
     const auto& input = input_tensors.at(0);
     const auto& weights = input_tensors.at(1);
     const auto& num_routed_tokens = input_tensors.at(2);
-    const auto& num_tiled_tokens = input_tensors.at(3);
     auto& output = output_tensors.at(0);
 
     const auto& input_shape = input.padded_shape();
@@ -146,7 +133,6 @@ operation::ProgramWithCallbacks MoEBMM::create_program(
         input,
         weights,
         num_routed_tokens,
-        num_tiled_tokens,
         output,
         num_experts,
         max_tokens,

@@ -27,8 +27,6 @@
 //   - routed_tokens: (E/D, max_tokens) uint32 2D tensor - token indices for each local expert (padded)
 //   - routed_token_weights: (E/D, max_tokens) bfloat16 2D tensor - routing weights for each local expert (padded)
 //   - token_idx_map: (E/D, max_tokens) uint32 2D tensor - mapping from expert-local token index to global token index
-//   - num_tiled_tokens: (E/D, 1) uint32 2D tensor - number of tiled tokens for each local expert,
-//                       computed as (num_routed_tokens[e] + 31) // 32 where TILE_SIZE=32
 //
 // NOTES:
 //   - Each token selects top_k unique experts (no duplicates)
