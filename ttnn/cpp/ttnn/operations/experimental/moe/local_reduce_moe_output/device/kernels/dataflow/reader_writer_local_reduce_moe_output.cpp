@@ -6,7 +6,7 @@
 #include "dataflow_api.h"
 
 /**
- * Local Reduce MoE Output Kernel (Single-Core)
+ * Local Reduce MoE Output Kernel (Multi-Core, Token-Parallel)
  *
  * This kernel performs intra-device reduction by gathering expert outputs
  * back to token order and applying routing weights.
