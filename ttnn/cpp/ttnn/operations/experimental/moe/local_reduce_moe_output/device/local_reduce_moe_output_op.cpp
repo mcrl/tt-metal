@@ -89,7 +89,7 @@ std::vector<Tensor> LocalReduceMoeOutput::create_output_tensors(
 
 operation::ProgramWithCallbacks LocalReduceMoeOutput::create_program(
     const std::vector<Tensor>& input_tensors, std::vector<Tensor>& output_tensors) const {
-    return detail::local_reduce_moe_output_multi_core(
+    return detail::local_reduce_moe_output(
         input_tensors.at(0),
         input_tensors.at(1),
         input_tensors.at(2),

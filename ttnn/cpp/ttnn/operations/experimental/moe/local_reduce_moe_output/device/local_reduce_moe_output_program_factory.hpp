@@ -9,7 +9,7 @@
 
 namespace ttnn::operations::experimental::moe::detail {
 
-tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output_multi_core(
+tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     const Tensor& input_hidden_state,
     const Tensor& token_idx_map,
     const Tensor& routed_token_weights,
