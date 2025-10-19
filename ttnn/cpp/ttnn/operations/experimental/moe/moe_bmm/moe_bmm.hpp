@@ -21,8 +21,6 @@
 //              Expert weight matrices (one per local expert)
 //   - num_routed_tokens: (E/D, 1) uint32 2D tensor, ROW_MAJOR layout, sharded (device-local)
 //                        Access as num_routed_tokens[e, 0] for local expert e
-//   - num_tiled_tokens: (1, 1) uint32 scalar tensor, ROW_MAJOR layout
-//                       Total number of token tiles across all local experts (sum of ceil(num_routed_tokens[e]/32))
 //
 // OUTPUTS:
 //   - output: (E/D, T, H_out) bfloat16 tensor - batched matmul outputs
@@ -51,7 +49,6 @@ struct MoEBMMOperation {
         const Tensor& input,
         const Tensor& weights,
         const Tensor& num_routed_tokens,
-        const Tensor& num_tiled_tokens,
         const std::optional<MemoryConfig>& memory_config = std::nullopt);
 };
 

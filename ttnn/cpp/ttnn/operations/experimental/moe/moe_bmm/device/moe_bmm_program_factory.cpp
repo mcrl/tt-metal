@@ -163,7 +163,6 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
     const Tensor& input,
     const Tensor& weights,
     const Tensor& num_routed_tokens,
-    const Tensor& num_tiled_tokens,
     Tensor& output,
     uint32_t num_experts,
     uint32_t max_tokens,

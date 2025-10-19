@@ -344,7 +344,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         # Step 1: Prepare routing tensors with device-expert mapping
         with Profiler().trace_with_timer("prepare-routing-tensors", level=4):
-            num_routed, routed_tokens, routed_weights, token_idx_map, num_tiled = ttnn.prepare_moe_routing_tensors(
+            num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
                 selected_experts, routing_weights, device_expert_mapping, self.num_experts
             )
 
@@ -527,19 +527,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         # Step 1: Prepare routing tensors with device-expert mapping
         with Profiler().trace_with_timer("prepare-routing-tensors", level=4):
-            num_routed, routed_tokens, routed_weights, token_idx_map, num_tiled = ttnn.prepare_moe_routing_tensors(
+            num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
                 selected_experts, routing_weights, device_expert_mapping, self.num_experts
-            )
-
-            # FIXME: ttnn.sum doesn't works properly
-            num_tiled_torch = ttnn.to_torch(num_tiled, mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=0)).reshape(self.num_devices, -1).sum(dim=1, keepdim=True)
-            num_tiled = ttnn.from_torch(
-                num_tiled_torch,
-                device=self.mesh_device,
-                dtype=ttnn.uint32,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=0),
             )
         
         # Step 2: Scatter MoE input
@@ -561,16 +550,14 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             gate_output = ttnn.experimental.moe_bmm(
                 scattered_hidden_states,
                 gate_proj,
-                num_routed,
-                num_tiled
+                num_routed
             )
 
         with Profiler().trace_with_timer("up-projection", level=4):
             up_output = ttnn.experimental.moe_bmm(
                 scattered_hidden_states,
                 up_proj,
-                num_routed,
-                num_tiled
+                num_routed
             )
 
         # Step 3: SiLU(gate) * up
@@ -587,8 +574,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             moe_output = ttnn.experimental.moe_bmm(
                 combined_activations,
                 down_proj,
-                num_routed,
-                num_tiled
+                num_routed
             )
         
         # Step 5: Local Reduce
