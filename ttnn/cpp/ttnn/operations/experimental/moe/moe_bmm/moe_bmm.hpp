@@ -34,6 +34,7 @@
 //
 // NOTES:
 //   - Multi-core implementation using output-stationary parallelization
+//   - Work distributed manually in kernel based on core ID (not using split_work_to_cores)
 //   - Distributes output tiles across all available Tensix cores
 //   - Each device processes E/D experts in parallel (expert parallelism)
 //   - Only first num_routed_tokens[e, 0] rows per expert produce non-zero results

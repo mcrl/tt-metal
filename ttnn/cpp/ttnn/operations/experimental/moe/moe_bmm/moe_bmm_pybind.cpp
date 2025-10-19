@@ -39,7 +39,7 @@ Returns:
 
 Notes:
     - Multi-core implementation using output-stationary parallelization
-    - Work distributed across Tensix cores using split_work_to_cores
+    - Work distributed manually in kernel based on core ID
     - Each device processes E/D experts in parallel (expert parallelism)
     - Output rows beyond num_routed_tokens[e, 0] are zero for each expert
 
@@ -49,18 +49,11 @@ Example:
     >>> expert_weights = ...  # (E/D, H_in, H_out) TILE_LAYOUT
     >>> num_routed = ...  # (E/D, 1) ROW_MAJOR
     >>> 
-    >>> # Calculate total tiled tokens
-    >>> num_routed_host = ttnn.to_torch(num_routed)
-    >>> total_tiled_tokens = sum([(n + 31) // 32 for n in num_routed_host[:, 0]])
-    >>> num_tiled = ttnn.from_torch(torch.tensor([[total_tiled_tokens]], dtype=torch.int32), 
-    ...                             layout=ttnn.ROW_MAJOR_LAYOUT, device=device, replicate=True)
-    >>>
     >>> # Perform batched matmul per expert
     >>> output = ttnn.experimental.moe_bmm(
     ...     expert_input,
     ...     expert_weights,
     ...     num_routed,
-    ...     num_tiled,
     ...     memory_config=ttnn.DRAM_MEMORY_CONFIG,
     ...     queue_id=0
     >>> )
