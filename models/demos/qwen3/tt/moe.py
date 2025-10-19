@@ -468,7 +468,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             mem_cfg = ttnn.DRAM_MEMORY_CONFIG
         elif mode == InferenceMode.DECODE:
             _, sequence_length, batch_size, hidden_dim = hidden_states.shape
-            mem_cfg = ttnn.DRAM_MEMORY_CONFIG # FIXME: Use L1 for decode mode
+            mem_cfg = ttnn.L1_MEMORY_CONFIG # FIXME: Use L1 for decode mode
 
         with Profiler().trace_with_timer("reshape", level=4):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
@@ -593,6 +593,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         with Profiler().trace_with_timer("allreduce", level=4):
             T, H = moe_output.shape
             final_output = ttnn.reshape(moe_output, shape=(1, 1, T, H), memory_config=mem_cfg)
+            final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
 
             final_output = ttnn.experimental.reduce_scatter_minimal_async(
                 final_output,
