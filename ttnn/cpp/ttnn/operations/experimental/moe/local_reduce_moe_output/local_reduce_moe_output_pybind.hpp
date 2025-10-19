@@ -6,8 +6,8 @@
 
 #include <pybind11/pybind11.h>
 
-namespace ttnn::operations::experimental::local_reduce_moe_output::detail {
+namespace ttnn::operations::experimental::detail {
 
 void bind_local_reduce_moe_output(pybind11::module& module);
 
-}  // namespace ttnn::operations::experimental::local_reduce_moe_output::detail
+}  // namespace ttnn::operations::experimental::detail
