@@ -44,7 +44,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-script -q /dev/null -c "python -m tracy -r -p -v -m pytest \"$test_cmd\"" 2>&1 | tee "$tmp_log"
+script -q /dev/null -c "bash -c 'python -m tracy -r -p -v -m pytest \"$test_cmd\" || exit 1'" 2>&1 | tee "$tmp_log"
 csv_path=$(grep -oP '(?<=OPs csv generated at: ).*\.csv' "$tmp_log" | tail -n 1)
 
 if [ -n "$csv_path" ]; then

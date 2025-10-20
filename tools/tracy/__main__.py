@@ -2,6 +2,8 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
+import tt_lock
+
 from pathlib import Path
 
 from tracy import *
