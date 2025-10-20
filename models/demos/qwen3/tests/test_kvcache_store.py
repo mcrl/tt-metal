@@ -6,7 +6,6 @@ import pytest
 import torch
 
 import ttnn
-import tt_lock
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.utils.test_utils import compare_tensor_pcc

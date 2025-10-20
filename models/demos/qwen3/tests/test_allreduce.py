@@ -5,7 +5,6 @@ import pytest
 import torch
 
 import ttnn
-import tt_lock
 
 from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 from models.demos.qwen3.tt.ccl_1d import CCL1D

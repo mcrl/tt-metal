@@ -4,7 +4,6 @@
 import ttnn
 import pytest
 import torch
-import tt_lock
 
 
 def reference_projection_to_output(

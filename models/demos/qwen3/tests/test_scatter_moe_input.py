@@ -4,7 +4,6 @@
 import ttnn
 import pytest
 import torch
-import tt_lock
 
 
 def reference_scatter_moe_input(input_hidden_state, num_routed_tokens, routed_tokens):

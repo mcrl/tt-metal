@@ -6,8 +6,7 @@ import pytest
 import torch
 
 import ttnn
-import tt_lock
-
+from models.demos.qwen3.utils.tensor_info import print_tensor_info
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.rope import (
     apply_rotary_emb as ttnn_apply_rotary_emb,
