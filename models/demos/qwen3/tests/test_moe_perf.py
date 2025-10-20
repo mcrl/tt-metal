@@ -4,7 +4,6 @@ import json
 import os
 from torch import nn
 
-import tt_lock
 import ttnn
 import tracy
 

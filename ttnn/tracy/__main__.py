@@ -2,8 +2,6 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-import tt_lock
-
 from pathlib import Path
 
 from tracy import *
@@ -185,6 +183,7 @@ def main():
             if not port:
                 logger.error("No available port found")
                 sys.exit(1)
+            import tt_lock
             logger.info(f"Using port {port}")
             doReport, captureProcess = run_report_setup(options.verbose, outputFolder, binaryFolder, port)
 
