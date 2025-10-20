@@ -4,7 +4,6 @@
 import ttnn
 import pytest
 import torch
-import tt_lock
 
 
 def reference_prepare_moe_routing_tensors(selected_experts, routing_weights, device_expert_mapping):
