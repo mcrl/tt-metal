@@ -1,6 +1,7 @@
 import fcntl
 import os
 import sys
+from tt_smi import main
 import atexit
 import time
 
@@ -45,6 +46,12 @@ def acquire_lock():
             _lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o666)
             fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             print("Successfully acquired lock.")
+
+            _argv_backup = sys.argv.copy()
+            sys.argv = ['tt-smi', '-r']
+            main()
+            sys.argv = _argv_backup
+
             time.sleep(2)
             atexit.register(_cleanup_lock)
             return
