@@ -65,6 +65,7 @@ void kernel_main() {
     constexpr uint32_t row_size_bytes = get_compile_time_arg_val(7);
 
     uint32_t hidden_dim_tiles = hidden_dim / 1024;
+    constexpr uint32_t tile_size_bytes = 32 * 32 * sizeof(uint16_t);
 
     // Create address generators
     const InterleavedAddrGen<input_is_dram> input_addrgen = {
@@ -86,7 +87,15 @@ void kernel_main() {
         .bank_base_address = num_routed_tokens_addr,
         .page_size = sizeof(uint32_t)
     };
-
+    // Helper function to convert bfloat16 to float
+    auto bf16_to_float = [](uint16_t bf16) -> float {
+        union {
+            uint32_t u;
+            float f;
+        } converter;
+        converter.u = ((uint32_t)bf16) << 16;
+        return converter.f;
+    };
 
     // Reading num_routed tokens for all experts
     // Workaround for handling (E/D, 1) multi-page tensor in the reader kernel
@@ -153,21 +162,19 @@ void kernel_main() {
                     weight_scalar_addr_bf16[0] = weights[expert_idx][i];
                     cb_push_back(cb_id_weight_scalar, 1);
 
+                    /* Send input hidden state to compute kernel */
                     for (uint32_t h = 0; h < hidden_dim_tiles; h++) {
-                        /* Send input hidden state to compute kernel */
                         cb_reserve_back(cb_id_input, 1);
                         uint32_t hidden_addr = get_write_ptr(cb_id_input);
                         // Read input_hidden_state[expert_idx, i, h*1024:(h+1)*1024]
                         uint32_t input_page_idx = expert_idx * max_tokens + i;
-                        constexpr uint32_t tile_size_bytes = 1024 * sizeof(uint16_t);  // 1024 elements per tile
                         uint64_t input_row_noc_addr = get_noc_addr(input_page_idx, input_addrgen) + h * tile_size_bytes;
+                        // Print first 3 bfloat16 values of the input tile for debugging
                         noc_async_read(input_row_noc_addr, hidden_addr, tile_size_bytes);
                         noc_async_read_barrier();
-                        // Push to compute kernel
                         cb_push_back(cb_id_input, 1);
                     }
-
-                    break; // Each token appears at most once per expert
+                    break;
                 }
             }
         }
