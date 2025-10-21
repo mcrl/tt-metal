@@ -404,7 +404,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         # Step 4: Down Projection with routing weights and accumulation
         with Profiler().trace_with_timer("down-projection", level=4):
-            num_tokens = batch_size * sequence_length
             moe_output = ttnn.projection_to_output(
                 combined_activations,
                 token_idx_map,
@@ -412,10 +411,10 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 num_routed,
                 routed_weights,
                 down_proj_rm,
-                num_tokens,
+                batch_size * sequence_length,
                 self.top_k
             )
-        
+
         # Step 5: Local Reduce
         with Profiler().trace_with_timer("sum", level=4):
             moe_output = ttnn.to_layout(moe_output, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
@@ -468,7 +467,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             mem_cfg = ttnn.DRAM_MEMORY_CONFIG
         elif mode == InferenceMode.DECODE:
             _, sequence_length, batch_size, hidden_dim = hidden_states.shape
-            mem_cfg = ttnn.L1_MEMORY_CONFIG # FIXME: Use L1 for decode mode
+            mem_cfg = ttnn.L1_MEMORY_CONFIG  # FIXME: Use L1 for decode mode
 
         with Profiler().trace_with_timer("reshape", level=4):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
@@ -496,7 +495,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             selected_experts = ttnn.to_layout(
                 selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg
             )
-    
+
         # Convert routing_weights to ROW_MAJOR
         with Profiler().trace_with_timer("to-layout-routing-weights", level=4):
             routing_weights = ttnn.to_layout(
@@ -530,20 +529,29 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
                 selected_experts, routing_weights, device_expert_mapping, self.num_experts
             )
-        
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"prepare-routing-tensors done")
+
         # Step 2: Scatter MoE input
         with Profiler().trace_with_timer("scatter-moe-input", level=4):
             hidden_states = ttnn.to_layout(hidden_states, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
             scattered_hidden_states = ttnn.scatter_moe_input(hidden_states, num_routed, routed_tokens)
-        
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"scatter-moe-input done")
+
         with Profiler().trace_with_timer("to-layout", level=4):
             scattered_hidden_states = ttnn.to_layout(scattered_hidden_states, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
+
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"to-layout done")
 
         # Prepare expert weights - squeeze first dimension from (1, E/D, H, H') to (E/D, H, H')
         with Profiler().trace_with_timer("prepare-expert-weights", level=4):
             gate_proj = ttnn.squeeze(self.gate_proj, dim=0)
             up_proj = ttnn.squeeze(self.up_proj, dim=0)
             down_proj = ttnn.squeeze(self.down_proj, dim=0)
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"prepare-expert-weights done")
 
         # Step 2: Gate & Up Projection (batched matmul for all experts)
         with Profiler().trace_with_timer("gate-projection", level=4):
@@ -552,6 +560,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 gate_proj,
                 num_routed
             )
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"gate-projection done")
 
         with Profiler().trace_with_timer("up-projection", level=4):
             up_output = ttnn.experimental.moe_bmm(
@@ -559,6 +569,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 up_proj,
                 num_routed
             )
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"up-projection done")
 
         # Step 3: SiLU(gate) * up
         with Profiler().trace_with_timer("silu-multiply", level=4):
@@ -567,16 +579,19 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
             # Elementwise multiply
             combined_activations = ttnn.multiply(gate_silu, up_output, memory_config=mem_cfg)
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"silu-multiply done")
 
         # Step 4: Down Projection with routing weights and accumulation
         with Profiler().trace_with_timer("down-projection", level=4):
-            num_tokens = batch_size * sequence_length
             moe_output = ttnn.experimental.moe_bmm(
                 combined_activations,
                 down_proj,
                 num_routed
             )
-        
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"down-projection done")
+
         # Step 5: Local Reduce
         with Profiler().trace_with_timer("sum", level=4):
             moe_output = ttnn.to_layout(moe_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
@@ -585,9 +600,10 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 token_idx_map,
                 routed_weights,
                 num_routed,
-                num_tokens,
                 memory_config=mem_cfg,
             )
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"local-reduce done")
 
         # Step 5: Allreduce across devices (sum partial outputs from all devices)
         with Profiler().trace_with_timer("allreduce", level=4):
@@ -621,6 +637,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             )
             ttnn.synchronize_device(self.mesh_device)
 
+        ttnn.synchronize_device(self.mesh_device)
+        print(f"allreduce done")
+
         # Reshape to original shape
         with Profiler().trace_with_timer("reshape", level=4):
             final_output = ttnn.reshape(final_output, (T, H), memory_config=mem_cfg)
@@ -639,5 +658,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 )
 
         return final_hidden_states
+
 
 __all__ = ["Qwen3MoeMLP", "Qwen3MoeSparseMoeBlock"]

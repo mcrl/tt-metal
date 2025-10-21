@@ -23,7 +23,6 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     const Tensor& token_idx_map,
     const Tensor& routed_token_weights,
     const Tensor& num_routed_tokens,
-    uint32_t num_tokens,
     Tensor& output) {
 
     Program program{};
@@ -33,6 +32,7 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     const uint32_t num_local_experts = input_shape[-3];
     const uint32_t max_tokens = input_shape[-2];
     const uint32_t hidden_dim = input_shape[-1];
+    const uint32_t num_tokens = max_tokens;
 
     // Get buffers
     const auto input_buffer = input_hidden_state.buffer();

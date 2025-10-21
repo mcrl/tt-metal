@@ -13,14 +13,12 @@ ttnn::Tensor LocalReduceMoeOutputOperation::invoke(
     const Tensor& token_idx_map,
     const Tensor& routed_token_weights,
     const Tensor& num_routed_tokens,
-    uint32_t num_tokens,
     const std::optional<MemoryConfig>& memory_config) {
 
     auto output_mem_config = memory_config.value_or(input_hidden_state.memory_config());
 
     return tt::tt_metal::operation::run(
         moe::LocalReduceMoeOutput{
-            .num_tokens = num_tokens,
             .output_mem_config = output_mem_config
         },
         {input_hidden_state, token_idx_map, routed_token_weights, num_routed_tokens},

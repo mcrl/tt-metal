@@ -12,7 +12,7 @@ namespace py = pybind11;
 
 void bind_local_reduce_moe_output(py::module& module) {
     const auto doc = R"doc(
-local_reduce_moe_output(input_hidden_state: ttnn.Tensor, token_idx_map: ttnn.Tensor, routed_token_weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, num_tokens: int, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> ttnn.Tensor
+local_reduce_moe_output(input_hidden_state: ttnn.Tensor, token_idx_map: ttnn.Tensor, routed_token_weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> ttnn.Tensor
 
 Performs intra-device reduction by gathering expert outputs back to token order and applying routing weights.
 
@@ -44,8 +44,6 @@ Args:
     * :attr:`num_routed_tokens`: (E/D, 1) uint32 tensor, ROW_MAJOR, sharded across devices
         Device-local token counts
         num_routed_tokens[e, 0] = number of valid entries for expert e
-    * :attr:`num_tokens`: int
-        Total number of tokens (T)
 
 Keyword Args:
     * :attr:`memory_config`: Memory configuration for output tensor (default: same as input)
@@ -68,8 +66,7 @@ Example:
     ...     down_output_rm,       # (E/D, T, H) ROW_MAJOR
     ...     token_idx_map,        # (E/D, T)
     ...     routed_token_weights, # (E/D, T)
-    ...     num_routed_tokens,    # (E/D, 1)
-    ...     num_tokens            # scalar T
+    ...     num_routed_tokens     # (E/D, 1)
     ... )  # Returns: (T, H) ROW_MAJOR - per device
     >>>
     >>> # Inter-device reduce (allreduce)
@@ -91,17 +88,15 @@ Example:
                const ttnn::Tensor& token_idx_map,
                const ttnn::Tensor& routed_token_weights,
                const ttnn::Tensor& num_routed_tokens,
-               uint32_t num_tokens,
                const std::optional<MemoryConfig>& memory_config,
                QueueId queue_id) {
                 return self(queue_id, input_hidden_state, token_idx_map, routed_token_weights,
-                           num_routed_tokens, num_tokens, memory_config);
+                           num_routed_tokens, memory_config);
             },
             py::arg("input_hidden_state").noconvert(),
             py::arg("token_idx_map").noconvert(),
             py::arg("routed_token_weights").noconvert(),
             py::arg("num_routed_tokens").noconvert(),
-            py::arg("num_tokens"),
             py::kw_only(),
             py::arg("memory_config") = std::nullopt,
             py::arg("queue_id") = DefaultQueueId,
