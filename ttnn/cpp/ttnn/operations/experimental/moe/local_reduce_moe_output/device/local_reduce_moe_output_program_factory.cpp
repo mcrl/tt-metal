@@ -70,19 +70,19 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     log_debug(tt::LogOp, "Grid size: {}x{}", grid_size.x, grid_size.y);
 
     // Circular buffer sizing constants
-    constexpr uint32_t INPUT_CB_NUM_PAGES = 2;   // Double buffering for read-compute overlap
-    constexpr uint32_t OUTPUT_CB_NUM_PAGES = 1;  // Single output buffer
+    constexpr uint32_t INPUT_CB_NUM_ROWS = 2;   // Double buffering for read-compute overlap
+    constexpr uint32_t OUTPUT_CB_NUM_ROWS = 2;  // Double output buffer
 
     // Circular buffers (same configuration per core)
     const uint32_t row_size_bytes = hidden_dim * input_element_size;
     const uint32_t aligned_row_size_bytes = round_up_to_mul32(row_size_bytes);
+    const uint32_t tile_size_bytes = 32 * 32 * sizeof(uint16_t);
 
     // CB 0: Input hidden state row buffer (reader → compute, double buffered)
     constexpr uint32_t cb_id_input = tt::CBIndex::c_0;
-    constexpr uint32_t input_tile_size = 1024 * sizeof(uint16_t);
     const CircularBufferConfig cb_input_config =
-        CircularBufferConfig(input_tile_size * INPUT_CB_NUM_PAGES, {{cb_id_input, input_cb_data_format}})
-            .set_page_size(cb_id_input, input_tile_size);
+        CircularBufferConfig(aligned_row_size_bytes * INPUT_CB_NUM_ROWS, {{cb_id_input, input_cb_data_format}})
+            .set_page_size(cb_id_input, tile_size_bytes);
     CreateCircularBuffer(program, all_cores, cb_input_config);
 
     // CB 1: Token index map buffer (reader → compute, one page per expert)
@@ -133,18 +133,24 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     CreateCircularBuffer(program, all_cores, cb_accum_config);
 
     // CB 24: Tilized input buffer (compute internal, for ROW_MAJOR → TILE conversion)
-    // Single tile buffer - matches tilize_init(..., 1, ...) parameter
-    constexpr uint32_t cb_id_input_tile = tt::CBIndex::c_24;
+    constexpr uint32_t cb_id_input_tile = tt::CBIndex::c_6;
     const CircularBufferConfig cb_input_tile_config =
-        CircularBufferConfig(tile_size, {{cb_id_input_tile, input_cb_data_format}})
+        CircularBufferConfig(tile_size * 8, {{cb_id_input_tile, input_cb_data_format}})
             .set_page_size(cb_id_input_tile, tile_size);
     CreateCircularBuffer(program, all_cores, cb_input_tile_config);
+
+    // CB 7: Temporary buffer for tile-to-row-major conversion (writer internal)
+    constexpr uint32_t cb_id_temp = tt::CBIndex::c_7;
+    const CircularBufferConfig cb_temp_config =
+        CircularBufferConfig(tile_size, {{cb_id_temp, input_cb_data_format}})
+            .set_page_size(cb_id_temp, tile_size);
+    CreateCircularBuffer(program, all_cores, cb_temp_config);
 
     // CB 16: Output buffer (compute → writer)
     constexpr uint32_t cb_id_output = tt::CBIndex::c_16;
     const CircularBufferConfig cb_output_config =
-        CircularBufferConfig(aligned_row_size_bytes * OUTPUT_CB_NUM_PAGES, {{cb_id_output, input_cb_data_format}})
-            .set_page_size(cb_id_output, aligned_row_size_bytes);
+        CircularBufferConfig(aligned_row_size_bytes * OUTPUT_CB_NUM_ROWS, {{cb_id_output, input_cb_data_format}})
+            .set_page_size(cb_id_output, tile_size_bytes);
     CreateCircularBuffer(program, all_cores, cb_output_config);
 
     // Reader kernel compile-time arguments
@@ -182,19 +188,14 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
         all_cores,
         ReaderDataMovementConfig(reader_compile_time_args));
 
-    // Create compute kernel with MATH_ONLY define to restrict execution to MATH thread
-    const std::map<std::string, std::string> compute_defines = {
-        {"MATH_ONLY", "1"}
-    };
-
+    // Create compute kernel
     const KernelHandle compute_kernel_id = CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/experimental/moe/local_reduce_moe_output/device/kernels/compute/"
         "local_reduce_moe_output.cpp",
         all_cores,
         ComputeConfig{
-            .compile_args = compute_compile_time_args,
-            .defines = compute_defines
+            .compile_args = compute_compile_time_args
         });
 
     // Create writer kernel
