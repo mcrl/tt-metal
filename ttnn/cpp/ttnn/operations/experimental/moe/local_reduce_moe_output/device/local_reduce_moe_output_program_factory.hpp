@@ -14,7 +14,6 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     const Tensor& token_idx_map,
     const Tensor& routed_token_weights,
     const Tensor& num_routed_tokens,
-    uint32_t num_tokens,
     Tensor& output);
 
 }  // namespace ttnn::operations::experimental::moe::detail

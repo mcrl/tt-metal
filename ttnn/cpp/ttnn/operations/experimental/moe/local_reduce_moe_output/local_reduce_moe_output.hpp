@@ -18,7 +18,6 @@ struct LocalReduceMoeOutputOperation {
         const Tensor& token_idx_map,
         const Tensor& routed_token_weights,
         const Tensor& num_routed_tokens,
-        uint32_t num_tokens,
         const std::optional<MemoryConfig>& memory_config = std::nullopt);
 };
 

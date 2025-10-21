@@ -12,7 +12,6 @@ namespace ttnn::operations::experimental::moe {
 using namespace tt::tt_metal;
 
 struct LocalReduceMoeOutput {
-    uint32_t num_tokens;
     MemoryConfig output_mem_config;
 
     void validate_with_output_tensors(

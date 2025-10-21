@@ -106,7 +106,6 @@ void MAIN {
     init_bcast<EltwiseBinaryType::ELWMUL, BroadcastType::SCALAR>(
         cb_id_input, cb_id_weight_scalar, cb_id_output
     );
-    // binary_op_init_common(tt::CBIndex::c_24, tt::CBIndex::c_0, tt::CBIndex::c_16);
 
     // Process each token_idx_row_size
     uint32_t end_token_idx = start_token_idx + num_tokens_per_core;

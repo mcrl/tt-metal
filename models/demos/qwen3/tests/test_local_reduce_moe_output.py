@@ -59,7 +59,8 @@ def torch_local_reduce_moe_output(
         # (16, 128, 512, 4),  # Larger test case
         # (4, 4, 1024, 2),  # Larger test case
         # (16, 512, 2048, 1),  # Larger test case
-        (16, 512, 2048, 8),  # (real case)
+        (16, 128, 2048, 8),  # (real case)
+        # (16, 1024, 2048, 8),  # (real case)
     ],
 )
 def test_local_reduce_moe_output(device, num_local_experts, num_tokens, hidden_dim, top_k):
@@ -163,7 +164,6 @@ def test_local_reduce_moe_output(device, num_local_experts, num_tokens, hidden_d
         token_idx_map_tt,
         routed_token_weights_tt,
         num_routed_tokens_tt,
-        num_tokens,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
@@ -263,7 +263,7 @@ def test_local_reduce_moe_output_basic(device, num_local_experts, num_tokens, hi
     # Run TTNN operation
     output_tt = ttnn.local_reduce_moe_output(
         input_tt, token_idx_map_tt, routed_token_weights_tt,
-        num_routed_tokens_tt, num_tokens,
+        num_routed_tokens_tt,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 

@@ -23,12 +23,7 @@ void LocalReduceMoeOutput::validate_with_output_tensors(
     TT_FATAL(input_shape[-1] % 1024 == 0, "hidden_dim must be divisible by 1024");
 
     uint32_t num_local_experts = input_shape[-3];
-    uint32_t max_tokens = input_shape[-2];
-    TT_FATAL(
-        max_tokens == num_tokens,
-        "input_hidden_state tokens dimension must match num_tokens: {} vs {}",
-        max_tokens,
-        num_tokens);
+    uint32_t num_tokens = input_shape[-2];
 
     const auto& token_idx_shape = token_idx_map.padded_shape();
     TT_FATAL(token_idx_shape.rank() == 2, "token_idx_map must be 2D (E/D, T), got rank {}", token_idx_shape.rank());
@@ -75,7 +70,9 @@ void LocalReduceMoeOutput::validate_with_output_tensors(
 
 std::vector<TensorSpec> LocalReduceMoeOutput::compute_output_specs(const std::vector<Tensor>& input_tensors) const {
     const auto& input_hidden_state = input_tensors.at(0);
-    uint32_t hidden_dim = input_hidden_state.padded_shape()[-1];
+    const auto& input_shape = input_hidden_state.padded_shape();
+    uint32_t num_tokens = input_shape[-2];
+    uint32_t hidden_dim = input_shape[-1];
 
     ttnn::Shape output_shape({num_tokens, hidden_dim});
 
@@ -95,7 +92,6 @@ operation::ProgramWithCallbacks LocalReduceMoeOutput::create_program(
         input_tensors.at(1),
         input_tensors.at(2),
         input_tensors.at(3),
-        num_tokens,
         output_tensors.at(0));
 }
 
