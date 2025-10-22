@@ -135,7 +135,7 @@ operation::ProgramWithCallbacks ScatterMoeInput::create_program(
     const auto& routed_tokens = input_tensors.at(2);
     auto& output = output_tensors.at(0);
 
-    return detail::scatter_moe_input_single_core(
+    return detail::scatter_moe_input_multi_core(
         input_hidden_state, num_routed_tokens, routed_tokens, output);
 }
 
