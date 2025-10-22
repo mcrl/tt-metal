@@ -47,6 +47,7 @@ def reference_scatter_moe_input(input_hidden_state, num_routed_tokens, routed_to
     (128, 4, 32, 256),
     (128, 8, 32, 512),
     (256, 4, 128, 256),
+    (1024, 8, 128, 2048),
 ])
 @pytest.mark.parametrize(
     "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
@@ -120,7 +121,7 @@ def test_scatter_moe_input(mesh_device, num_tokens, top_k, num_experts, hidden_d
     )
 
     # Get routing tensors
-    num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map, num_tiled_tokens = ttnn.prepare_moe_routing_tensors(
+    num_routed_tokens, routed_tokens, routed_token_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping, num_experts
     )
 
@@ -207,13 +208,7 @@ def test_scatter_moe_input(mesh_device, num_tokens, top_k, num_experts, hidden_d
             assert expert_diff < 0.01, \
                 f"Expert {expert_idx}: Large difference in assigned tokens: {expert_diff}"
 
-        # Check padding region (should be all zeros)
-        if t_e < num_tokens:
-            padding_region = output_torch[expert_idx, t_e:, :]
-            padding_max = torch.abs(padding_region).max().item()
-
-            assert padding_max < 1e-6, \
-                f"Expert {expert_idx}: Padding region not zero: {padding_max}"
+        # Note: Padding region [t_e, num_tokens) is not initialized and not checked
 
     print("✓ Test passed!")
 

@@ -17,7 +17,7 @@ namespace ttnn::operations::experimental::moe::detail {
 using namespace tt::constants;
 using namespace tt::tt_metal;
 
-tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_single_core(
+tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_multi_core(
     const Tensor& input_hidden_state,
     const Tensor& num_routed_tokens,
     const Tensor& routed_tokens,
@@ -49,8 +49,11 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_single_core(
     DataFormat input_cb_data_format = datatype_to_dataformat_converter(input_hidden_state.dtype());
     uint32_t input_element_size = input_hidden_state.element_size();
 
-    // Single core execution
-    CoreRangeSet all_cores = CoreRangeSet(std::vector{CoreRange({0, 0}, {0, 0})});
+    // Multi-core execution: parallelize across experts
+    IDevice* device = input_hidden_state.device();
+    auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
+    uint32_t num_cores = std::min(num_local_experts, static_cast<uint32_t>(compute_with_storage_grid_size.x * compute_with_storage_grid_size.y));
+    CoreRangeSet all_cores = num_cores_to_corerangeset(num_cores, compute_with_storage_grid_size, true);
 
     // Circular buffer for input row (H elements)
     uint32_t row_size_bytes = hidden_dim * input_element_size;
@@ -92,19 +95,32 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_single_core(
         all_cores,
         ReaderDataMovementConfig(compile_time_args));
 
-    // Runtime arguments
-    std::vector<uint32_t> runtime_args = {
-        input_buffer->address(),
-        num_routed_buffer->address(),
-        routed_tokens_buffer->address(),
-        output_buffer->address(),
-    };
+    // Distribute experts across cores
+    auto cores = corerange_to_cores(all_cores, std::nullopt, true);
+    uint32_t experts_per_core = (num_local_experts + num_cores - 1) / num_cores;  // Ceiling division
 
-    SetRuntimeArgs(program, reader_writer_kernel_id, CoreCoord{0, 0}, runtime_args);
+    // Set runtime arguments per core
+    for (uint32_t core_idx = 0; core_idx < cores.size(); core_idx++) {
+        const CoreCoord& core = cores[core_idx];
+        uint32_t start_expert_idx = core_idx * experts_per_core;
+        uint32_t end_expert_idx = std::min(start_expert_idx + experts_per_core, num_local_experts);
+        uint32_t num_experts_for_this_core = end_expert_idx - start_expert_idx;
+
+        std::vector<uint32_t> runtime_args = {
+            input_buffer->address(),
+            num_routed_buffer->address(),
+            routed_tokens_buffer->address(),
+            output_buffer->address(),
+            start_expert_idx,
+            num_experts_for_this_core,
+        };
+
+        SetRuntimeArgs(program, reader_writer_kernel_id, core, runtime_args);
+    }
 
     // Callback to update buffer addresses when tensors move
     auto override_runtime_args_callback =
-        [reader_writer_kernel_id](
+        [reader_writer_kernel_id, cores](
             const void* operation,
             Program& program,
             const std::vector<Tensor>& input_tensors,
@@ -115,11 +131,14 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_single_core(
             auto routed_tokens_buffer = input_tensors.at(2).buffer();
             auto output_buffer = output_tensors.at(0).buffer();
 
-            auto& runtime_args = GetRuntimeArgs(program, reader_writer_kernel_id, CoreCoord{0, 0});
-            runtime_args[0] = input_buffer->address();
-            runtime_args[1] = num_routed_buffer->address();
-            runtime_args[2] = routed_tokens_buffer->address();
-            runtime_args[3] = output_buffer->address();
+            // Update buffer addresses for all cores
+            for (const auto& core : cores) {
+                auto& runtime_args = GetRuntimeArgs(program, reader_writer_kernel_id, core);
+                runtime_args[0] = input_buffer->address();
+                runtime_args[1] = num_routed_buffer->address();
+                runtime_args[2] = routed_tokens_buffer->address();
+                runtime_args[3] = output_buffer->address();
+            }
         };
 
     return {std::move(program), override_runtime_args_callback};
