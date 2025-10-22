@@ -394,30 +394,32 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             final_output = ttnn.reshape(moe_output, shape=(1, 1, T, H), memory_config=mem_cfg)
             final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
 
-            final_output = ttnn.experimental.reduce_scatter_minimal_async(
-                final_output,
-                persistent_output_buffers=None,
-                dim=3,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(),
-                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(),
-                num_links=1,
-                memory_config=mem_cfg,
-                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                topology=ttnn.Topology.Linear,
-                chunks_per_sync=10,
-                num_workers_per_link=2,
-                num_buffers_per_channel=2,
-            )
-            final_output = ttnn.experimental.all_gather_async(
-                final_output,
-                3,
-                cluster_axis=1,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(),
-                memory_config=mem_cfg,
-                num_links=1,
-            )
+            for cluster_axis in [1, 0]:
+                final_output = ttnn.experimental.reduce_scatter_minimal_async(
+                    final_output,
+                    persistent_output_buffers=None,
+                    dim=3,
+                    multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(cluster_axis),
+                    barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(cluster_axis),
+                    cluster_axis=cluster_axis,
+                    num_links=1,
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    topology=ttnn.Topology.Linear,
+                    chunks_per_sync=10,
+                    num_workers_per_link=2,
+                    num_buffers_per_channel=2,
+                )
+                final_output = ttnn.experimental.all_gather_async(
+                    final_output,
+                    3,
+                    cluster_axis=cluster_axis,
+                    mesh_device=self.mesh_device,
+                    topology=ttnn.Topology.Linear,
+                    multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(cluster_axis),
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    num_links=1,
+                )
             ttnn.synchronize_device(self.mesh_device)
 
         # Reshape to original shape
