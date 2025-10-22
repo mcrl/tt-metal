@@ -90,6 +90,8 @@ void MAIN {
     // The first 4 entries have metadata, so we look at the 5th entry
     // for our value pushed from the reader.
     num_routed += 4;
+    cb_release_tile(cb_id_num_routed);
+    cb_pop_front(cb_id_num_routed, 1);
 
     volatile uint32_t* token_idx[MAX_EXPERTS_PER_DEVICE];
     for (uint32_t expert_idx = 0; expert_idx < num_local_experts; expert_idx++) {
@@ -99,6 +101,7 @@ void MAIN {
         // The first 4 entries have metadata, so we look at the 5th entry
         // for our value pushed from the reader.
         token_idx[expert_idx] += 4;
+        cb_release_tile(cb_id_token_idx);
         cb_pop_front(cb_id_token_idx, 1);
     }
 
