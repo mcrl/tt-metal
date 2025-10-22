@@ -1,10 +1,10 @@
+import tt_lock
 import fire
 from typing import Optional, Dict
 import os
 from models.demos.qwen3.generation import Qwen3MoETT, Qwen3MoEReference
 import ttnn
 from loguru import logger
-import tt_lock
 from test_dataset.dataset_loader import load_prompts
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
 from models.demos.qwen3.utils.profiler import profile_trace
@@ -29,7 +29,11 @@ def perftest_tt(
     set_and_get_device_cache(mesh_device)
 
     qwen3_moe = Qwen3MoETT(
-        mesh_device=mesh_device, ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, batch_size=batch_size, config_path=config_path
+        mesh_device=mesh_device,
+        ckpt_dir=ckpt_dir,
+        tokenizer_path=tokenizer_path,
+        batch_size=batch_size,
+        config_path=config_path,
     )
 
     prompts = load_prompts(batch_size, prompt_len)

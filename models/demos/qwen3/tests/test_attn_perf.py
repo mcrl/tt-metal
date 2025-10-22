@@ -6,7 +6,6 @@ from torch import nn
 
 import ttnn
 import tracy
-import tt_lock
 
 from transformers import AutoConfig
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode

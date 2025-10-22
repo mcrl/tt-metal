@@ -1,10 +1,12 @@
 import fcntl
 import os
 import sys
+import subprocess
 import atexit
 import time
 
 LOCK_FILE = "/tmp/tt_lock.lock"
+reset_command = ["tt-smi", "-r"]
 _lock_fd = None
 
 def _cleanup_lock():
@@ -45,6 +47,9 @@ def acquire_lock():
             _lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o666)
             fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             print("Successfully acquired lock.")
+
+            subprocess.run(reset_command, check=True)
+
             time.sleep(2)
             atexit.register(_cleanup_lock)
             return

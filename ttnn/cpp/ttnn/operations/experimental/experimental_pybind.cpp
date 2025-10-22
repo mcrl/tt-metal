@@ -7,6 +7,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "ttnn/operations/experimental/adaptive_pool/adaptive_pools_pybind.hpp"
 #include "ttnn/operations/experimental/cnn/convert_to_chw/convert_to_chw_pybind.hpp"
 #include "ttnn/operations/experimental/cnn/convert_to_hwc/convert_to_hwc_pybind.hpp"
 #include "ttnn/operations/experimental/conv3d/conv3d_pybind.hpp"
@@ -47,6 +48,11 @@
 #include "ttnn/operations/experimental/unary_backward/gelu_backward/gelu_backward_pybind.hpp"
 #include "ttnn/operations/experimental/padded_slice/padded_slice_pybind.hpp"
 #include "ttnn/operations/experimental/where/where_pybind.hpp"
+#include "ttnn/operations/experimental/test/hang_device/hang_device_operation_pybind.hpp"
+#include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors_pybind.hpp"
+#include "ttnn/operations/experimental/moe/scatter_moe_input/scatter_moe_input_pybind.hpp"
+#include "ttnn/operations/experimental/moe/local_reduce_moe_output/local_reduce_moe_output_pybind.hpp"
+#include "ttnn/operations/experimental/moe/moe_bmm/moe_bmm_pybind.hpp"
 
 namespace py = pybind11;
 
@@ -89,6 +95,8 @@ void py_module(py::module& module) {
     cnn::detail::bind_convert_to_hwc(module);
 
     ttnn::operations::experimental::conv3d::detail::py_bind_conv3d(module);
+    adaptive_pool::bind_adaptive_avg_pool2d_operation(module);
+    adaptive_pool::bind_adaptive_max_pool2d_operation(module);
 
     copy::detail::py_bind_typecast(module);
 
@@ -103,6 +111,7 @@ void py_module(py::module& module) {
 
     gelu_backward::detail::bind_experimental_gelu_backward_operation(module);
 
+    test::bind_test_hang_device_operation(module);
     // CCL ops
     auto m_experimental_ccl =
         module.def_submodule("ccl_experimental", "experimental collective communication operations");
@@ -111,6 +120,11 @@ void py_module(py::module& module) {
     broadcast_to::detail::py_bind_broadcast_to(module);
 
     operations::experimental::ternary::detail::bind_where(module);
+
+    moe::detail::bind_prepare_moe_routing_tensors(module);
+    scatter_moe_input::detail::bind_scatter_moe_input(module);
+    detail::bind_local_reduce_moe_output(module);
+    moe_bmm::detail::bind_moe_bmm(module);
 }
 
 }  // namespace ttnn::operations::experimental
