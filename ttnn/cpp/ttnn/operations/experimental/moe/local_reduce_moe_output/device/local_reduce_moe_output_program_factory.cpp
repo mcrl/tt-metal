@@ -49,10 +49,10 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     const bool output_is_dram = output_buffer->buffer_type() == BufferType::DRAM;
 
     // Data formats
-    const DataFormat input_cb_data_format = datatype_to_dataformat_converter(input_hidden_state.dtype());
+    const tt::DataFormat input_cb_data_format = datatype_to_dataformat_converter(input_hidden_state.dtype());
     const uint32_t input_element_size = input_hidden_state.element_size();
 
-    const DataFormat weights_cb_data_format = datatype_to_dataformat_converter(routed_token_weights.dtype());
+    const tt::DataFormat weights_cb_data_format = datatype_to_dataformat_converter(routed_token_weights.dtype());
     const uint32_t weights_element_size = routed_token_weights.element_size();
 
     // Get device and calculate work distribution
@@ -91,7 +91,7 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     const uint32_t aligned_token_idx_row_size = round_up_to_mul32(token_idx_row_size);
     const uint32_t aligned_token_idx_cb_size = num_local_experts * aligned_token_idx_row_size;
     const CircularBufferConfig cb_token_idx_config =
-        CircularBufferConfig(aligned_token_idx_cb_size, {{cb_id_token_idx, DataFormat::UInt32}})
+        CircularBufferConfig(aligned_token_idx_cb_size, {{cb_id_token_idx, tt::DataFormat::UInt32}})
             .set_page_size(cb_id_token_idx, aligned_token_idx_row_size);
     CreateCircularBuffer(program, all_cores, cb_token_idx_config);
 
@@ -101,7 +101,7 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     const uint32_t aligned_weights_row_size = round_up_to_mul32(weights_row_size);
     const uint32_t aligned_weights_cb_size = num_local_experts * aligned_weights_row_size;
     const CircularBufferConfig cb_weights_config =
-        CircularBufferConfig(aligned_weights_cb_size, {{cb_id_weights, DataFormat::UInt16}})
+        CircularBufferConfig(aligned_weights_cb_size, {{cb_id_weights, tt::DataFormat::UInt16}})
             .set_page_size(cb_id_weights, aligned_weights_row_size);
     CreateCircularBuffer(program, all_cores, cb_weights_config);
 
@@ -110,7 +110,7 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     const uint32_t num_routed_size = num_local_experts * sizeof(uint32_t);
     const uint32_t aligned_num_routed_size = round_up_to_mul32(num_routed_size);
     const CircularBufferConfig cb_num_routed_config =
-        CircularBufferConfig(aligned_num_routed_size, {{cb_id_num_routed, DataFormat::UInt32}})
+        CircularBufferConfig(aligned_num_routed_size, {{cb_id_num_routed, tt::DataFormat::UInt32}})
             .set_page_size(cb_id_num_routed, aligned_num_routed_size);
     CreateCircularBuffer(program, all_cores, cb_num_routed_config);
 
@@ -119,7 +119,7 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     constexpr uint32_t tile_size = 32 * 32 * sizeof(uint16_t);  // One tile: 32x32 bfloat16 elements
     const uint32_t aligned_weight_scalar_size = round_up_to_mul32(tile_size);
     const CircularBufferConfig cb_weight_scalar_config =
-        CircularBufferConfig(aligned_weight_scalar_size, {{cb_id_weight_scalar, DataFormat::Float16_b}})
+        CircularBufferConfig(aligned_weight_scalar_size, {{cb_id_weight_scalar, tt::DataFormat::Float16_b}})
             .set_page_size(cb_id_weight_scalar, aligned_weight_scalar_size);
     CreateCircularBuffer(program, all_cores, cb_weight_scalar_config);
 

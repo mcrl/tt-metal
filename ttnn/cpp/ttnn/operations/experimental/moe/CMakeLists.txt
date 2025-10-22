@@ -10,12 +10,6 @@ target_sources(
         prepare_moe_routing_tensors/prepare_moe_routing_tensors.cpp
         prepare_moe_routing_tensors/device/prepare_moe_routing_tensors_op.cpp
         prepare_moe_routing_tensors/device/prepare_moe_routing_tensors_program_factory.cpp
-        projection_to_intermediate/projection_to_intermediate.cpp
-        projection_to_intermediate/device/projection_to_intermediate_op.cpp
-        projection_to_intermediate/device/projection_to_intermediate_program_factory.cpp
-        projection_to_output/projection_to_output.cpp
-        projection_to_output/device/projection_to_output_op.cpp
-        projection_to_output/device/projection_to_output_program_factory.cpp
         scatter_moe_input/scatter_moe_input.cpp
         scatter_moe_input/device/scatter_moe_input_op.cpp
         scatter_moe_input/device/scatter_moe_input_program_factory.cpp

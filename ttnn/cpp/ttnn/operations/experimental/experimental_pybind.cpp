@@ -49,8 +49,6 @@
 #include "ttnn/operations/experimental/padded_slice/padded_slice_pybind.hpp"
 #include "ttnn/operations/experimental/where/where_pybind.hpp"
 #include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors_pybind.hpp"
-#include "ttnn/operations/experimental/moe/projection_to_intermediate/projection_to_intermediate_pybind.hpp"
-#include "ttnn/operations/experimental/moe/projection_to_output/projection_to_output_pybind.hpp"
 #include "ttnn/operations/experimental/moe/scatter_moe_input/scatter_moe_input_pybind.hpp"
 #include "ttnn/operations/experimental/moe/local_reduce_moe_output/local_reduce_moe_output_pybind.hpp"
 #include "ttnn/operations/experimental/moe/moe_bmm/moe_bmm_pybind.hpp"
@@ -122,8 +120,6 @@ void py_module(py::module& module) {
     operations::experimental::ternary::detail::bind_where(module);
 
     moe::detail::bind_prepare_moe_routing_tensors(module);
-    projection_to_intermediate::detail::bind_projection_to_intermediate(module);
-    projection_to_output::detail::bind_projection_to_output(module);
     scatter_moe_input::detail::bind_scatter_moe_input(module);
     detail::bind_local_reduce_moe_output(module);
     moe_bmm::detail::bind_moe_bmm(module);
