@@ -65,7 +65,7 @@ class Qwen3MoeAttention(nn.Module):
 
         self.q_heads_per_device = self.num_attention_heads // self.tp
 
-        self.KV_REPEAT_COEF = 2
+        self.KV_REPEAT_COEF = 1
         self.kv_heads_per_device = self.num_key_value_heads * self.KV_REPEAT_COEF // self.tp
 
         self.cache_shape = (
@@ -111,7 +111,7 @@ class Qwen3MoeAttention(nn.Module):
         self.qkv_proj_weight = ttnn.as_tensor(
             torch.cat(qkv_list, dim=1),
             device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, (4, 8), dims=(None, 1)),
+            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(None, 1)),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
@@ -151,17 +151,17 @@ class Qwen3MoeAttention(nn.Module):
         self.o_proj_weight = ttnn.as_tensor(
             o_weight,
             device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, (4, 8), dims=(None, 1)),
+            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(None, 1)),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_o_proj"),
         )
 
-        weight = torch.zeros(1, 32, 8, 32)
-        for i in range(32):
-            col = i % 4  # This determines which group of 8 to select
-            weight[:, i, :, col * 8 : (col + 1) * 8] = torch.eye(8)
+        weight = torch.zeros(1, self.num_devices, 32, 128) # 32 is batch size
+        for i in range(self.num_devices):
+            col = i // self.tp  # This determines which group of 32 to select
+            weight[:, i, :, col * 32 : (col + 1) * 32] = torch.eye(32)
 
         self.slice_mat = ttnn.from_torch(
             weight,
@@ -172,19 +172,6 @@ class Qwen3MoeAttention(nn.Module):
         )
 
         self.is_tt_setup = True
-
-    def prefill_prepare_tensor_for_kv_cache(self, key_or_value_layer, user_id):
-        tensor_copy = ttnn.clone(key_or_value_layer)
-        # key_or_value_layer.deallocate(True)
-        # Get all tensors from multi-device tensor
-        tensors = ttnn.get_device_tensors(tensor_copy)
-        # Get only tensors from specific column chips
-        # Get every 4th tensor starting from user_id // self.tp
-        single_column_tensors = tensors[user_id // self.tp :: self.dp]
-        # Create multi-device tensor
-        multi_device_tensor = ttnn.combine_device_tensors(single_column_tensors)
-
-        return multi_device_tensor
 
     def forward_prefill(
         self, hidden_states: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
@@ -239,11 +226,21 @@ class Qwen3MoeAttention(nn.Module):
 
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("fill-cache", level=4):
-            for b in range(batch_size):
-                k_fill = self.prefill_prepare_tensor_for_kv_cache(key_states, user_id=b)
-                v_fill = self.prefill_prepare_tensor_for_kv_cache(value_states, user_id=b)
-                ttnn.experimental.paged_fill_cache(self.cache_k, k_fill, page_table, batch_idx=b)
-                ttnn.experimental.paged_fill_cache(self.cache_v, v_fill, page_table, batch_idx=b)
+            k_copy = ttnn.clone(key_states)
+            v_copy = ttnn.clone(value_states)
+
+            k_tensors = ttnn.get_device_tensors(k_copy)
+            v_tensors = ttnn.get_device_tensors(v_copy)
+
+            for d in range(self.dp):
+                k_fills = ttnn.combine_device_tensors(k_tensors[self.tp * d : self.tp * (d + 1)])
+                v_fills = ttnn.combine_device_tensors(v_tensors[self.tp * d : self.tp * (d + 1)])
+
+                for b in range(batch_size // self.dp):
+                    user_id = batch_size // self.dp * d + b
+
+                    ttnn.experimental.paged_fill_cache(self.cache_k, k_fills[b:b+1], page_table, batch_idx=user_id)
+                    ttnn.experimental.paged_fill_cache(self.cache_v, v_fills[b:b+1], page_table, batch_idx=user_id)
 
         attn_out = tt_sdpa_forward(
             query_states,
@@ -253,7 +250,6 @@ class Qwen3MoeAttention(nn.Module):
             scaling=self.scaling,
             mode=InferenceMode.PREFILL,
         )
-        print(attn_out.shape)
         ttnn.deallocate(query_states)
         ttnn.deallocate(key_states)
         ttnn.deallocate(value_states)
@@ -261,7 +257,6 @@ class Qwen3MoeAttention(nn.Module):
         with Profiler().trace_with_timer("reshape", level=4):
             # [B, n, S, h] -> [B, S, n * h]
             attn_out_cat = ttnn.experimental.nlp_concat_heads(attn_out, memory_config=mem_cfg)
-            print(attn_out_cat.shape)
             ttnn.deallocate(attn_out)
 
         with Profiler().trace_with_timer("output-proj", level=4):
@@ -273,7 +268,6 @@ class Qwen3MoeAttention(nn.Module):
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
-            print(linear_output.shape)
             ttnn.deallocate(attn_out_cat)
 
         with Profiler().trace_with_timer("all-reduce", level=4):
@@ -305,7 +299,6 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-            print(linear_output.shape)
 
             linear_output = ttnn.experimental.all_gather_async(
                 linear_output,
@@ -317,7 +310,6 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-            print(linear_output.shape)
 
             ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.view(linear_output, (-1, S, H))
@@ -331,6 +323,10 @@ class Qwen3MoeAttention(nn.Module):
 
         """Hidden state: [1, S=1, B, H]"""
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
+
+        hidden_states = ttnn.view(hidden_states, (batch_size, hidden_size))
+        hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+        hidden_states = ttnn.view(hidden_states, (1, 1, batch_size // self.dp, hidden_size))
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
@@ -405,35 +401,44 @@ class Qwen3MoeAttention(nn.Module):
             _, _, B, H = linear_output.shape
             linear_output = ttnn.view(linear_output, (1, 1, B, H))
 
-            for cluster_axis in [1, 0]:
-                linear_output = ttnn.experimental.reduce_scatter_minimal_async(
-                    linear_output,
-                    persistent_output_buffers=None,
-                    dim=3,
-                    multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(cluster_axis),
-                    barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(cluster_axis),
-                    cluster_axis=cluster_axis,
-                    num_links=1,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    topology=ttnn.Topology.Linear,
-                    chunks_per_sync=10,
-                    num_workers_per_link=2,
-                    num_buffers_per_channel=2,
-                )
-                linear_output = ttnn.experimental.all_gather_async(
-                    linear_output,
-                    3,
-                    cluster_axis=cluster_axis,
-                    mesh_device=self.mesh_device,
-                    topology=ttnn.Topology.Linear,
-                    multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(cluster_axis),
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    num_links=1,
-                )
+            linear_output = ttnn.experimental.reduce_scatter_minimal_async(
+                linear_output,
+                persistent_output_buffers=None,
+                dim=3,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
+                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(1),
+                cluster_axis=1,
+                num_links=1,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                topology=ttnn.Topology.Linear,
+                chunks_per_sync=10,
+                num_workers_per_link=2,
+                num_buffers_per_channel=2,
+            )
+            linear_output = ttnn.experimental.all_gather_async(
+                linear_output,
+                3,
+                cluster_axis=1,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                num_links=1,
+            )
+            linear_output = ttnn.experimental.all_gather_async(
+                linear_output,
+                2,
+                cluster_axis=0,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                num_links=1,
+            )
 
             ttnn.synchronize_device(self.mesh_device)
-            linear_output = ttnn.view(linear_output, shape=(1, 1, B, H))
+            linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))
         """ O: [1, 1, B, H] """
 
         return linear_output

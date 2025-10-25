@@ -23,7 +23,7 @@ from models.demos.qwen3.utils.timer import set_and_get_device_cache
 from models.tt_transformers.tt.rope import RotarySetup
 
 def create_test_config():
-    config_path = "/home/chundoong/qwen3-235b-test/config.json"
+    config_path = "/shared/models/Qwen3-30B-A3B/config.json"
 
     with open(config_path, "r") as f:
         data = json.load(f)
@@ -31,7 +31,7 @@ def create_test_config():
 
 
 def load_reference_layer(layer_idx=0, seq_len=32):
-    config = AutoConfig.from_pretrained("/home/chundoong/qwen3-235b-test/")
+    config = AutoConfig.from_pretrained("/shared/models/Qwen3-30B-A3B/")
 
     config.max_batch_size = 32
     config.max_seq_len = seq_len
@@ -39,9 +39,9 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 
     layer = Qwen3MoeDecoderLayer(config, layer_idx)
 
-    weight_path = f"/home/chundoong/qwen3-235b-test/layer.pt"
+    weight_path = f"/shared/models/Qwen3-30B-A3B/layer_{layer_idx}.pt"
     if os.path.exists(weight_path):
-        layer.load_state_dict(torch.load(weight_path))
+        layer.load_state_dict(torch.load(weight_path)["state_dict"])
     else:
         print(f"Warning: Weight file {weight_path} not found, using random weights")
     layer.to(torch.bfloat16)
@@ -55,7 +55,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
     "batch_size,seq_len",
     [
         # (8, 64),
-        (32, 128),
+        (128, 128),
         # (2, 64),
     ],
 )
@@ -101,7 +101,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size,
+        batch_size=batch_size // 4,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
@@ -159,7 +159,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (32, 1),
+        (128, 1),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -204,7 +204,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size,
+        batch_size=batch_size // 4,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
@@ -225,6 +225,14 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
     )
+    page_table_tt_decode = ttnn.as_tensor(
+        page_table,
+        dtype=ttnn.int32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
+    )
 
     start_pos_tt = ttnn.as_tensor(
         torch.full((batch_size,), start_pos),
@@ -232,7 +240,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+        mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
     )
 
     hidden_states = hidden_states.reshape((1, 1, batch_size, config.hidden_size))
@@ -250,7 +258,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         rot_mats=rot_mats,
         trans_mat=trans_mat,
         start_pos=start_pos_tt,
-        page_table=page_table_tt,
+        page_table=page_table_tt_decode,
         mode=InferenceMode.DECODE,
     )
     output_tt = ttnn.reshape(output_tt, (batch_size, 1, config.hidden_size))
@@ -265,7 +273,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (32, 128),
+        (128, 128),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -296,7 +304,7 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size,
+        batch_size=batch_size // 4,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
@@ -312,6 +320,14 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
         device=mesh_device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+    )
+    page_table_tt_decode = ttnn.as_tensor(
+        page_table,
+        dtype=ttnn.int32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
     )
 
     hidden_states_full = torch.randn(batch_size, seq_len + 1, config.hidden_size, dtype=torch.bfloat16)
@@ -341,7 +357,7 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
     trans_mat_prefill = rope.transformation_mat_prefill
 
     start_pos_tt_prefill = ttnn.as_tensor(
-        torch.full((batch_size,), start_pos),
+        torch.full((batch_size // 4,), start_pos),
         dtype=ttnn.int32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
@@ -385,7 +401,7 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
     hidden_states_decode = hidden_states_full[:, seq_len:seq_len + 1, :]
 
     # TT decode
-    position_idxs = torch.full((batch_size,), start_pos_decode, dtype=torch.long)
+    position_idxs = torch.full((batch_size // 4,), start_pos_decode, dtype=torch.long)
     rot_mats_decode = rope.get_rot_mats(position_idxs)
     trans_mat_decode = rope.transformation_mat
 
@@ -395,7 +411,7 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+        mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
     )
 
     hidden_states_decode_reshaped = hidden_states_decode.reshape((1, 1, batch_size, config.hidden_size))
@@ -413,7 +429,7 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
         rot_mats=rot_mats_decode,
         trans_mat=trans_mat_decode,
         start_pos=start_pos_tt_decode,
-        page_table=page_table_tt,
+        page_table=page_table_tt_decode,
         mode=InferenceMode.DECODE,
     )
     output_tt_decode = ttnn.reshape(output_tt_decode, (batch_size, 1, config.hidden_size))

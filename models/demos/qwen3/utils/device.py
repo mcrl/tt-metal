@@ -14,8 +14,8 @@ def create_mesh_device(device_params: Optional[Dict] = None):
     updated_device_params = get_updated_device_params(params)
     device_ids = ttnn.get_device_ids()
 
-    # Default mesh shape: Galaxy (32) -> 4x8; otherwise 1 x num_devices
-    default_mesh_shape = ttnn.MeshShape(4, 8) if len(device_ids) == 32 else ttnn.MeshShape(1, len(device_ids))
+    # Default mesh shape: Galaxy (32) -> 4x8; otherwise 4 x num_devices // 4
+    default_mesh_shape = ttnn.MeshShape(4, 8) if len(device_ids) == 32 else ttnn.MeshShape(4, len(device_ids) // 4)
 
     updated_device_params.setdefault("mesh_shape", default_mesh_shape)
     mesh_device = ttnn.open_mesh_device(**updated_device_params)
