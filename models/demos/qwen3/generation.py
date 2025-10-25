@@ -138,7 +138,7 @@ class Qwen3MoETT:
         self.config.max_seq_len = 512
 
         self.config.block_size = 32
-        self.config.max_num_blocks = 1024
+        self.config.max_num_blocks = 512 # 1024 FIXME: reduce for memory
 
         with Profiler().trace_with_timer("Create-Model", level=0):
             with torch.device("meta"):
