@@ -132,7 +132,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 gate_proj,
                 device=self.mesh_device,
                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
                 cache_file_name=ttnn_model_cache_path(f"gate_proj_{self.layer_idx}"),
@@ -142,7 +142,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 up_proj,
                 device=self.mesh_device,
                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
                 cache_file_name=ttnn_model_cache_path(f"up_proj_{self.layer_idx}"),
@@ -152,7 +152,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 down_proj,
                 device=self.mesh_device,
                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
                 cache_file_name=ttnn_model_cache_path(f"down_proj_{self.layer_idx}"),
@@ -351,6 +351,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("to-layout", level=4):
             scattered_hidden_states = ttnn.to_layout(scattered_hidden_states, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
+            scattered_hidden_states = ttnn.typecast(scattered_hidden_states, ttnn.bfloat8_b)
 
         # Prepare expert weights - squeeze first dimension from (1, E/D, H, H') to (E/D, H, H')
         with Profiler().trace_with_timer("prepare-expert-weights", level=4):
@@ -376,6 +377,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         # Step 4: Down Projection with routing weights and accumulation
         with Profiler().trace_with_timer("down-projection", level=4):
             moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed)
+            moe_output = ttnn.typecast(moe_output, ttnn.bfloat16)
 
         # Step 5: Local Reduce
         with Profiler().trace_with_timer("sum", level=4):

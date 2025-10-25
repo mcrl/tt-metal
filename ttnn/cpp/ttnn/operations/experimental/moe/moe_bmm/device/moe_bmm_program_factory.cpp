@@ -265,7 +265,9 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
         "ttnn/cpp/ttnn/operations/experimental/moe/moe_bmm/device/kernels/compute/moe_bmm_multi_core.cpp",
         all_cores,
         ComputeConfig{
-            .math_fidelity = MathFidelity::HiFi4,
+            .math_fidelity = MathFidelity::HiFi2,
+            .fp32_dest_acc_en = false,
+            .math_approx_mode = false,
             .compile_args = compute_compile_time_args});
 
     for (const auto& range : all_cores.ranges()) {

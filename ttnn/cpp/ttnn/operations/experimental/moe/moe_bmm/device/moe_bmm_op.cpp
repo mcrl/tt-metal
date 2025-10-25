@@ -22,8 +22,8 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
     TT_FATAL(num_routed_tokens.storage_type() == StorageType::DEVICE, "num_routed_tokens must be on device");
 
     // Validate dtypes
-    TT_FATAL(input.dtype() == DataType::BFLOAT16, "input must be BFLOAT16");
-    TT_FATAL(weights.dtype() == DataType::BFLOAT16, "weights must be BFLOAT16");
+    // TT_FATAL(input.dtype() == DataType::BFLOAT16, "input must be BFLOAT16");
+    // TT_FATAL(weights.dtype() == DataType::BFLOAT16, "weights must be BFLOAT16");
     TT_FATAL(num_routed_tokens.dtype() == DataType::UINT32, "num_routed_tokens must be UINT32");
 
     // Validate layouts
