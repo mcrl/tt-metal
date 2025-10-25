@@ -121,29 +121,6 @@ class Qwen3MoeAttention(nn.Module):
         self.q_norm.setup_tt()
         self.k_norm.setup_tt()
 
-        cache_k = torch.zeros(self.cache_shape)
-        cache_v = torch.zeros(self.cache_shape)
-
-        self.cache_k = ttnn.as_tensor(
-            cache_k,
-            dtype=ttnn.bfloat8_b,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
-        )
-
-        self.cache_v = ttnn.as_tensor(
-            cache_v,
-            dtype=ttnn.bfloat8_b,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
-        )
-
         o_weight = self.o_proj.weight
         o_weight = o_weight.reshape(self.hidden_size, -1, self.head_dim)
         o_weight = reshape_to_interleaved(o_weight).reshape(weight_shape)
@@ -157,6 +134,8 @@ class Qwen3MoeAttention(nn.Module):
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_o_proj"),
         )
+
+        self.init_kv_cache()
 
         weight = torch.zeros(1, self.num_devices, 32, 128) # 32 is batch size
         for i in range(self.num_devices):
@@ -179,6 +158,29 @@ class Qwen3MoeAttention(nn.Module):
         )
 
         self.is_tt_setup = True
+    
+    def init_kv_cache(self):
+        cache_k = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
+        cache_v = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
+
+        self.cache_k = ttnn.as_tensor(
+            cache_k,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
+        )
+        self.cache_v = ttnn.as_tensor(
+            cache_v,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
+        )
 
     def forward_prefill(
         self, hidden_states: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
