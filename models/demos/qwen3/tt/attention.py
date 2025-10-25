@@ -112,7 +112,7 @@ class Qwen3MoeAttention(nn.Module):
             torch.cat(qkv_list, dim=1),
             device=self.mesh_device,
             mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(None, 1)),
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_qkv_proj"),
@@ -126,7 +126,7 @@ class Qwen3MoeAttention(nn.Module):
 
         self.cache_k = ttnn.as_tensor(
             cache_k,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.bfloat8_b,
             layout=ttnn.TILE_LAYOUT,
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -136,7 +136,7 @@ class Qwen3MoeAttention(nn.Module):
 
         self.cache_v = ttnn.as_tensor(
             cache_v,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.bfloat8_b,
             layout=ttnn.TILE_LAYOUT,
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -152,7 +152,7 @@ class Qwen3MoeAttention(nn.Module):
             o_weight,
             device=self.mesh_device,
             mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(None, 1)),
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_o_proj"),
@@ -165,10 +165,17 @@ class Qwen3MoeAttention(nn.Module):
 
         self.slice_mat = ttnn.from_torch(
             weight,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.bfloat8_b,
             layout=ttnn.TILE_LAYOUT,
             device=self.mesh_device,
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+        )
+
+        self.compute_config = ttnn.WormholeComputeKernelConfig(
+            math_fidelity=ttnn.MathFidelity.HiFi2,
+            math_approx_mode=False,
+            fp32_dest_acc_en=False,
+            packer_l1_acc=True,
         )
 
         self.is_tt_setup = True
@@ -183,12 +190,13 @@ class Qwen3MoeAttention(nn.Module):
         hidden_shape = (batch_size // self.dp, 1, sequence_length, -1)
 
         hidden_states = ttnn.reshape(hidden_states, (batch_size, -1))
-        hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+        hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
         hidden_states = ttnn.reshape(hidden_states, hidden_shape)
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
-            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
-            # ttnn.deallocate(hidden_states)
+            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+            ttnn.deallocate(hidden_states)
+            qkv_states = ttnn.typecast(qkv_states, ttnn.bfloat16)
             qkv_states = ttnn.view(qkv_states, hidden_shape)
 
         with Profiler().trace_with_timer("qkv-split", level=4):
@@ -241,6 +249,16 @@ class Qwen3MoeAttention(nn.Module):
 
                     ttnn.experimental.paged_fill_cache(self.cache_k, k_fills[b:b+1], page_table, batch_idx=user_id)
                     ttnn.experimental.paged_fill_cache(self.cache_v, v_fills[b:b+1], page_table, batch_idx=user_id)
+            
+            ttnn.deallocate(k_copy)
+            ttnn.deallocate(v_copy)
+
+            for i in range(len(k_tensors)):
+                ttnn.deallocate(k_tensors[i])
+                ttnn.deallocate(v_tensors[i])
+
+            ttnn.deallocate(k_fills)
+            ttnn.deallocate(v_fills)
 
         attn_out = tt_sdpa_forward(
             query_states,
@@ -265,7 +283,8 @@ class Qwen3MoeAttention(nn.Module):
                 self.o_proj_weight,
                 transpose_a=False,
                 transpose_b=True,
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
+                compute_kernel_config=self.compute_config, 
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
             ttnn.deallocate(attn_out_cat)
@@ -313,6 +332,7 @@ class Qwen3MoeAttention(nn.Module):
 
             ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.view(linear_output, (-1, S, H))
+            linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
 
         return linear_output
 
@@ -325,11 +345,12 @@ class Qwen3MoeAttention(nn.Module):
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
 
         hidden_states = ttnn.view(hidden_states, (batch_size, hidden_size))
-        hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+        hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
         hidden_states = ttnn.view(hidden_states, (1, 1, batch_size // self.dp, hidden_size))
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
-            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+            qkv_states = ttnn.typecast(qkv_states, ttnn.bfloat16)
             # ttnn.deallocate(hidden_states)
         """ QKV: [1, 1, B, H] """
 
@@ -391,7 +412,8 @@ class Qwen3MoeAttention(nn.Module):
                 self.o_proj_weight,
                 transpose_a=False,
                 transpose_b=True,
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
+                compute_kernel_config=self.compute_config, 
                 memory_config=mem_cfg,
             )
             ttnn.deallocate(attn_output_cat)
@@ -439,6 +461,7 @@ class Qwen3MoeAttention(nn.Module):
 
             ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))
+            linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
         """ O: [1, 1, B, H] """
 
         return linear_output

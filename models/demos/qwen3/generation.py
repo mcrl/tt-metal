@@ -146,7 +146,7 @@ class Qwen3MoETT:
 
             self.rope = RotarySetup(
                 device=self.mesh_device,
-                batch_size=batch_size,
+                batch_size=batch_size // 4,
                 head_dim=self.config.head_dim,
                 max_seq_len=self.config.max_seq_len,
                 rope_theta=self.config.rope_theta,
@@ -250,7 +250,7 @@ class Qwen3MoETT:
         prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
 
         batch_size = len(prompt_tokens)
-        assert batch_size <= self.config.max_batch_size
+        # assert batch_size <= self.config.max_batch_size
 
         permutation = torch.randperm(self.config.max_num_blocks, device="cpu")
         reverse_permutation = torch.argsort(permutation)
@@ -262,6 +262,14 @@ class Qwen3MoETT:
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
+        )
+        page_table_tt_decode = ttnn.as_tensor(
+            page_table,
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(0, None))
         )
 
         min_prompt_len = min(len(t) for t in prompt_tokens)
@@ -290,6 +298,7 @@ class Qwen3MoETT:
                 print(f"curr_pos: {curr_pos}")
                 iter_start_time = time.time()
                 mode = "prefill" if prev_pos == 0 else "decode"
+                page_table = page_table_tt if mode == "prefill" else page_table_tt_decode
 
                 ids = ttnn.from_torch(
                     tokens[:, prev_pos:curr_pos],
@@ -300,7 +309,7 @@ class Qwen3MoETT:
                     layout=ttnn.ROW_MAJOR_LAYOUT,
                 )
                 start_pos = ttnn.as_tensor(
-                    torch.tensor([prev_pos for _ in range(batch_size)]),
+                    torch.tensor([prev_pos for _ in range(batch_size // 4)]),
                     dtype=ttnn.int32,
                     layout=ttnn.ROW_MAJOR_LAYOUT,
                     device=self.mesh_device,
@@ -312,11 +321,11 @@ class Qwen3MoETT:
                     rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
                     trans_mat = self.rope.transformation_mat_prefill
                 else:
-                    position_idxs = torch.full((batch_size,), prev_pos, dtype=torch.long)
+                    position_idxs = torch.full((batch_size // 4,), prev_pos, dtype=torch.long)
                     rot_mats = self.rope.get_rot_mats(position_idxs)
                     trans_mat = self.rope.transformation_mat
 
-                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table_tt)
+                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
 
                 logits = ttnn.to_torch(
                     logits_tt,

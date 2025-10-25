@@ -61,12 +61,12 @@ def perftest_reference(
 
 
 def main(
-    ckpt_dir: str = "/mnt/nvme0/models/qwen3-30b",
-    tokenizer_path: str = "/mnt/nvme0/models/qwen3-30b/tokenizer.json",
-    config_path: Optional[str] = "/mnt/nvme0/models/qwen3-30b/config.json",
-    batch_size: int = 32,
-    prompt_len: int = 128,
-    gen_tokens: int = 32,
+    ckpt_dir: str = "/shared/models/Qwen3-30B-A3B",
+    tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
+    config_path: Optional[str] = "/shared/models/Qwen3-30B-A3B/config.json",
+    batch_size: int = 128,
+    prompt_len: int = 32,
+    gen_tokens: int = 16,
     run_tt: bool = True,
     run_reference: bool = False,
 ):
