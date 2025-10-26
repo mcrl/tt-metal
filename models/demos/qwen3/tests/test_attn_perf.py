@@ -48,7 +48,7 @@ def load_reference_layer(layer_idx=0):
     "batch_size,seq_len",
     [
         # (8, 64),
-        (32, 128),
+        (128, 128),
         # (2, 64),
     ],
 )
@@ -85,7 +85,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size,
+        batch_size=batch_size // 4,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
@@ -106,7 +106,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
     )
     start_pos_tt = ttnn.as_tensor(
-        torch.full((batch_size,), start_pos),
+        torch.full((batch_size // 4,), start_pos),
         dtype=ttnn.int32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
@@ -147,7 +147,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (32, 128),
+        (128, 128),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -182,13 +182,13 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size,
+        batch_size=batch_size // 4,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
     )
 
-    position_idxs = torch.full((batch_size,), start_pos, dtype=torch.long)
+    position_idxs = torch.full((batch_size // 4,), start_pos, dtype=torch.long)
     rot_mats = rope.get_rot_mats(position_idxs)
     trans_mat = rope.transformation_mat
 
@@ -201,10 +201,10 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+        mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None)),
     )
     start_pos_tt = ttnn.as_tensor(
-        torch.full((batch_size,), start_pos),
+        torch.full((batch_size // 4,), start_pos),
         dtype=ttnn.int32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
