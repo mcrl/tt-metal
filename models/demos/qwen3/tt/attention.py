@@ -37,6 +37,13 @@ class Qwen3MoeAttention(nn.Module):
         self.config = config
         self.layer_idx = layer_idx
         self.mesh_device = mesh_device
+        self.num_devices = mesh_device.shape[0] * mesh_device.shape[1]
+
+        self.dp = mesh_device.shape[0]
+        self.tp = mesh_device.shape[1]
+
+        # self.submeshes = mesh_device.create_submeshes(ttnn.MeshShape(mesh_device.shape[0] // self.dp, mesh_device.shape[1]))
+
         self.is_tt_setup = False
         self.hidden_size = config.hidden_size
         self.head_dim = config.head_dim
@@ -56,14 +63,14 @@ class Qwen3MoeAttention(nn.Module):
 
         self.sliding_window = None
 
-        self.q_heads_per_device = self.num_attention_heads // self.mesh_device.shape[1]
+        self.q_heads_per_device = self.num_attention_heads // self.tp
 
-        self.KV_REPEAT_COEF = 2
-        self.kv_heads_per_device = self.num_key_value_heads * self.KV_REPEAT_COEF // self.mesh_device.shape[1]
+        self.KV_REPEAT_COEF = 1
+        self.kv_heads_per_device = self.num_key_value_heads * self.KV_REPEAT_COEF // self.tp
 
         self.cache_shape = (
             config.max_num_blocks,
-            self.num_key_value_heads * self.KV_REPEAT_COEF // self.mesh_device.shape[1],
+            self.num_key_value_heads * self.KV_REPEAT_COEF // self.tp,
             config.block_size,
             self.head_dim,
         )
@@ -94,28 +101,86 @@ class Qwen3MoeAttention(nn.Module):
         v_weight = reshape_to_interleaved(v_weight).reshape(weight_shape)
 
         qkv_list = []
-        wq = torch.chunk(q_weight, self.mesh_device.shape[1], dim=1)
-        wk = torch.chunk(k_weight, self.mesh_device.shape[1], dim=1)
-        wv = torch.chunk(v_weight, self.mesh_device.shape[1], dim=1)
+        wq = torch.chunk(q_weight, self.tp, dim=1)
+        wk = torch.chunk(k_weight, self.tp, dim=1)
+        wv = torch.chunk(v_weight, self.tp, dim=1)
 
-        for i in range(self.mesh_device.shape[1]):
+        for i in range(self.tp):
             qkv_list.append(torch.cat([wq[i], wk[i], wv[i]], dim=1))
 
         self.qkv_proj_weight = ttnn.as_tensor(
             torch.cat(qkv_list, dim=1),
             device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-            dtype=ttnn.bfloat16,
+            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(None, 1)),
+            dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_qkv_proj"),
+            cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_qkv_proj"),
         )
 
         self.q_norm.setup_tt()
         self.k_norm.setup_tt()
 
-        cache_k = torch.zeros(self.cache_shape)
-        cache_v = torch.zeros(self.cache_shape)
+        o_weight = self.o_proj.weight
+        o_weight = o_weight.reshape(self.hidden_size, -1, self.head_dim)
+        o_weight = reshape_to_interleaved(o_weight).reshape(weight_shape)
+
+        self.o_proj_weight = ttnn.as_tensor(
+            o_weight,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(None, 1)),
+            dtype=ttnn.bfloat8_b,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
+            cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_o_proj"),
+        )
+
+        self.init_kv_cache()
+
+        weight = torch.zeros(1, self.num_devices, 32, 128) # 32 is batch size
+        for i in range(self.num_devices):
+            col = i // self.tp  # This determines which group of 32 to select
+            weight[:, i, :, col * 32 : (col + 1) * 32] = torch.eye(32)
+
+        self.slice_mat = ttnn.from_torch(
+            weight,
+            dtype=ttnn.bfloat8_b,
+            layout=ttnn.TILE_LAYOUT,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
+        )
+
+        # Create dp_degree tensor for extract_attention_input API
+        # Each device gets its row index in the mesh (0 to dp-1)
+        # Pattern: [0, 0, 0, 0, 1, 1, 1, 1] for dp=2, tp=4
+        dp_degree_host = torch.tensor(
+            [row for row in range(self.dp) for _ in range(self.tp)],
+            dtype=torch.int32
+        )
+        self.dp_degree = ttnn.from_torch(
+            dp_degree_host,
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensor2dMesh(
+                self.mesh_device,
+                dims=(0, None),  # Shard dim 0 across dp*tp devices
+                mesh_shape=(self.num_devices, 1)  # Treat as 1D array
+            ),
+        )
+
+        self.compute_config = ttnn.WormholeComputeKernelConfig(
+            math_fidelity=ttnn.MathFidelity.HiFi2,
+            math_approx_mode=False,
+            fp32_dest_acc_en=False,
+            packer_l1_acc=True,
+        )
+
+        self.is_tt_setup = True
+    
+    def init_kv_cache(self):
+        cache_k = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
+        cache_v = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
 
         self.cache_k = ttnn.as_tensor(
             cache_k,
@@ -136,33 +201,34 @@ class Qwen3MoeAttention(nn.Module):
             cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
         )
 
-        o_weight = self.o_proj.weight
-        o_weight = o_weight.reshape(self.hidden_size, -1, self.head_dim)
-        o_weight = reshape_to_interleaved(o_weight).reshape(weight_shape)
-
-        self.o_proj_weight = ttnn.as_tensor(
-            o_weight,
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-            dtype=ttnn.bfloat16,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_o_proj"),
-        )
-        self.is_tt_setup = True
-
     def forward_prefill(
         self, hidden_states: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
-        """Prefill starts. Hidden stats: [1, B=1, S, H]"""
+        """Prefill starts. Hidden stats: [1, B, S, H]"""
 
         batch_size, sequence_length, hidden_size = hidden_states.shape
         mem_cfg = ttnn.L1_MEMORY_CONFIG if sequence_length == 1 else ttnn.DRAM_MEMORY_CONFIG
-        hidden_shape = (batch_size, 1, sequence_length, -1)
+        hidden_shape = (batch_size // self.dp, 1, sequence_length, -1)
+
+        # Extract attention input for this device using new multi-core API
+        # Replaces: reshape → matmul(slice_mat) → reshape
+        hidden_states = ttnn.extract_attention_input(
+            hidden_states,
+            self.dp_degree,
+            mesh_device=self.mesh_device,
+            output_dtype=ttnn.bfloat16,
+            memory_config=mem_cfg
+        )
+
+        # OLD CODE (replaced by extract_attention_input API):
+        # hidden_states = ttnn.reshape(hidden_states, (batch_size, -1))
+        # hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+        # hidden_states = ttnn.reshape(hidden_states, hidden_shape)
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
-            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
-            # ttnn.deallocate(hidden_states)
+            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+            ttnn.deallocate(hidden_states)
+            qkv_states = ttnn.typecast(qkv_states, ttnn.bfloat16)
             qkv_states = ttnn.view(qkv_states, hidden_shape)
 
         with Profiler().trace_with_timer("qkv-split", level=4):
@@ -200,9 +266,31 @@ class Qwen3MoeAttention(nn.Module):
 
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("fill-cache", level=4):
-            for b in range(batch_size):
-                ttnn.experimental.paged_fill_cache(self.cache_k, key_states[b:b + 1], page_table, batch_idx=b)
-                ttnn.experimental.paged_fill_cache(self.cache_v, value_states[b:b + 1], page_table, batch_idx=b)
+            k_copy = ttnn.clone(key_states)
+            v_copy = ttnn.clone(value_states)
+
+            k_tensors = ttnn.get_device_tensors(k_copy)
+            v_tensors = ttnn.get_device_tensors(v_copy)
+
+            for d in range(self.dp):
+                k_fills = ttnn.combine_device_tensors(k_tensors[self.tp * d : self.tp * (d + 1)])
+                v_fills = ttnn.combine_device_tensors(v_tensors[self.tp * d : self.tp * (d + 1)])
+
+                for b in range(batch_size // self.dp):
+                    user_id = batch_size // self.dp * d + b
+
+                    ttnn.experimental.paged_fill_cache(self.cache_k, k_fills[b:b+1], page_table, batch_idx=user_id)
+                    ttnn.experimental.paged_fill_cache(self.cache_v, v_fills[b:b+1], page_table, batch_idx=user_id)
+            
+            ttnn.deallocate(k_copy)
+            ttnn.deallocate(v_copy)
+
+            for i in range(len(k_tensors)):
+                ttnn.deallocate(k_tensors[i])
+                ttnn.deallocate(v_tensors[i])
+
+            ttnn.deallocate(k_fills)
+            ttnn.deallocate(v_fills)
 
         attn_out = tt_sdpa_forward(
             query_states,
@@ -227,7 +315,8 @@ class Qwen3MoeAttention(nn.Module):
                 self.o_proj_weight,
                 transpose_a=False,
                 transpose_b=True,
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
+                compute_kernel_config=self.compute_config, 
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
             ttnn.deallocate(attn_out_cat)
@@ -240,8 +329,9 @@ class Qwen3MoeAttention(nn.Module):
                 linear_output,
                 persistent_output_buffers=None,
                 dim=3,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(),
-                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(),
+                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
+                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(1),
+                cluster_axis=1,
                 num_links=1,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -256,13 +346,25 @@ class Qwen3MoeAttention(nn.Module):
                 cluster_axis=1,
                 mesh_device=self.mesh_device,
                 topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(),
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-            ttnn.synchronize_device(self.mesh_device)
 
-            linear_output = ttnn.view(linear_output, (B, S, H))
+            linear_output = ttnn.experimental.all_gather_async(
+                linear_output,
+                2,
+                cluster_axis=0,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                num_links=1,
+            )
+
+            ttnn.synchronize_device(self.mesh_device)
+            linear_output = ttnn.view(linear_output, (-1, S, H))
+            linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
 
         return linear_output
 
@@ -274,8 +376,24 @@ class Qwen3MoeAttention(nn.Module):
         """Hidden state: [1, S=1, B, H]"""
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
 
+        # Extract attention input for this device using new multi-core API
+        # Replaces: view → matmul(slice_mat) → view
+        hidden_states = ttnn.extract_attention_input(
+            hidden_states,
+            self.dp_degree,
+            mesh_device=self.mesh_device,
+            output_dtype=ttnn.bfloat16,
+            memory_config=mem_cfg
+        )
+
+        # OLD CODE (replaced by extract_attention_input API):
+        # hidden_states = ttnn.view(hidden_states, (batch_size, hidden_size))
+        # hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+        # hidden_states = ttnn.view(hidden_states, (1, 1, batch_size // self.dp, hidden_size))
+
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
-            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+            qkv_states = ttnn.typecast(qkv_states, ttnn.bfloat16)
             # ttnn.deallocate(hidden_states)
         """ QKV: [1, 1, B, H] """
 
@@ -337,7 +455,8 @@ class Qwen3MoeAttention(nn.Module):
                 self.o_proj_weight,
                 transpose_a=False,
                 transpose_b=True,
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
+                compute_kernel_config=self.compute_config, 
                 memory_config=mem_cfg,
             )
             ttnn.deallocate(attn_output_cat)
@@ -351,8 +470,9 @@ class Qwen3MoeAttention(nn.Module):
                 linear_output,
                 persistent_output_buffers=None,
                 dim=3,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(),
-                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(),
+                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
+                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(1),
+                cluster_axis=1,
                 num_links=1,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -367,13 +487,24 @@ class Qwen3MoeAttention(nn.Module):
                 cluster_axis=1,
                 mesh_device=self.mesh_device,
                 topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(),
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                num_links=1,
+            )
+            linear_output = ttnn.experimental.all_gather_async(
+                linear_output,
+                2,
+                cluster_axis=0,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
 
             ttnn.synchronize_device(self.mesh_device)
-            linear_output = ttnn.view(linear_output, shape=(1, 1, B, H))
+            linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))
+            linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
         """ O: [1, 1, B, H] """
 
         return linear_output
@@ -395,6 +526,5 @@ class Qwen3MoeAttention(nn.Module):
             return self.forward_decode(hidden_states, start_pos, rot_mats, trans_mat, page_table)
         else:
             raise ValueError(f"Unknown mode: {mode}")
-
 
 __all__ = ["Qwen3MoeAttention"]

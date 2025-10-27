@@ -132,7 +132,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 gate_proj,
                 device=self.mesh_device,
                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
                 cache_file_name=ttnn_model_cache_path(f"gate_proj_{self.layer_idx}"),
@@ -142,7 +142,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 up_proj,
                 device=self.mesh_device,
                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
                 cache_file_name=ttnn_model_cache_path(f"up_proj_{self.layer_idx}"),
@@ -152,7 +152,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 down_proj,
                 device=self.mesh_device,
                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
                 cache_file_name=ttnn_model_cache_path(f"down_proj_{self.layer_idx}"),
@@ -351,6 +351,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("to-layout", level=4):
             scattered_hidden_states = ttnn.to_layout(scattered_hidden_states, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
+            scattered_hidden_states = ttnn.typecast(scattered_hidden_states, ttnn.bfloat8_b)
 
         # Prepare expert weights - squeeze first dimension from (1, E/D, H, H') to (E/D, H, H')
         with Profiler().trace_with_timer("prepare-expert-weights", level=4):
@@ -376,6 +377,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         # Step 4: Down Projection with routing weights and accumulation
         with Profiler().trace_with_timer("down-projection", level=4):
             moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed)
+            moe_output = ttnn.typecast(moe_output, ttnn.bfloat16)
 
         # Step 5: Local Reduce
         with Profiler().trace_with_timer("sum", level=4):
@@ -394,30 +396,32 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             final_output = ttnn.reshape(moe_output, shape=(1, 1, T, H), memory_config=mem_cfg)
             final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
 
-            final_output = ttnn.experimental.reduce_scatter_minimal_async(
-                final_output,
-                persistent_output_buffers=None,
-                dim=3,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(),
-                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(),
-                num_links=1,
-                memory_config=mem_cfg,
-                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                topology=ttnn.Topology.Linear,
-                chunks_per_sync=10,
-                num_workers_per_link=2,
-                num_buffers_per_channel=2,
-            )
-            final_output = ttnn.experimental.all_gather_async(
-                final_output,
-                3,
-                cluster_axis=1,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(),
-                memory_config=mem_cfg,
-                num_links=1,
-            )
+            for cluster_axis in [1, 0]:
+                final_output = ttnn.experimental.reduce_scatter_minimal_async(
+                    final_output,
+                    persistent_output_buffers=None,
+                    dim=3,
+                    multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(cluster_axis),
+                    barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(cluster_axis),
+                    cluster_axis=cluster_axis,
+                    num_links=1,
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    topology=ttnn.Topology.Linear,
+                    chunks_per_sync=10,
+                    num_workers_per_link=2,
+                    num_buffers_per_channel=2,
+                )
+                final_output = ttnn.experimental.all_gather_async(
+                    final_output,
+                    3,
+                    cluster_axis=cluster_axis,
+                    mesh_device=self.mesh_device,
+                    topology=ttnn.Topology.Linear,
+                    multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(cluster_axis),
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    num_links=1,
+                )
             ttnn.synchronize_device(self.mesh_device)
 
         # Reshape to original shape
