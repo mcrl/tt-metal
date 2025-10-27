@@ -47,7 +47,6 @@ void MAIN {
     tensix_sync();
     cb_get_tile(cb_num_tiles, 0, &num_tiles_addr_ptr);
     uint32_t total_token_tiles = num_tiles_addr_ptr[4];
-    DPRINT << total_token_tiles << ENDL();
     cb_release_tile(cb_num_tiles);
     cb_pop_front(cb_num_tiles, 1);
 
