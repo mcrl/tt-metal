@@ -150,6 +150,25 @@ class Qwen3MoeAttention(nn.Module):
             mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
         )
 
+        # Create dp_degree tensor for extract_attention_input API
+        # Each device gets its row index in the mesh (0 to dp-1)
+        # Pattern: [0, 0, 0, 0, 1, 1, 1, 1] for dp=2, tp=4
+        dp_degree_host = torch.tensor(
+            [row for row in range(self.dp) for _ in range(self.tp)],
+            dtype=torch.int32
+        )
+        self.dp_degree = ttnn.from_torch(
+            dp_degree_host,
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensor2dMesh(
+                self.mesh_device,
+                dims=(0, None),  # Shard dim 0 across dp*tp devices
+                mesh_shape=(self.num_devices, 1)  # Treat as 1D array
+            ),
+        )
+
         self.compute_config = ttnn.WormholeComputeKernelConfig(
             math_fidelity=ttnn.MathFidelity.HiFi2,
             math_approx_mode=False,
@@ -191,9 +210,20 @@ class Qwen3MoeAttention(nn.Module):
         mem_cfg = ttnn.L1_MEMORY_CONFIG if sequence_length == 1 else ttnn.DRAM_MEMORY_CONFIG
         hidden_shape = (batch_size // self.dp, 1, sequence_length, -1)
 
-        hidden_states = ttnn.reshape(hidden_states, (batch_size, -1))
-        hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
-        hidden_states = ttnn.reshape(hidden_states, hidden_shape)
+        # Extract attention input for this device using new multi-core API
+        # Replaces: reshape → matmul(slice_mat) → reshape
+        hidden_states = ttnn.extract_attention_input(
+            hidden_states,
+            self.dp_degree,
+            mesh_device=self.mesh_device,
+            output_dtype=ttnn.bfloat16,
+            memory_config=mem_cfg
+        )
+
+        # OLD CODE (replaced by extract_attention_input API):
+        # hidden_states = ttnn.reshape(hidden_states, (batch_size, -1))
+        # hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+        # hidden_states = ttnn.reshape(hidden_states, hidden_shape)
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
@@ -346,9 +376,20 @@ class Qwen3MoeAttention(nn.Module):
         """Hidden state: [1, S=1, B, H]"""
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
 
-        hidden_states = ttnn.view(hidden_states, (batch_size, hidden_size))
-        hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
-        hidden_states = ttnn.view(hidden_states, (1, 1, batch_size // self.dp, hidden_size))
+        # Extract attention input for this device using new multi-core API
+        # Replaces: view → matmul(slice_mat) → view
+        hidden_states = ttnn.extract_attention_input(
+            hidden_states,
+            self.dp_degree,
+            mesh_device=self.mesh_device,
+            output_dtype=ttnn.bfloat16,
+            memory_config=mem_cfg
+        )
+
+        # OLD CODE (replaced by extract_attention_input API):
+        # hidden_states = ttnn.view(hidden_states, (batch_size, hidden_size))
+        # hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+        # hidden_states = ttnn.view(hidden_states, (1, 1, batch_size // self.dp, hidden_size))
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
