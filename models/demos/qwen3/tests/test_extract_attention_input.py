@@ -18,6 +18,46 @@ def torch_random(shape, low=-1, high=1, dtype=torch.float32):
     return torch.rand(shape, dtype=dtype) * (high - low) + low
 
 
+def create_dp_degree_tensor(mesh_device):
+    """
+    Create dp_degree tensor for mesh device.
+
+    Each device at position (row, col) gets scalar value 'row'.
+    This represents the device's index in the data parallelism dimension.
+
+    Args:
+        mesh_device: MeshDevice
+
+    Returns:
+        Mesh tensor where each device has its row index as a scalar [1] tensor
+    """
+    dp, tp = mesh_device.shape
+    num_devices = dp * tp
+
+    # Create 1D host tensor: shape [dp * tp]
+    # Device at position (row, col) in row-major order gets value 'row'
+    dp_degree_host = torch.tensor(
+        [row for row in range(dp) for _ in range(tp)],
+        dtype=torch.int32
+    )
+
+    # Create TTNN mesh tensor by sharding the 1D tensor along dimension 0
+    # Each device gets a [1] slice
+    dp_degree = ttnn.from_torch(
+        dp_degree_host,
+        dtype=ttnn.int32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=mesh_device,
+        mesh_mapper=ttnn.ShardTensor2dMesh(
+            mesh_device,
+            dims=(0, None),  # Shard dim 0 across DP*TP devices, replicate nothing
+            mesh_shape=(num_devices, 1)  # Treat as 1D array of devices
+        ),
+    )
+
+    return dp_degree
+
+
 @pytest.fixture(
     params=[
         (1, 8),  # 1x8 mesh
@@ -160,9 +200,13 @@ def test_extract_attention_input_prefill(
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device_with_shape),
     )
 
-    # Run TTNN operation
-    ttnn_output = ttnn.extract_attention_input_prefill(
+    # Create dp_degree tensor: each device at (row, col) gets value 'row'
+    dp_degree = create_dp_degree_tensor(mesh_device_with_shape)
+
+    # Run TTNN operation (unified API)
+    ttnn_output = ttnn.extract_attention_input(
         ttnn_input,
+        dp_degree,
         mesh_device_with_shape,
         output_dtype=output_dtype,
     )
@@ -204,6 +248,7 @@ def test_extract_attention_input_prefill(
                     torch_reference.to(torch.float32),
                     rtol=1e-1,  # 10% relative tolerance for bfloat8_b
                     atol=1e-1,  # Absolute tolerance for bfloat8_b
+                    msg=f"Device {device_idx} (row={row_idx}, col={col_idx}) output doesn't match reference"
                 )
             else:
                 # For bfloat16, expect near-exact match
@@ -212,7 +257,10 @@ def test_extract_attention_input_prefill(
                     torch_reference,
                     rtol=1e-2,
                     atol=1e-2,
+                    msg=f"Device {device_idx} (row={row_idx}, col={col_idx}) output doesn't match reference"
                 )
+
+            print(f"Device {device_idx} (row={row_idx}, col={col_idx}) output matches reference")
 
             device_idx += 1
 
@@ -271,9 +319,13 @@ def test_extract_attention_input_decode(
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device_with_shape),
     )
 
-    # Run TTNN operation
-    ttnn_output = ttnn.extract_attention_input_decode(
+    # Create dp_degree tensor: each device at (row, col) gets value 'row'
+    dp_degree = create_dp_degree_tensor(mesh_device_with_shape)
+
+    # Run TTNN operation (unified API)
+    ttnn_output = ttnn.extract_attention_input(
         ttnn_input,
+        dp_degree,
         mesh_device_with_shape,
         output_dtype=output_dtype,
     )

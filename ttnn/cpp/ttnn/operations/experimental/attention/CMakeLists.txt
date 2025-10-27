@@ -7,12 +7,9 @@ TT_ENABLE_UNITY_BUILD(ttnn_op_experimental_attention)
 target_sources(
     ttnn_op_experimental_attention
     PRIVATE
-        extract_attention_input_prefill/extract_attention_input_prefill.cpp
-        extract_attention_input_prefill/device/extract_attention_input_prefill_op.cpp
-        extract_attention_input_prefill/device/extract_attention_input_prefill_program_factory.cpp
-        extract_attention_input_decode/extract_attention_input_decode.cpp
-        extract_attention_input_decode/device/extract_attention_input_decode_op.cpp
-        extract_attention_input_decode/device/extract_attention_input_decode_program_factory.cpp
+        extract_attention_input/extract_attention_input.cpp
+        extract_attention_input/device/extract_attention_input_op.cpp
+        extract_attention_input/device/extract_attention_input_program_factory.cpp
 )
 
 target_include_directories(ttnn_op_experimental_attention PRIVATE ${FixmeOpIncDirs})

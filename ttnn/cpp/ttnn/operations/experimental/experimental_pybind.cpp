@@ -52,8 +52,7 @@
 #include "ttnn/operations/experimental/moe/scatter_moe_input/scatter_moe_input_pybind.hpp"
 #include "ttnn/operations/experimental/moe/local_reduce_moe_output/local_reduce_moe_output_pybind.hpp"
 #include "ttnn/operations/experimental/moe/moe_bmm/moe_bmm_pybind.hpp"
-#include "ttnn/operations/experimental/attention/extract_attention_input_prefill/extract_attention_input_prefill_pybind.hpp"
-#include "ttnn/operations/experimental/attention/extract_attention_input_decode/extract_attention_input_decode_pybind.hpp"
+#include "ttnn/operations/experimental/attention/extract_attention_input/extract_attention_input_pybind.hpp"
 
 namespace py = pybind11;
 
@@ -126,8 +125,7 @@ void py_module(py::module& module) {
     detail::bind_local_reduce_moe_output(module);
     moe_bmm::detail::bind_moe_bmm(module);
 
-    extract_attention_input_prefill::detail::bind_extract_attention_input_prefill(module);
-    extract_attention_input_decode::detail::bind_extract_attention_input_decode(module);
+    extract_attention_input::detail::bind_extract_attention_input(module);
 }
 
 }  // namespace ttnn::operations::experimental
