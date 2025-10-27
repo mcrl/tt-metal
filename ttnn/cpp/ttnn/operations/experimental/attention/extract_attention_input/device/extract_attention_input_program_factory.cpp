@@ -4,6 +4,7 @@
 
 #include "extract_attention_input_program_factory.hpp"
 
+#include <fmt/format.h>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/util.hpp>
 #include <tt-metalium/work_split.hpp>
@@ -45,9 +46,15 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
 
     // Calculate tile dimensions (common for both modes)
     constexpr uint32_t TILE_SIZE = 32;
-    constexpr uint32_t tile_size_bytes = TILE_SIZE * TILE_SIZE * 2;
     uint32_t num_tile_cols = hidden_dim / TILE_SIZE;
     uint32_t tiles_per_device = num_tile_rows_per_device * num_tile_cols;
+
+    // Detect if format conversion is needed
+    bool needs_format_conversion = (output_dtype != hidden_state.dtype());
+
+    // Calculate tile sizes for input and output formats
+    tt::DataFormat input_data_format = tt_metal::datatype_to_dataformat_converter(hidden_state.dtype());
+    uint32_t input_tile_size = tt_metal::detail::TileSize(input_data_format);
 
     // Get buffer info
     auto input_buffer = hidden_state.buffer();
@@ -61,11 +68,12 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
     CoreCoord core = {0, 0};
     CoreRangeSet all_cores({CoreRange(core, core)});
 
-    // Create circular buffers - single tile for safety (no batching)
+    // Create circular buffers - 2 tiles for double buffering
     // CB 0: Input buffer (bfloat16)
+    uint32_t num_input_tiles = 2;  // Double buffer for pipelining
     CircularBufferConfig cb_in_config =
-        CircularBufferConfig(tile_size_bytes, {{0, tt_metal::datatype_to_dataformat_converter(hidden_state.dtype())}})
-        .set_page_size(0, tile_size_bytes);
+        CircularBufferConfig(num_input_tiles * input_tile_size, {{0, input_data_format}})
+        .set_page_size(0, input_tile_size);
     auto cb_in = CreateCircularBuffer(program, all_cores, cb_in_config);
 
     // CB 1: dp_degree buffer (uint32, single value)
@@ -73,6 +81,17 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
         CircularBufferConfig(sizeof(uint32_t), {{1, tt_metal::datatype_to_dataformat_converter(dp_degree.dtype())}})
         .set_page_size(1, sizeof(uint32_t));
     auto cb_dp_degree = CreateCircularBuffer(program, all_cores, cb_dp_degree_config);
+
+    // CB 16: Output buffer (only needed when format conversion is required)
+    if (needs_format_conversion) {
+        tt::DataFormat output_data_format = tt_metal::datatype_to_dataformat_converter(output_dtype);
+        uint32_t output_tile_size = tt_metal::detail::TileSize(output_data_format);
+        uint32_t num_output_tiles = 2;  // Double buffer for pipelining
+        CircularBufferConfig cb_out_config =
+            CircularBufferConfig(num_output_tiles * output_tile_size, {{16, output_data_format}})
+            .set_page_size(16, output_tile_size);
+        auto cb_out = CreateCircularBuffer(program, all_cores, cb_out_config);
+    }
 
     // Compile-time args for reader
     std::vector<uint32_t> reader_compile_args = {
@@ -85,9 +104,15 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
     };
 
     // Compile-time args for writer
+    tt::DataFormat output_data_format = needs_format_conversion
+        ? tt_metal::datatype_to_dataformat_converter(output_dtype)
+        : input_data_format;
+
     std::vector<uint32_t> writer_compile_args = {
-        (uint32_t)output_is_dram,  // 0: output buffer type
-        tiles_per_device            // 1: number of tiles to write
+        (uint32_t)output_is_dram,                      // 0: output buffer type
+        tiles_per_device,                              // 1: number of tiles to write
+        needs_format_conversion ? 16u : 0u,            // 2: CB index (0 for 2-kernel, 16 for 3-kernel)
+        (uint32_t)output_data_format                   // 3: output data format
     };
 
     // Create kernels
@@ -96,6 +121,36 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
         "ttnn/cpp/ttnn/operations/experimental/attention/extract_attention_input/device/kernels/dataflow/reader_extract_attention_input.cpp",
         all_cores,
         ReaderDataMovementConfig(reader_compile_args));
+
+    // Conditionally create compute kernel for format conversion
+    KernelHandle compute_kernel;
+    if (needs_format_conversion) {
+        // Single compile arg: number of tiles to process
+        std::vector<uint32_t> compute_compile_args = {
+            tiles_per_device  // 0: number of tiles to convert
+        };
+
+        // Define TYPECAST_LLK macro for format conversion
+        // This expands to: typecast_tile<input_format_enum, output_format_enum>
+        std::map<std::string, std::string> compute_defines;
+        compute_defines["TYPECAST_LLK"] = fmt::format(
+            "typecast_tile<{0}u, {1}u>",
+            static_cast<uint32_t>(input_data_format),
+            static_cast<uint32_t>(tt_metal::datatype_to_dataformat_converter(output_dtype)));
+
+        compute_kernel = CreateKernel(
+            program,
+            "ttnn/cpp/ttnn/operations/experimental/attention/extract_attention_input/device/kernels/compute/copy_tiles_format_conversion.cpp",
+            all_cores,
+            ComputeConfig{
+                .math_fidelity = MathFidelity::HiFi4,
+                .fp32_dest_acc_en = false,
+                .bfp8_pack_precise = false,
+                .math_approx_mode = false,
+                .compile_args = compute_compile_args,
+                .defines = compute_defines
+            });
+    }
 
     auto writer_kernel = CreateKernel(
         program,

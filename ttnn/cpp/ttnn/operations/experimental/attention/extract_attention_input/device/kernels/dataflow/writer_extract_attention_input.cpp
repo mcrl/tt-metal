@@ -8,7 +8,7 @@
 // Writer kernel for extract_attention_input (unified)
 // PURPOSE: Write tiles from circular buffer to output tensor
 // APPROACH: Safety-first - one tile at a time, barrier after each write
-// MODES: Works for both prefill and decode modes
+// MODES: Works for both prefill and decode modes, handles format conversion
 
 void kernel_main() {
     // Runtime arguments
@@ -17,19 +17,19 @@ void kernel_main() {
     // Compile-time arguments
     constexpr bool output_is_dram = (bool)get_compile_time_arg_val(0);  // Output buffer type
     constexpr uint32_t tiles_per_device = get_compile_time_arg_val(1);  // Number of tiles to write
+    constexpr uint32_t cb_id = get_compile_time_arg_val(2);             // CB index (0 for 2-kernel, 16 for 3-kernel)
+    constexpr uint32_t output_data_format = get_compile_time_arg_val(3);  // Output data format
 
-    // Constants
-    constexpr uint32_t tile_size_bytes = 2048;  // 32 * 32 * 2 bytes (bfloat16)
-    constexpr uint32_t cb_id = 0;              // Circular buffer index
+    // Get actual tile size from circular buffer (handles both bfloat16 and bfp8_b correctly)
+    const uint32_t tile_size_bytes = get_tile_size(cb_id);
 
     // Setup address generator for interleaved buffer
     const InterleavedAddrGenFast<output_is_dram> addrgen = {
         .bank_base_address = output_addr,
         .page_size = tile_size_bytes,
-        .data_format = DataFormat::Float16_b  // bfloat16
+        .data_format = static_cast<DataFormat>(output_data_format)
     };
 
-    DPRINT << "Writer: " << tiles_per_device << ENDL();
     // SAFE PATTERN: Write one tile at a time, barrier immediately after each write
     // No batching for maximum safety
     for (uint32_t i = 0; i < tiles_per_device; i++) {
