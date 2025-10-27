@@ -184,7 +184,7 @@ class Qwen3MoeAttention(nn.Module):
 
         self.cache_k = ttnn.as_tensor(
             cache_k,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.bfloat8_b,
             layout=ttnn.TILE_LAYOUT,
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -193,7 +193,7 @@ class Qwen3MoeAttention(nn.Module):
         )
         self.cache_v = ttnn.as_tensor(
             cache_v,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.bfloat8_b,
             layout=ttnn.TILE_LAYOUT,
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -227,7 +227,7 @@ class Qwen3MoeAttention(nn.Module):
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
-            ttnn.deallocate(hidden_states)
+            # ttnn.deallocate(hidden_states)
             qkv_states = ttnn.typecast(qkv_states, ttnn.bfloat16)
             qkv_states = ttnn.view(qkv_states, hidden_shape)
 
@@ -275,6 +275,9 @@ class Qwen3MoeAttention(nn.Module):
             for d in range(self.dp):
                 k_fills = ttnn.combine_device_tensors(k_tensors[self.tp * d : self.tp * (d + 1)])
                 v_fills = ttnn.combine_device_tensors(v_tensors[self.tp * d : self.tp * (d + 1)])
+
+                k_fills = ttnn.typecast(k_fills, ttnn.bfloat8_b)
+                v_fills = ttnn.typecast(v_fills, ttnn.bfloat8_b)
 
                 for b in range(batch_size // self.dp):
                     user_id = batch_size // self.dp * d + b
