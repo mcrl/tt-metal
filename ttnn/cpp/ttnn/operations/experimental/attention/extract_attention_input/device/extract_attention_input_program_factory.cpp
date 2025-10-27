@@ -8,6 +8,7 @@
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/util.hpp>
 #include <tt-metalium/work_split.hpp>
+#include <tt-metalium/tensor_accessor_args.hpp>
 
 namespace ttnn::operations::experimental::attention::detail {
 
@@ -64,9 +65,19 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
     bool dp_degree_is_dram = dp_degree_buffer->buffer_type() == BufferType::DRAM;
     bool output_is_dram = output_buffer->buffer_type() == BufferType::DRAM;
 
-    // Use single core (0, 0) for simplicity
-    CoreCoord core = {0, 0};
-    CoreRangeSet all_cores({CoreRange(core, core)});
+    // Multi-core configuration: 8x8 grid (64 cores)
+    constexpr uint32_t num_cores_x = 8;
+    constexpr uint32_t num_cores_y = 8;
+    constexpr uint32_t total_cores = num_cores_x * num_cores_y;  // 64 cores
+
+    CoreRange all_cores_range({0, 0}, {num_cores_x - 1, num_cores_y - 1});
+    CoreRangeSet all_cores({all_cores_range});
+
+    // Manual work distribution across cores
+    uint32_t tiles_per_core = tiles_per_device / total_cores;
+    uint32_t remainder_tiles = tiles_per_device % total_cores;
+    // First 'remainder_tiles' cores get (tiles_per_core + 1) tiles
+    // Remaining cores get tiles_per_core tiles
 
     // Create circular buffers - 2 tiles for double buffering
     // CB 0: Input buffer (bfloat16)
@@ -93,27 +104,21 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
         auto cb_out = CreateCircularBuffer(program, all_cores, cb_out_config);
     }
 
-    // Compile-time args for reader
-    std::vector<uint32_t> reader_compile_args = {
-        (uint32_t)input_is_dram,        // 0: input buffer type
-        (uint32_t)dp_degree_is_dram,    // 1: dp_degree buffer type
-        tiles_per_device,                // 2: number of tiles to read
-        num_tile_cols,                   // 3: number of tile columns
-        batch_size,                      // 4: total batch size
-        is_prefill ? input_shape[1] : hidden_dim  // 5: seq_len (prefill) or hidden_dim (decode)
-    };
+    // Compile-time args for reader (TensorAccessor args + dp_degree buffer type)
+    std::vector<uint32_t> reader_compile_args;
+    tt::tt_metal::TensorAccessorArgs(*input_buffer).append_to(reader_compile_args);
+    reader_compile_args.push_back((uint32_t)dp_degree_is_dram);  // dp_degree buffer type
 
-    // Compile-time args for writer
+    // Compile-time args for writer (TensorAccessor pattern + CB index + data format)
     tt::DataFormat output_data_format = needs_format_conversion
         ? tt_metal::datatype_to_dataformat_converter(output_dtype)
         : input_data_format;
 
     std::vector<uint32_t> writer_compile_args = {
-        (uint32_t)output_is_dram,                      // 0: output buffer type
-        tiles_per_device,                              // 1: number of tiles to write
-        needs_format_conversion ? 16u : 0u,            // 2: CB index (0 for 2-kernel, 16 for 3-kernel)
-        (uint32_t)output_data_format                   // 3: output data format
+        needs_format_conversion ? 16u : 0u  // 0: CB index (0 for 2-kernel, 16 for 3-kernel)
     };
+    tt::tt_metal::TensorAccessorArgs(*output_buffer).append_to(writer_compile_args);
+    writer_compile_args.push_back((uint32_t)output_data_format);  // data format
 
     // Create kernels
     auto reader_kernel = CreateKernel(
@@ -123,13 +128,8 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
         ReaderDataMovementConfig(reader_compile_args));
 
     // Conditionally create compute kernel for format conversion
-    KernelHandle compute_kernel;
+    KernelHandle compute_kernel = 0;  // Initialize to silence warning
     if (needs_format_conversion) {
-        // Single compile arg: number of tiles to process
-        std::vector<uint32_t> compute_compile_args = {
-            tiles_per_device  // 0: number of tiles to convert
-        };
-
         // Define TYPECAST_LLK macro for format conversion
         // This expands to: typecast_tile<input_format_enum, output_format_enum>
         std::map<std::string, std::string> compute_defines;
@@ -137,6 +137,9 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
             "typecast_tile<{0}u, {1}u>",
             static_cast<uint32_t>(input_data_format),
             static_cast<uint32_t>(tt_metal::datatype_to_dataformat_converter(output_dtype)));
+
+        // Note: num_tiles is now a runtime arg, no compile args needed
+        std::vector<uint32_t> compute_compile_args = {};
 
         compute_kernel = CreateKernel(
             program,
@@ -158,34 +161,71 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
         all_cores,
         WriterDataMovementConfig(writer_compile_args));
 
-    // Runtime args for reader
-    std::vector<uint32_t> reader_runtime_args = {
-        input_buffer->address(),      // 0: input buffer address
-        dp_degree_buffer->address()   // 1: dp_degree buffer address
-    };
+    // Set runtime args for each core
+    // Note: Each reader will read dp_degree and calculate global start offset on device
+    uint32_t num_tiles_assigned = 0;
+    for (uint32_t core_idx = 0; core_idx < total_cores; core_idx++) {
+        CoreCoord core = {core_idx / num_cores_y, core_idx % num_cores_y};
 
-    // Runtime args for writer
-    std::vector<uint32_t> writer_runtime_args = {
-        output_buffer->address()   // 0: output buffer address (write from tile 0)
-    };
+        // Calculate tiles for this core
+        uint32_t num_tiles_for_core = tiles_per_core;
+        if (core_idx < remainder_tiles) {
+            num_tiles_for_core += 1;  // First 'remainder' cores get +1 tile
+        }
 
-    SetRuntimeArgs(program, reader_kernel, core, reader_runtime_args);
-    SetRuntimeArgs(program, writer_kernel, core, writer_runtime_args);
+        // Tile offset within device's assigned tiles
+        uint32_t local_tile_offset = num_tiles_assigned;
+        uint32_t output_start_tile_id = num_tiles_assigned;
+
+        // Reader runtime args: input_addr, dp_degree_addr, num_tiles, local_offset, tiles_per_device
+        SetRuntimeArgs(program, reader_kernel, core, {
+            input_buffer->address(),
+            dp_degree_buffer->address(),
+            num_tiles_for_core,
+            local_tile_offset,
+            tiles_per_device
+        });
+
+        // Writer runtime args: output_addr, num_tiles, start_tile_id
+        SetRuntimeArgs(program, writer_kernel, core, {
+            output_buffer->address(),
+            num_tiles_for_core,
+            output_start_tile_id
+        });
+
+        // Compute runtime args (if format conversion): num_tiles
+        if (needs_format_conversion) {
+            SetRuntimeArgs(program, compute_kernel, core, {
+                num_tiles_for_core
+            });
+        }
+
+        num_tiles_assigned += num_tiles_for_core;
+    }
 
     // Callbacks to update buffer addresses when tensors move
-    auto override_runtime_args_callback = [reader_kernel, writer_kernel, core](
+    auto override_runtime_args_callback = [
+        reader_kernel, writer_kernel, compute_kernel,
+        needs_format_conversion, num_cores_y, total_cores](
         const void* operation,
         const Program& program,
         const std::vector<ttnn::Tensor>& input_tensors,
         const std::vector<std::optional<const ttnn::Tensor>>&,
         const std::vector<ttnn::Tensor>& output_tensors) {
 
-        auto& reader_runtime_args = GetRuntimeArgs(program, reader_kernel, core);
-        auto& writer_runtime_args = GetRuntimeArgs(program, writer_kernel, core);
+        auto src_buffer_addr = input_tensors.at(0).buffer()->address();
+        auto dst_buffer_addr = output_tensors.at(0).buffer()->address();
 
-        reader_runtime_args[0] = input_tensors.at(0).buffer()->address();  // hidden_state
-        reader_runtime_args[1] = input_tensors.at(1).buffer()->address();  // dp_degree
-        writer_runtime_args[0] = output_tensors.at(0).buffer()->address();
+        // Update buffer addresses for all cores
+        for (uint32_t core_idx = 0; core_idx < total_cores; core_idx++) {
+            CoreCoord core = {core_idx / num_cores_y, core_idx % num_cores_y};
+
+            auto& reader_args = GetRuntimeArgs(program, reader_kernel, core);
+            reader_args[0] = src_buffer_addr;
+
+            auto& writer_args = GetRuntimeArgs(program, writer_kernel, core);
+            writer_args[0] = dst_buffer_addr;
+        }
     };
 
     return {std::move(program), override_runtime_args_callback};

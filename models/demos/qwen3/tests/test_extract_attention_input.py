@@ -255,7 +255,7 @@ def test_extract_attention_input_prefill(
                     atol=1e-1,  # Absolute tolerance for bfloat8_b
                     msg=f"Device {device_idx} (row={row_idx}, col={col_idx}) output doesn't match reference"
                 )
-            else:
+            else: 
                 # For bfloat16, expect near-exact match
                 torch.testing.assert_close(
                     device_output_torch,
