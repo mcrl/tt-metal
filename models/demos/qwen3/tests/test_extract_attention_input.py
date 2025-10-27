@@ -240,6 +240,11 @@ def test_extract_attention_input_prefill(
             # All devices in the same row should have identical output
             torch_reference = torch_extract_attention_input_prefill(torch_input, dp, row_idx)
 
+            # print(f"First 10 values of device_output_torch: {device_output_torch.flatten()[:10].tolist()}")
+            # print(f"First 10 values of torch_reference: {torch_reference.flatten()[:10].tolist()}")
+            # print(f"First 10 values of device_output_torch: {device_output_torch.flatten()[384:384+10].tolist()}")
+            # print(f"First 10 values of torch_reference: {torch_reference.flatten()[384:384+10].tolist()}")
+
             # Compare values
             if output_dtype == ttnn.bfloat8_b:
                 # For bfloat8_b, allow larger tolerance due to quantization
