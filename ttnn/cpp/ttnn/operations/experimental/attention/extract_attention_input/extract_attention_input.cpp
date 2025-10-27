@@ -2,20 +2,21 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "device/extract_attention_input_decode_op.hpp"
-#include "ttnn/operations/experimental/attention/extract_attention_input_decode/extract_attention_input_decode.hpp"
+#include "device/extract_attention_input_op.hpp"
+#include "ttnn/operations/experimental/attention/extract_attention_input/extract_attention_input.hpp"
 
 namespace ttnn::operations::experimental {
 
-ttnn::Tensor ExtractAttentionInputDecodeOperation::invoke(
+ttnn::Tensor ExtractAttentionInputOperation::invoke(
     QueueId queue_id,
     const Tensor& hidden_state,
+    const Tensor& dp_degree,
     const MeshDevice& mesh_device,
     const std::optional<DataType>& output_dtype,
     const std::optional<MemoryConfig>& memory_config) {
 
     // Extract DP from mesh device
-    uint32_t dp = mesh_device.shape()[0];
+    uint32_t dp = mesh_device.shape()[0];  // Number of rows (data parallelism)
 
     // Default output dtype to input dtype
     auto out_dtype = output_dtype.value_or(hidden_state.dtype());
@@ -29,12 +30,12 @@ ttnn::Tensor ExtractAttentionInputDecodeOperation::invoke(
     auto output_mem_config = memory_config.value_or(hidden_state.memory_config());
 
     return tt::tt_metal::operation::run(
-        attention::ExtractAttentionInputDecode{
+        attention::ExtractAttentionInput{
             .output_mem_config = output_mem_config,
             .output_dtype = out_dtype,
             .dp = dp
         },
-        {hidden_state},
+        {hidden_state, dp_degree},
         {},
         {},
         queue_id
