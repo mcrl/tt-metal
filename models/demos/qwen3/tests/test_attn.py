@@ -118,7 +118,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+        mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
     )
 
     start_pos_tt = ttnn.as_tensor(
@@ -223,14 +223,6 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
-    )
-    page_table_tt_decode = ttnn.as_tensor(
-        page_table,
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=mesh_device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
     )
 
@@ -258,7 +250,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         rot_mats=rot_mats,
         trans_mat=trans_mat,
         start_pos=start_pos_tt,
-        page_table=page_table_tt_decode,
+        page_table=page_table_tt,
         mode=InferenceMode.DECODE,
     )
     output_tt = ttnn.reshape(output_tt, (batch_size, 1, config.hidden_size))
@@ -314,14 +306,6 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
     reverse_permutation = torch.argsort(permutation)
     page_table = reverse_permutation.reshape(config.max_batch_size, config.max_num_blocks // config.max_batch_size)
     page_table_tt = ttnn.as_tensor(
-        page_table,
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=mesh_device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
-    )
-    page_table_tt_decode = ttnn.as_tensor(
         page_table,
         dtype=ttnn.int32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
@@ -429,7 +413,7 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
         rot_mats=rot_mats_decode,
         trans_mat=trans_mat_decode,
         start_pos=start_pos_tt_decode,
-        page_table=page_table_tt_decode,
+        page_table=page_table_tt,
         mode=InferenceMode.DECODE,
     )
     output_tt_decode = ttnn.reshape(output_tt_decode, (batch_size, 1, config.hidden_size))

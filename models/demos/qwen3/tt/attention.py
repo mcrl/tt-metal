@@ -266,34 +266,18 @@ class Qwen3MoeAttention(nn.Module):
 
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("fill-cache", level=4):
-            k_copy = ttnn.clone(key_states)
-            v_copy = ttnn.clone(value_states)
+            for b in range(batch_size // self.dp):
+                k_fill = ttnn.clone(key_states[b:b+1])
+                v_fill = ttnn.clone(value_states[b:b+1])
 
-            k_tensors = ttnn.get_device_tensors(k_copy)
-            v_tensors = ttnn.get_device_tensors(v_copy)
+                k_fill = ttnn.typecast(k_fill, ttnn.bfloat8_b)
+                v_fill = ttnn.typecast(v_fill, ttnn.bfloat8_b)
 
-            for d in range(self.dp):
-                k_fills = ttnn.combine_device_tensors(k_tensors[self.tp * d : self.tp * (d + 1)])
-                v_fills = ttnn.combine_device_tensors(v_tensors[self.tp * d : self.tp * (d + 1)])
+                ttnn.experimental.paged_fill_cache(self.cache_k, k_fill, page_table, batch_idx=b)
+                ttnn.experimental.paged_fill_cache(self.cache_v, v_fill, page_table, batch_idx=b)
 
-                k_fills = ttnn.typecast(k_fills, ttnn.bfloat8_b)
-                v_fills = ttnn.typecast(v_fills, ttnn.bfloat8_b)
-
-                for b in range(batch_size // self.dp):
-                    user_id = batch_size // self.dp * d + b
-
-                    ttnn.experimental.paged_fill_cache(self.cache_k, k_fills[b:b+1], page_table, batch_idx=user_id)
-                    ttnn.experimental.paged_fill_cache(self.cache_v, v_fills[b:b+1], page_table, batch_idx=user_id)
-            
-            ttnn.deallocate(k_copy)
-            ttnn.deallocate(v_copy)
-
-            for i in range(len(k_tensors)):
-                ttnn.deallocate(k_tensors[i])
-                ttnn.deallocate(v_tensors[i])
-
-            ttnn.deallocate(k_fills)
-            ttnn.deallocate(v_fills)
+            ttnn.deallocate(k_fill)
+            ttnn.deallocate(v_fill)
 
         attn_out = tt_sdpa_forward(
             query_states,
