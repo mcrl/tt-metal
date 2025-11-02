@@ -105,6 +105,29 @@ class Qwen3MoeAttention(nn.Module):
         if self.is_tt_setup:
             return
 
+        # Load weights lazily if they're still in meta state
+        from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
+        lazy_loader = get_lazy_loader()
+        
+        if lazy_loader is not None:
+            # Load weights on-demand if still in meta state
+            param_prefix = f"layers.{self.layer_idx}.self_attn"
+            
+            if is_meta_tensor(self.q_proj.weight):
+                load_parameter_for_module(self.q_proj, "weight", f"{param_prefix}.q_proj.weight")
+            if is_meta_tensor(self.k_proj.weight):
+                load_parameter_for_module(self.k_proj, "weight", f"{param_prefix}.k_proj.weight")
+            if is_meta_tensor(self.v_proj.weight):
+                load_parameter_for_module(self.v_proj, "weight", f"{param_prefix}.v_proj.weight")
+            if is_meta_tensor(self.o_proj.weight):
+                load_parameter_for_module(self.o_proj, "weight", f"{param_prefix}.o_proj.weight")
+            
+            # Load RMSNorm weights before calling their setup_tt()
+            if is_meta_tensor(self.q_norm.weight):
+                load_parameter_for_module(self.q_norm, "weight", f"{param_prefix}.q_norm.weight")
+            if is_meta_tensor(self.k_norm.weight):
+                load_parameter_for_module(self.k_norm, "weight", f"{param_prefix}.k_norm.weight")
+
         self.ccl = TT_CCL(self.mesh_device) # CCL1D(self.mesh_device)
 
         weight_shape = (self.hidden_size, -1)
@@ -136,8 +159,11 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            # cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_qkv_proj"),
+            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_qkv_proj"),
         )
+        
+        # Free intermediate tensors
+        del q_weight, k_weight, v_weight, qkv_list, wq, wk, wv
 
         self.q_norm.setup_tt()
         self.k_norm.setup_tt()
@@ -153,8 +179,11 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            # cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_o_proj"),
+            cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_o_proj"),
         )
+        
+        # Free intermediate tensor
+        del o_weight
 
         self.init_kv_cache()
 
@@ -198,6 +227,13 @@ class Qwen3MoeAttention(nn.Module):
         )
 
         self.is_tt_setup = True
+        
+        # Free CPU RAM after uploading to device (if using lazy loader)
+        if lazy_loader is not None:
+            from models.demos.qwen3.common.lazy_loader import clear_module_weights
+            clear_module_weights(self)
+            print(f"✓ Layer {self.layer_idx} attention weights cleared from CPU RAM")
+
     
     def init_kv_cache(self):
         cache_k = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
@@ -210,7 +246,7 @@ class Qwen3MoeAttention(nn.Module):
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            # cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
+            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
         )
         self.cache_v = ttnn.as_tensor(
             cache_v,
@@ -219,7 +255,7 @@ class Qwen3MoeAttention(nn.Module):
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            # cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
+            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
         )
 
     def forward_prefill(
