@@ -15,14 +15,14 @@ from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
 
 def create_test_config():
-    config_path = "/shared/models/Qwen3-30B-A3B/config.json"
+    config_path = "/mnt/nvme0/models/qwen3-30b/config.json"
 
     with open(config_path, "r") as f:
         data = json.load(f)
     return Qwen3MoeConfig.from_dict(data)
 
 def load_reference_layer(layer_idx=0, seq_len=32):
-    config = AutoConfig.from_pretrained("/shared/models/Qwen3-30B-A3B/")
+    config = AutoConfig.from_pretrained("/mnt/nvme0/models/qwen3-30b/")
 
     config.max_batch_size = 32
     config.max_seq_len = seq_len
@@ -30,7 +30,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 
     layer = Qwen3MoeDecoderLayer(config, layer_idx)
 
-    weight_path = f"/shared/models/Qwen3-30B-A3B/layer_{layer_idx}.pt"
+    weight_path = f"/mnt/nvme0/models/qwen3-30b/layer_{layer_idx}.pt"
     if os.path.exists(weight_path):
         layer.load_state_dict(torch.load(weight_path)["state_dict"])
     else:

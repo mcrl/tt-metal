@@ -46,6 +46,7 @@ def mesh_device(request, device_params):
 
     updated_device_params.setdefault("mesh_shape", default_mesh_shape)
     mesh_device = ttnn.open_mesh_device(**updated_device_params)
+    submeshes = mesh_device.create_submeshes(ttnn.MeshShape(2, 8))
 
     logger.debug(f"multidevice with {mesh_device.get_num_devices()} devices is created with shape {mesh_device.shape}")
     yield mesh_device
