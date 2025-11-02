@@ -24,6 +24,17 @@ class Qwen3MoeRMSNorm(nn.Module):
         if self.is_tt_setup:
             return
 
+        # Check if weight is still meta - parent should have loaded it
+        from models.demos.qwen3.common.lazy_loader import get_lazy_loader, is_meta_tensor
+        lazy_loader = get_lazy_loader()
+        
+        if is_meta_tensor(self.weight) and lazy_loader is not None:
+            raise RuntimeError(
+                "RMSNorm weight is still in meta state. "
+                "Parent module should load it before calling setup_tt(). "
+                "This is likely a bug in the parent module's setup_tt() method."
+            )
+
         if self.interleaved:
             self.weight_tensor = ttnn.as_tensor(
                 reshape_to_interleaved(self.weight),

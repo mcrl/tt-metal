@@ -13,7 +13,7 @@ from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
 from models.demos.qwen3.utils.profiler import Profiler, profile_trace
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
-
+from models.tt_transformers.tt.ccl import TT_CCL
 
 class Qwen3MoeDecoderLayer(nn.Module):
     @profile_trace("create-layer", level=2, args={"class": "Qwen3MoeDecoderLayer"})
@@ -40,11 +40,31 @@ class Qwen3MoeDecoderLayer(nn.Module):
     def setup_tt(self):
         if self.is_tt_setup:
             return
+        
+        # Load layer norm weights if using lazy loading
+        from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
+        lazy_loader = get_lazy_loader()
+        
+        if lazy_loader is not None:
+            param_prefix = f"layers.{self.layer_idx}"
+            
+            # Load layernorm weights before calling their setup_tt()
+            if is_meta_tensor(self.input_layernorm.weight):
+                load_parameter_for_module(self.input_layernorm, "weight", f"{param_prefix}.input_layernorm.weight")
+            if is_meta_tensor(self.post_attention_layernorm.weight):
+                load_parameter_for_module(self.post_attention_layernorm, "weight", f"{param_prefix}.post_attention_layernorm.weight")
+        
         self.self_attn.setup_tt()
         self.mlp.setup_tt()
         self.input_layernorm.setup_tt()
         self.post_attention_layernorm.setup_tt()
+        
         self.is_tt_setup = True
+        
+        # Force garbage collection after layer setup to free memory
+        if lazy_loader is not None:
+            import gc
+            gc.collect()
 
     def forward_prefill(
         self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
@@ -151,18 +171,46 @@ class Qwen3MoeModel(nn.Module):
     def setup_tt(self):
         if self.is_tt_setup:
             return
-        for layer in self.layers:
+        
+        # Load embeddings and model-level weights if needed
+        from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor, get_memory_usage_gb
+        lazy_loader = get_lazy_loader()
+        
+        if lazy_loader is not None:
+            print(f"Initial memory usage: {get_memory_usage_gb():.2f} GB")
+            
+            if is_meta_tensor(self.embed_tokens.weight):
+                load_parameter_for_module(self.embed_tokens, "weight", "embed_tokens.weight")
+            if is_meta_tensor(self.norm.weight):
+                load_parameter_for_module(self.norm, "weight", "norm.weight")
+            if is_meta_tensor(self.lm_head.weight):
+                load_parameter_for_module(self.lm_head, "weight", "lm_head.weight")
+        
+        # Setup layers (will trigger lazy loading per layer)
+        for layer_idx, layer in enumerate(self.layers):
+            if lazy_loader is not None:
+                mem_before = get_memory_usage_gb()
+            
+            print(f"Setting up layer {layer_idx}/{len(self.layers)}...")
             layer.setup_tt()
+            
+            if lazy_loader is not None:
+                mem_after = get_memory_usage_gb()
+                print(f"  Memory: {mem_after:.2f} GB (delta: {mem_after - mem_before:+.2f} GB)")
+        
+        # Upload embeddings to device
         self.embedding_weight = ttnn.as_tensor(
             self.embed_tokens.weight,
             device=self.mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
             dtype=ttnn.bfloat16,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=ttnn_model_cache_path("embedding_weight"),
         )
+        
         self.norm.setup_tt()
+        
         self.lm_head_weight = ttnn.as_tensor(
             self.lm_head.weight.transpose(0, 1),
             device=self.mesh_device,
@@ -173,7 +221,16 @@ class Qwen3MoeModel(nn.Module):
             cache_file_name=ttnn_model_cache_path("lm_head_weight"),
         )
 
+        self.ccl = TT_CCL(self.mesh_device)
+
         self.is_tt_setup = True
+        
+        # Free CPU RAM after setup (if using lazy loader)
+        if lazy_loader is not None:
+            from models.demos.qwen3.common.lazy_loader import clear_module_weights
+            clear_module_weights(self)
+            print(f"✓ All model weights cleared from CPU RAM")
+            print(f"Final memory usage: {get_memory_usage_gb():.2f} GB")
 
     @profile_trace("Qwen3MoeModel", level=1)
     def forward(self, ids: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor,
@@ -185,6 +242,29 @@ class Qwen3MoeModel(nn.Module):
 
         with Profiler().trace_with_timer("embedding", level=4, args={"class": "Qwen3MoeModel"}):
             hidden_states = ttnn.embedding(ids, self.embedding_weight, dtype=ttnn.bfloat16)
+            hidden_states = ttnn.unsqueeze(hidden_states, 0)
+
+            hidden_states = ttnn.experimental.all_gather_async(
+                hidden_states,
+                3,
+                cluster_axis=1,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                num_links=1,
+            )
+            hidden_states = ttnn.experimental.all_gather_async(
+                hidden_states,
+                3,
+                cluster_axis=0,
+                mesh_device=self.mesh_device,
+                topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                num_links=1,
+            )
+            hidden_states = ttnn.squeeze(hidden_states, 0)
 
         if mode == InferenceMode.PREFILL:
             pass

@@ -61,6 +61,29 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         if self.is_tt_setup:
             return
 
+        # Load weights lazily if they're still in meta state
+        from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
+        lazy_loader = get_lazy_loader()
+        
+        if lazy_loader is not None and self.layer_idx > 90: # for RAM, other layers are already cached
+            param_prefix = f"layers.{self.layer_idx}.mlp"
+            
+            # Load gate weight
+            if is_meta_tensor(self.gate.weight):
+                load_parameter_for_module(self.gate, "weight", f"{param_prefix}.gate.weight")
+            
+            # Load expert weights
+            for expert_idx in range(self.num_experts):
+                expert = self.experts[expert_idx]
+                expert_prefix = f"{param_prefix}.experts.{expert_idx}"
+                
+                if is_meta_tensor(expert.gate_proj.weight):
+                    load_parameter_for_module(expert.gate_proj, "weight", f"{expert_prefix}.gate_proj.weight")
+                if is_meta_tensor(expert.up_proj.weight):
+                    load_parameter_for_module(expert.up_proj, "weight", f"{expert_prefix}.up_proj.weight")
+                if is_meta_tensor(expert.down_proj.weight):
+                    load_parameter_for_module(expert.down_proj, "weight", f"{expert_prefix}.down_proj.weight")
+
         with Profiler().trace_with_timer("CCL", level=4):
             self.ccl = TT_CCL(self.mesh_device)
 
@@ -157,7 +180,18 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 layout=ttnn.TILE_LAYOUT,
                 cache_file_name=ttnn_model_cache_path(f"down_proj_{self.layer_idx}"),
             )
+            
+            # Free intermediate tensors
+            del gate_proj, up_proj, down_proj
+            
         self.is_tt_setup = True
+        
+        # Free CPU RAM after uploading to device (if using lazy loader)
+        if lazy_loader is not None:
+            from models.demos.qwen3.common.lazy_loader import clear_module_weights
+            clear_module_weights(self)
+            print(f"✓ Layer {self.layer_idx} MoE weights cleared from CPU RAM")
+
 
     @profile_trace("Qwen3MoeSparseMoeBlock", level=3)
     def forward_v1(self, hidden_states: ttnn.Tensor, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
