@@ -261,14 +261,6 @@ class Qwen3MoETT:
             layout=ttnn.ROW_MAJOR_LAYOUT,
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
-        )
-        page_table_tt_decode = ttnn.as_tensor(
-            page_table,
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=self.mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(0, None))
         )
 
@@ -298,7 +290,7 @@ class Qwen3MoETT:
                 print(f"curr_pos: {curr_pos}")
                 iter_start_time = time.time()
                 mode = "prefill" if prev_pos == 0 else "decode"
-                page_table = page_table_tt if mode == "prefill" else page_table_tt_decode
+                page_table = page_table_tt # if mode == "prefill" else page_table_tt_decode
 
                 ids = ttnn.from_torch(
                     tokens[:, prev_pos:curr_pos],

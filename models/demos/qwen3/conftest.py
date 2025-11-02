@@ -33,8 +33,20 @@ def mesh_device(request, device_params):
     device_ids = ttnn.get_device_ids()
     request.node.pci_ids = [ttnn.GetPCIeDeviceID(i) for i in device_ids]
 
-    # Use centralized create_mesh_device function
-    mesh_device = create_mesh_device(device_params)
+    if len(device_ids) == 32:  # If running on Galaxy system
+        default_mesh_shape = ttnn.MeshShape(4, 8)
+    else:
+        default_mesh_shape = ttnn.MeshShape(4, 2)
+
+    updated_device_params = get_updated_device_params(device_params)
+
+    fabric_config = updated_device_params.pop("fabric_config", None)
+    if fabric_config:
+        ttnn.set_fabric_config(fabric_config)
+
+    updated_device_params.setdefault("mesh_shape", default_mesh_shape)
+    mesh_device = ttnn.open_mesh_device(**updated_device_params)
+    submeshes = mesh_device.create_submeshes(ttnn.MeshShape(2, 8))
 
     logger.debug(f"multidevice with {mesh_device.get_num_devices()} devices is created with shape {mesh_device.shape}")
     yield mesh_device

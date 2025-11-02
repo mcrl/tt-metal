@@ -1,4 +1,4 @@
-import tt_lock
+# import tt_lock
 import fire
 from typing import Optional, Dict
 import os
@@ -13,7 +13,7 @@ from models.demos.qwen3.utils.device import create_mesh_device
 from models.demos.qwen3.utils.profiler import init_trace_file
 from models.demos.qwen3.tt.model_cache import get_model_path
 
-ttnn.CONFIG.enable_model_cache = True
+# ttnn.CONFIG.enable_model_cache = True
 
 
 def perftest_tt(
@@ -68,6 +68,9 @@ def perftest_reference(
 
 
 def main(
+    ckpt_dir: str = "/mnt/nvme0/models/qwen3-30b",
+    tokenizer_path: str = "/mnt/nvme0/models/qwen3-30b/tokenizer.json",
+    config_path: Optional[str] = "/mnt/nvme0/models/qwen3-30b/config.json",
     batch_size: int = 128,
     prompt_len: int = 64,
     gen_tokens: int = 32,

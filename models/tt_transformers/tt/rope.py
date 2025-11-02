@@ -435,7 +435,7 @@ class RotarySetup(LightweightModule):
             mesh_mapper=(
                 ShardTensor2dMesh(
                     device,
-                    dims=(None, 2) if (self.num_devices == 32 and batch_size > 1) else (None, None),
+                    dims=(None, None),
                     mesh_shape=list(device.shape),
                 )
                 if self.is_mesh_device
