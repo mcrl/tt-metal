@@ -31,7 +31,7 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_multi_core(
     uint32_t hidden_dim = input_shape[-1];
 
     const auto& num_routed_shape = num_routed_tokens.padded_shape();
-    uint32_t num_local_experts = num_routed_shape[-2];
+    uint32_t num_local_experts = num_routed_shape[-1];  // 1D tensor (E/D)
 
     // Get buffers
     auto input_buffer = input_hidden_state.buffer();

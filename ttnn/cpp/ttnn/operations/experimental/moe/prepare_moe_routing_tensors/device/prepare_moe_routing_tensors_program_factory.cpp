@@ -63,7 +63,13 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     const uint32_t experts_row_bytes = top_k * sizeof(uint32_t);
     const uint32_t weights_row_bytes = top_k * sizeof(uint16_t);
     const uint32_t mapping_bytes = sizeof(int32_t);  // Single expert mapping per core
-    const uint32_t num_routed_bytes = sizeof(uint32_t);  // Single count per core
+    /* 
+    Conditions for local SRAM → remote DRAM write
+    noc_async_write(local_sram_addr, remote_dram_addr, nbytes)
+    - local_sram_addr % 16 == remote_dram_addr % 16
+    - local_sram_addr % 2 == remote_dram_addr % 2 == nbytes % 2 == 0
+    */
+    const uint32_t num_routed_bytes = 4 * sizeof(uint32_t);
     const uint32_t routed_tokens_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
     const uint32_t routed_weights_row_bytes = max_tokens_per_expert * sizeof(uint16_t);
     const uint32_t tokenidx_map_row_bytes = max_tokens_per_expert * sizeof(uint32_t);

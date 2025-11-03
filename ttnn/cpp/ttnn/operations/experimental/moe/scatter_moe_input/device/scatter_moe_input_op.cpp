@@ -35,7 +35,7 @@ void ScatterMoeInput::validate_with_output_tensors(
     uint32_t num_tokens = input_shape[-2];
     uint32_t hidden_dim = input_shape[-1];
 
-    // Validate num_routed_tokens: (E/D, 1) uint32, ROW_MAJOR
+    // Validate num_routed_tokens: (E/D) 1D uint32, ROW_MAJOR
     TT_FATAL(
         num_routed_tokens.dtype() == tt::tt_metal::DataType::UINT32,
         "num_routed_tokens must be uint32, got {}",
@@ -48,16 +48,11 @@ void ScatterMoeInput::validate_with_output_tensors(
 
     const auto& num_routed_shape = num_routed_tokens.padded_shape();
     TT_FATAL(
-        num_routed_shape.rank() == 2,
-        "num_routed_tokens must be 2D (E/D, 1), got rank {}",
+        num_routed_shape.rank() == 1,
+        "num_routed_tokens must be 1D (E/D), got rank {}",
         num_routed_shape.rank());
 
-    TT_FATAL(
-        num_routed_shape[-1] == 1,
-        "num_routed_tokens shape must be (E/D, 1), got last dim {}",
-        num_routed_shape[-1]);
-
-    uint32_t num_local_experts = num_routed_shape[-2];
+    uint32_t num_local_experts = num_routed_shape[-1];
 
     // Validate routed_tokens: (E/D, T) uint32, ROW_MAJOR
     TT_FATAL(

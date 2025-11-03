@@ -20,7 +20,7 @@
 //
 // Output (device-local):
 // - num_routed_tokens: ROW_MAJOR, uint32, shape (num_local_experts)
-//   Count of tokens routed to each LOCAL expert (per-page writes)
+//   Count of tokens routed to each LOCAL expert (1D tensor, all elements in one page)
 // - routed_tokens: ROW_MAJOR, uint32, shape (num_local_experts, max_tokens_per_expert)
 //   Token indices for each LOCAL expert (padded with invalid values)
 // - routed_token_weights: ROW_MAJOR, bfloat16, shape (num_local_experts, max_tokens_per_expert)
@@ -73,7 +73,7 @@ void kernel_main() {
     const auto experts_accessor = TensorAccessor(experts_accessor_args, selected_experts_addr, top_k * sizeof(uint32_t));
     const auto weights_accessor = TensorAccessor(weights_accessor_args, routing_weights_addr, top_k * sizeof(uint16_t));
     const auto mapping_accessor = TensorAccessor(mapping_accessor_args, device_expert_mapping_addr, num_local_experts * sizeof(int32_t));  // Full row for 1D tensor
-    const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, sizeof(uint32_t));  // Per-element page (2D tensor with width=1)
+    const auto num_routed_accessor = TensorAccessor(num_routed_accessor_args, num_routed_tokens_addr, num_local_experts * sizeof(uint32_t));  // Full array for 1D tensor
     const auto routed_tokens_accessor = TensorAccessor(routed_tokens_accessor_args, routed_tokens_addr, max_tokens_per_expert * sizeof(uint32_t));
     const auto routed_weights_accessor = TensorAccessor(routed_weights_accessor_args, routed_token_weights_addr, max_tokens_per_expert * sizeof(uint16_t));
     const auto tokenidx_map_accessor = TensorAccessor(tokenidx_map_accessor_args, token_idx_map_addr, max_tokens_per_expert * sizeof(uint32_t));
@@ -134,16 +134,20 @@ void kernel_main() {
         }
     }
 
-    // Write num_routed_tokens for this expert (per-element page, no race condition)
+    // Write num_routed_tokens for this expert (1D tensor: page 0 + element offset)
     cb_reserve_back(cb_num_routed, 1);
     uint32_t l1_num_routed_addr = get_write_ptr(cb_num_routed);
     uint32_t* num_routed_ptr = reinterpret_cast<uint32_t*>(l1_num_routed_addr);
-    num_routed_ptr[0] = token_count;
+    num_routed_ptr[local_expert_id % 4] = token_count;
 
-    // Write to page ID = local_expert_id (each page contains 1 element)
-    uint64_t num_routed_noc_addr = get_noc_addr(local_expert_id, num_routed_accessor);
-    noc_async_write(l1_num_routed_addr, num_routed_noc_addr, sizeof(uint32_t));
+    // For 1D tensor: get base address of page 0, then add offset for this element
+    uint64_t num_routed_base_addr = get_noc_addr(0, num_routed_accessor);
+    uint64_t num_routed_noc_addr = num_routed_base_addr + local_expert_id * sizeof(uint32_t);
+    noc_async_write(l1_num_routed_addr + (local_expert_id % 4) * sizeof(uint32_t),
+                    num_routed_noc_addr,
+                    sizeof(uint32_t));
     noc_async_write_barrier();
+    // DPRINT << "token_count: " << token_count << " addr: " << num_routed_noc_addr << ENDL();
 
     // Write routed_tokens and routed_token_weights for this expert
     cb_reserve_back(cb_routed_tokens, 1);

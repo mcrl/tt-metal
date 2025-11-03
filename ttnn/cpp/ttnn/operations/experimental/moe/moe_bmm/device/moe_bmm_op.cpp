@@ -43,7 +43,7 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
 
     TT_FATAL(input_shape.rank() == 3, "input must be 3D (E/D, T, H_in)");
     TT_FATAL(weights_shape.rank() == 3, "weights must be 3D (E/D, H_in, H_out)");
-    TT_FATAL(num_routed_shape.rank() == 2, "num_routed_tokens must be 2D (E/D, 1)");
+    TT_FATAL(num_routed_shape.rank() == 1, "num_routed_tokens must be 1D (E/D)");
 
     // Validate num_experts consistency
     TT_FATAL(input_shape[0] == weights_shape[0],
@@ -57,11 +57,6 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
     TT_FATAL(input_shape[2] == weights_shape[1],
         "input dim [2] ({}) must match weights dim [1] ({})",
         input_shape[2], weights_shape[1]);
-
-    // Validate num_routed_tokens shape
-    TT_FATAL(num_routed_shape[1] == 1,
-        "num_routed_tokens dim [1] must be 1, got {}",
-        num_routed_shape[1]);
 
     // Validate TILE alignment for input and weights
     TT_FATAL(input_shape[1] % tt::constants::TILE_HEIGHT == 0,

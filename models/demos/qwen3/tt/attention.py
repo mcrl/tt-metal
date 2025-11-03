@@ -386,7 +386,7 @@ class Qwen3MoeAttention(nn.Module):
             self.dp_degree,
             mesh_device=self.mesh_device,
             output_dtype=ttnn.bfloat16,
-            memory_config=mem_cfg
+            memory_config=mem_cfg,
         )
 
         # OLD CODE (replaced by extract_attention_input API):
