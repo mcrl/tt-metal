@@ -6,26 +6,27 @@
 #include "dataflow_api.h"
 #include "debug/dprint.h"
 
+#include "moe_bmm_dataflow.hpp"
+
 void kernel_main() {
     // Runtime arguments
     uint32_t output_addr = get_arg_val<uint32_t>(0);
-    uint32_t num_routed_addr = get_arg_val<uint32_t>(1);
-    uint32_t num_experts = get_arg_val<uint32_t>(2);
-    uint32_t Nt = get_arg_val<uint32_t>(3);
-    uint32_t Mt_max = get_arg_val<uint32_t>(4);
-    uint32_t core_x = get_arg_val<uint32_t>(5);
-    uint32_t core_y = get_arg_val<uint32_t>(6);
+    uint32_t num_experts = get_arg_val<uint32_t>(1);
+    uint32_t Nt = get_arg_val<uint32_t>(2);
+    uint32_t Mt_max = get_arg_val<uint32_t>(3);
 
-    // Circular buffer index for output
+    // Circular buffer indices
+    constexpr uint32_t cb_num_routed = 3;
     constexpr uint32_t cb_out = 16;
+    constexpr uint8_t noc = noc_index;
 
-    // Create tensor accessors for DRAM buffers
+    // Get core coordinates from NOC
+    uint32_t core_x = (uint32_t)my_x[noc] - WH_LOGICAL_TO_VIRTUALL_OFFSET;
+    uint32_t core_y = (uint32_t)my_y[noc] - WH_LOGICAL_TO_VIRTUALL_OFFSET;
+
+    // Create tensor accessor for output DRAM buffer
     constexpr auto output_args = TensorAccessorArgs<0>();
     const auto output_accessor = TensorAccessor(output_args, output_addr, get_tile_size(cb_out));
-    
-    // num_routed_tokens is 1D tensor (E/D,) - all elements in one page
-    constexpr auto num_routed_args = TensorAccessorArgs<output_args.next_compile_time_args_offset()>();
-    const auto num_routed_accessor = TensorAccessor(num_routed_args, num_routed_addr, num_experts * sizeof(uint32_t));
 
     // Output: (E/D, T, H_out) in tiles -> (num_experts, Mt_max, Nt)
     uint32_t output_expert_stride = Mt_max * Nt; // Tiles per expert output
@@ -33,14 +34,9 @@ void kernel_main() {
 
     uint32_t num_tiled[num_experts];  // Number of token tiles per expert
     uint32_t total_tiles = 0;
-
-    // Read entire num_routed_tokens tensor once (1D tensor with all num_experts elements)
-    uint64_t temp_l1_addr = get_write_ptr(cb_out);  // Use cb_out space temporarily
-    uint64_t num_routed_base_addr = num_routed_accessor.get_noc_addr(0);  // Page 0
-    noc_async_read(num_routed_base_addr, temp_l1_addr, num_experts * sizeof(uint32_t));
-    noc_async_read_barrier();
-
-    volatile tt_l1_ptr uint32_t* num_routed_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(temp_l1_addr);
+    // Access num_routed_tokens from shared CB (populated by reader)
+    cb_wait_front(cb_num_routed, 1);
+    volatile tt_l1_ptr uint32_t* num_routed_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(cb_num_routed));
 
     // Calculate Mt per expert from the loaded array
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
@@ -88,7 +84,7 @@ void kernel_main() {
                 break;
             }
         }
-        
+
         // Calculate local tile position within expert's output
         uint32_t expert_local_tile = global_output_tile_id - expert_tile_offsets[expert_idx];
         uint32_t mt = expert_local_tile / Nt;
