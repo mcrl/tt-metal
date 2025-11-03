@@ -175,14 +175,14 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("softmax-topk-div", level=4):
-            routing_weights = ttnn.softmax(router_logits, dim=1, memory_config=mem_cfg)
+            routing_weights = ttnn.softmax(router_logits, memory_config=mem_cfg)
             routing_weights, selected_experts = ttnn.topk(
-                routing_weights, self.top_k, dim=1, largest=True, memory_config=mem_cfg
+                routing_weights, self.top_k, largest=True, memory_config=mem_cfg
             )
             if self.norm_topk_prob:
                 routing_weights = ttnn.div(
                     routing_weights,
-                    ttnn.sum(routing_weights, dim=1, keepdim=True, memory_config=mem_cfg),
+                    ttnn.sum(routing_weights, dim=-1, keepdim=True, memory_config=mem_cfg),
                     memory_config=mem_cfg,
                 )
 
