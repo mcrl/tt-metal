@@ -36,7 +36,7 @@ def mesh_device(request, device_params):
     if len(device_ids) == 32:  # If running on Galaxy system
         default_mesh_shape = ttnn.MeshShape(4, 8)
     else:
-        default_mesh_shape = ttnn.MeshShape(4, 2)
+        default_mesh_shape = ttnn.MeshShape(1, 8)
 
     updated_device_params = get_updated_device_params(device_params)
 

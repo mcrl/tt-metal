@@ -115,7 +115,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_qkv_proj"),
+            # cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_qkv_proj"),
         )
 
         self.q_norm.setup_tt()
@@ -132,7 +132,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_o_proj"),
+            # cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_o_proj"),
         )
 
         self.init_kv_cache()
@@ -353,7 +353,7 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-
+            
             linear_output = ttnn.experimental.all_gather_async(
                 linear_output,
                 2,

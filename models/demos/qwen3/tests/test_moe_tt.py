@@ -16,7 +16,7 @@ from models.demos.qwen3.utils.timer import set_and_get_device_cache
 
 
 def create_test_config():
-    config_path = "/shared/models/Qwen3-30B-A3B/config.json"
+    config_path = "/shared/models/Qwen3-235B-A22B/config.json"
 
     with open(config_path, "r") as f:
         data = json.load(f)
@@ -24,7 +24,7 @@ def create_test_config():
 
 
 def load_reference_layer(layer_idx=0, seq_len=32):
-    config = AutoConfig.from_pretrained("/shared/models/Qwen3-30B-A3B/")
+    config = AutoConfig.from_pretrained("/shared/models/Qwen3-235B-A22B/")
 
     config.max_batch_size = 32
     config.max_seq_len = seq_len
@@ -32,9 +32,9 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 
     layer = Qwen3MoeDecoderLayer(config, layer_idx)
 
-    weight_path = f"/shared/models/Qwen3-30B-A3B/layer_{layer_idx}.pt"
+    weight_path = f"/shared/models/Qwen3-235B-A22B/layer_{layer_idx}.pt"
     if os.path.exists(weight_path):
-        layer.load_state_dict(torch.load(weight_path)["state_dict"])
+        layer.load_state_dict(torch.load(weight_path))
     else:
         print(f"Warning: Weight file {weight_path} not found, using random weights")
 
@@ -46,7 +46,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (8, 1),
+        (128, 32),
     ],
 )
 @pytest.mark.parametrize(
@@ -89,7 +89,7 @@ def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
-    output_tt = tt_mlp.forward_v2(hidden_states_tt)
+    output_tt = tt_mlp.forward_v1(hidden_states_tt)
     # After allreduce in forward_v2, output is replicated across all devices
     # Convert to ROW_MAJOR before converting to torch
     output_tt = ttnn.to_layout(output_tt, ttnn.ROW_MAJOR_LAYOUT)
