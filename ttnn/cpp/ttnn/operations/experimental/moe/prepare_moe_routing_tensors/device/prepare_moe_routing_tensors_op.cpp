@@ -77,9 +77,8 @@ std::vector<TensorSpec> PrepareMoeRoutingTensors::compute_output_specs(
     // Maximum tokens that can be routed to any single expert (worst case: all tokens choose that expert)
     const uint32_t max_tokens_per_expert = num_tokens;
 
-    // Output 1: num_routed_tokens (E/D, 1) - device-local expert count (2D tensor for per-element pages)
-    // Using 2D shape (E/D, 1) ensures each element is in its own page for safe multi-core writes
-    ttnn::Shape num_routed_shape({num_local_experts, 1});
+    // Output 1: num_routed_tokens (E/D) - device-local expert count (1D tensor, treated as single-page)
+    ttnn::Shape num_routed_shape({num_local_experts});
     auto num_routed_spec = TensorSpec(
         num_routed_shape,
         TensorLayout(DataType::UINT32, PageConfig(Layout::ROW_MAJOR), output_mem_config));

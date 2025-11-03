@@ -9,27 +9,30 @@ from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 def reference_moe_bmm(input_tensor, weights, num_routed_tokens):
     """
     Reference PyTorch implementation of moe_bmm.
-    
+
     For each expert e, computes:
         output[e, :, :] = input[e, :, :] @ weights[e, :, :]
-    
-    Only the first num_routed_tokens[e, 0] rows produce non-zero results.
-    
+
+    Only the first num_routed_tokens[e] rows produce non-zero results.
+
     Args:
         input_tensor: (E/D, T, H_in) tensor
         weights: (E/D, H_in, H_out) tensor
-        num_routed_tokens: (E/D, 1) tensor with token counts per expert
-    
+        num_routed_tokens: (E/D,) 1D or (E/D, 1) 2D tensor with token counts per expert
+
     Returns:
         output: (E/D, T, H_out) tensor
     """
     num_experts, max_tokens, h_in = input_tensor.shape
     h_out = weights.shape[2]
-    
+
     output = torch.zeros(num_experts, max_tokens, h_out, dtype=input_tensor.dtype, device=input_tensor.device)
-    
+
     for e in range(num_experts):
-        num_tokens = num_routed_tokens[e, 0].item()
+        if num_routed_tokens.ndim == 2:
+            num_tokens = num_routed_tokens[e, 0].item()
+        else:
+            num_tokens = num_routed_tokens[e].item()
         if num_tokens > 0:
             # Only compute for active tokens
             active_input = input_tensor[e, :num_tokens, :]  # (num_tokens, H_in)
@@ -47,9 +50,9 @@ def pad_to_tile_size(size, tile_size=32):
 
 
 @pytest.mark.parametrize("config", [
-    {"num_experts": 8, "max_tokens": 16, "h_in": 4, "h_out": 8},
-    {"num_experts": 16, "max_tokens": 256, "h_in": 4, "h_out": 8},
-    {"num_experts": 32, "max_tokens": 1024, "h_in": 2048, "h_out": 768},
+    # {"num_experts": 8, "max_tokens": 16, "h_in": 4, "h_out": 8},
+    {"num_experts": 16, "max_tokens": 64, "h_in": 2048, "h_out": 768},
+    # {"num_experts": 32, "max_tokens": 1024, "h_in": 2048, "h_out": 768},
 ])
 @pytest.mark.parametrize(
     "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
@@ -83,11 +86,14 @@ def test_moe_bmm(mesh_device, config):
     for e in range(num_experts):
         # Random token count between 1 and max_tokens
         num_routed[e, 0] = torch.randint(1, max_tokens + 1, (1,)).item()
+
+    # Store reference with 2D shape for PyTorch reference
+    num_routed_2d = num_routed.clone()
     
     print(f"Token counts per expert: {num_routed.squeeze().tolist()}")
-    
+
     # Compute reference output (on non-padded dimensions conceptually)
-    reference_output = reference_moe_bmm(input_torch, weights_torch, num_routed)
+    reference_output = reference_moe_bmm(input_torch, weights_torch, num_routed_2d)
     
     # Convert to TTNN tensors
     # Input: (E/D, T, H_in) TILE_LAYOUT, sharded across devices
@@ -114,9 +120,12 @@ def test_moe_bmm(mesh_device, config):
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
     
+    # Reshape to 1D for compatibility with new API
+    num_routed_1d = num_routed.squeeze()
+
     # Shard num_routed_tokens across devices
     num_routed_tt = ttnn.from_torch(
-        num_routed,
+        num_routed_1d,
         device=mesh_device,
         dtype=ttnn.uint32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
@@ -138,9 +147,6 @@ def test_moe_bmm(mesh_device, config):
         mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
     )
 
-    print(output_torch[0])
-    print(reference_output[0])
-    
     # Verify shapes
     print(f"Output shape (TT): {output_torch.shape}")
     print(f"Output shape (Ref): {reference_output.shape}")

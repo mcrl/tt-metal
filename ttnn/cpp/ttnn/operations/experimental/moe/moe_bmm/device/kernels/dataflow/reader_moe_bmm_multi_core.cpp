@@ -99,7 +99,6 @@ void kernel_main() {
     // Process work_per_core output tiles starting from work_offset
     for (uint32_t work_idx = 0; work_idx < work_per_core; work_idx++) {
         uint32_t global_output_tile_id = work_offset + work_idx;
-        
         // Find which expert this tile belongs to
         // Handle empty experts (those with 0 tiles) correctly
         uint32_t expert_idx = num_experts - 1;  // Default to last expert

@@ -52,14 +52,13 @@ void LocalReduceMoeOutput::validate_with_output_tensors(
 
     const auto& num_routed_shape = num_routed_tokens.padded_shape();
     TT_FATAL(
-        num_routed_shape.rank() == 2, "num_routed_tokens must be 2D (E/D, 1), got rank {}", num_routed_shape.rank());
+        num_routed_shape.rank() == 1, "num_routed_tokens must be 1D (E/D), got rank {}", num_routed_shape.rank());
     TT_FATAL(num_routed_tokens.dtype() == DataType::UINT32, "num_routed_tokens must be uint32");
     TT_FATAL(num_routed_tokens.layout() == Layout::ROW_MAJOR, "num_routed_tokens must be ROW_MAJOR layout");
     TT_FATAL(
-        num_routed_shape[-2] == num_local_experts && num_routed_shape[-1] == 1,
-        "num_routed_tokens shape mismatch: expected ({}, 1), got ({}, {})",
+        num_routed_shape[-1] == num_local_experts,
+        "num_routed_tokens shape mismatch: expected ({}), got ({})",
         num_local_experts,
-        num_routed_shape[-2],
         num_routed_shape[-1]);
 
     auto* device = input_hidden_state.device();

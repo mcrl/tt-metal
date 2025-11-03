@@ -12,14 +12,15 @@ def reference_scatter_moe_input(input_hidden_state, num_routed_tokens, routed_to
 
     Args:
         input_hidden_state: (T, H) tensor of input token embeddings
-        num_routed_tokens: (E/D, 1) tensor of token counts per expert
+        num_routed_tokens: (E/D,) 1D tensor of token counts per expert
         routed_tokens: (E/D, T) tensor of token indices per expert
 
     Returns:
         output: (E/D, T, H) tensor with tokens scattered by expert assignment
     """
     T, H = input_hidden_state.shape
-    num_local_experts, _ = num_routed_tokens.shape
+    # Only handle 1D (E/D) shape
+        num_local_experts = num_routed_tokens.shape[0]
     _, max_tokens = routed_tokens.shape
 
     # Initialize output with zeros
@@ -27,7 +28,8 @@ def reference_scatter_moe_input(input_hidden_state, num_routed_tokens, routed_to
 
     # For each local expert
     for expert_idx in range(num_local_experts):
-        t_e = num_routed_tokens[expert_idx, 0].item()
+            t_e = num_routed_tokens[expert_idx].item()
+        if num_routed_tokens.ndim == 1:
 
         # Gather assigned tokens
         for i in range(t_e):

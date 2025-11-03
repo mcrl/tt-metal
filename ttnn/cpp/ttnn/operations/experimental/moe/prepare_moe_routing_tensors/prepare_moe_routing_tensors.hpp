@@ -22,8 +22,7 @@
 //   - num_experts: scalar, total number of experts (E)
 //
 // OUTPUTS (device-local):
-//   - num_routed_tokens: (E/D, 1) uint32 2D tensor - count of tokens routed to each local expert
-//                        Uses 2D shape for per-element pages, enabling safe multi-core writes
+//   - num_routed_tokens: (E/D) uint32 1D tensor - count of tokens routed to each local expert
 //   - routed_tokens: (E/D, max_tokens) uint32 2D tensor - token indices for each local expert (padded)
 //   - routed_token_weights: (E/D, max_tokens) bfloat16 2D tensor - routing weights for each local expert (padded)
 //   - token_idx_map: (E/D, max_tokens) uint32 2D tensor - mapping from expert-local token index to global token index
