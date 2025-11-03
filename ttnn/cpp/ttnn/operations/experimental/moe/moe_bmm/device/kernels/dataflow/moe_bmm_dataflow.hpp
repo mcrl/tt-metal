@@ -90,7 +90,6 @@ FORCE_INLINE void broadcast(uint32_t l1_addr, uint32_t nbytes,
         uint64_t mcast_signal_addr =
             get_noc_multicast_addr(x0_virtual, y0_virtual, x1_virtual,
                                    y1_virtual, receiver_sem_addr, noc);
-        DPRINT << "num_dests: " << num_dests << " x0_virtual: " << x0_virtual << " y0_virtual: " << y0_virtual << " x1_virtual: " << x1_virtual << " y1_virtual: " << y1_virtual << ENDL();
         if (sender_in_range) {
             noc_semaphore_set_multicast_loopback_src(
                 receiver_sem_addr, mcast_signal_addr, num_dests, false, noc);
