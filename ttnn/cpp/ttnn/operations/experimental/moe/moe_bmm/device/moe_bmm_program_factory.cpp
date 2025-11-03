@@ -182,13 +182,13 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
     auto core_grid = device->compute_with_storage_grid_size();
 
     CoreRangeSet all_cores;
-    uint32_t num_cores_x = core_grid.x, num_cores_y = core_grid.y;
-    all_cores = CoreRangeSet(CoreRange({0, 0}, {num_cores_x - 1, num_cores_y - 1}));
+    all_cores = CoreRangeSet(CoreRange({0, 0}, {8 - 1, 8 - 1}));
 
     // Circular buffer indices
     const uint32_t cb_in0 = CBIndex::c_0;            // Input tiles from input tensor
     const uint32_t cb_in1 = CBIndex::c_1;            // Weight tiles from weights tensor
-    const uint32_t cb_num_tiles = CBIndex::c_2;       // num_tiled_tokens values
+    const uint32_t cb_num_tiles = CBIndex::c_2;      // Total output tiles (single uint32_t)
+    const uint32_t cb_num_routed = CBIndex::c_3;     // num_routed_tokens array (num_experts * uint32_t)
     const uint32_t cb_out = CBIndex::c_16;           // Output tiles
 
     // Data formats
@@ -217,21 +217,32 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
             .set_page_size(cb_num_tiles, sizeof(uint32_t));
     CreateCircularBuffer(program, all_cores, cb_num_tiles_config);
 
+    // CB for shared num_routed_tokens data (num_experts * uint32_t)
+    CircularBufferConfig cb_num_routed_config =
+        CircularBufferConfig(num_experts * sizeof(uint32_t), {{cb_num_routed, tt::DataFormat::UInt32}})
+            .set_page_size(cb_num_routed, num_experts * sizeof(uint32_t));
+    CreateCircularBuffer(program, all_cores, cb_num_routed_config);
+
     CircularBufferConfig cb_out_config =
         CircularBufferConfig(2 * output_tile_size, {{cb_out, output_data_format}})
             .set_page_size(cb_out, output_tile_size);
     CreateCircularBuffer(program, all_cores, cb_out_config);
+
+    // Create unified semaphores for multicast (shared by all cores)
+    auto sender_semaphore = tt_metal::CreateSemaphore(program, all_cores, 0);
+    auto receiver_semaphore = tt_metal::CreateSemaphore(program, all_cores, INVALID);
 
     // Compile-time arguments for reader kernel
     std::vector<uint32_t> reader_compile_time_args = {};
     TensorAccessorArgs(*input.buffer()).append_to(reader_compile_time_args);
     TensorAccessorArgs(*weights.buffer()).append_to(reader_compile_time_args);
     TensorAccessorArgs(*num_routed_tokens.buffer()).append_to(reader_compile_time_args);
+    reader_compile_time_args.push_back((uint32_t)sender_semaphore);
+    reader_compile_time_args.push_back((uint32_t)receiver_semaphore);
 
     // Compile-time arguments for writer kernel
     std::vector<uint32_t> writer_compile_time_args = {};
     TensorAccessorArgs(*output.buffer()).append_to(writer_compile_time_args);
-    TensorAccessorArgs(*num_routed_tokens.buffer()).append_to(writer_compile_time_args);
 
     // Compile-time arguments for compute kernel
     std::vector<uint32_t> compute_compile_time_args = {
@@ -239,24 +250,25 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
         Nt       // Number of tiles in N dimension (output columns)
     };
 
-    // Create reader kernel (RISCV_1)
+
+    // Create reader kernel (RISCV_0)
     auto reader_id = CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/experimental/moe/moe_bmm/device/kernels/dataflow/reader_moe_bmm_multi_core.cpp",
         all_cores,
         DataMovementConfig{
-            .processor = DataMovementProcessor::RISCV_1,
-            .noc = NOC::RISCV_1_default,
+            .processor = DataMovementProcessor::RISCV_0,
+            .noc = NOC::RISCV_0_default,
             .compile_args = reader_compile_time_args});
 
-    // Create writer kernel (RISCV_0)
+    // Create writer kernel (RISCV_1)
     auto writer_id = CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/experimental/moe/moe_bmm/device/kernels/dataflow/writer_moe_bmm_multi_core.cpp",
         all_cores,
         DataMovementConfig{
-            .processor = DataMovementProcessor::RISCV_0,
-            .noc = NOC::RISCV_0_default,
+            .processor = DataMovementProcessor::RISCV_1,
+            .noc = NOC::RISCV_1_default,
             .compile_args = writer_compile_time_args});
 
     // Create compute kernel
@@ -283,27 +295,19 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
                 h_out,
                 Kt,
                 Nt,
-                Mt_max,
-                core.x,
-                core.y
+                Mt_max
             };
 
             // Writer kernel arguments
             std::vector<uint32_t> writer_runtime_args = {
                 output.buffer()->address(),
-                num_routed_tokens.buffer()->address(),
                 num_experts,
                 Nt,
-                Mt_max,
-                core.x,
-                core.y
+                Mt_max
             };
 
-            // Compute kernel arguments
-            std::vector<uint32_t> compute_runtime_args = {
-                core.x,
-                core.y
-            };
+            // Compute kernel arguments (no runtime args needed - gets coords internally)
+            std::vector<uint32_t> compute_runtime_args = {};
 
             SetRuntimeArgs(program, reader_id, core, reader_runtime_args);
             SetRuntimeArgs(program, writer_id, core, writer_runtime_args);
@@ -332,7 +336,6 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
 
                 auto& writer_runtime_args = GetRuntimeArgs(program, writer_id, core);
                 writer_runtime_args[0] = output_buffer->address();
-                writer_runtime_args[1] = num_routed_buffer->address();
             }
         }
     };
