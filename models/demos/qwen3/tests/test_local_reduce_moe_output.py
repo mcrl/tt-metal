@@ -60,10 +60,10 @@ def torch_local_reduce_moe_output(
         # (4, 32, 128, 2),   # Small test case
         # (8, 64, 256, 4),   # Medium test case
         # (16, 128, 512, 4),  # Larger test case
-        # (4, 4, 1024, 2),  # Larger test case
-        # (16, 512, 2048, 1),  # Larger test case
+        (4, 4, 1024, 2),  # Larger test case
+        (16, 512, 2048, 1),  # Larger test case
         (16, 128, 2048, 8),  # (real case)
-        # (16, 1024, 2048, 8),  # (real case)
+        (16, 1024, 2048, 8),  # (real case)
     ],
 )
 def test_local_reduce_moe_output(device, num_local_experts, num_tokens, hidden_dim, top_k):
@@ -263,7 +263,10 @@ def test_local_reduce_moe_output_basic(device, num_local_experts, num_tokens, hi
                                        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
     routed_token_weights_tt = ttnn.from_torch(routed_token_weights, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT,
                                               device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    num_routed_tokens_tt = ttnn.from_torch(num_routed_tokens, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT,
+
+    # Squeeze to 1D for compatibility with new API
+    num_routed_tokens_1d = num_routed_tokens.squeeze()
+    num_routed_tokens_tt = ttnn.from_torch(num_routed_tokens_1d, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT,
                                            device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
     # Run TTNN operation
