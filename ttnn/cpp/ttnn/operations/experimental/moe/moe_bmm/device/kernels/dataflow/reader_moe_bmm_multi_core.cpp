@@ -33,8 +33,9 @@ void kernel_main() {
     constexpr auto weights_args = TensorAccessorArgs<input_args.next_compile_time_args_offset()>();
     const auto weights_accessor = TensorAccessor(weights_args, weights_addr, get_tile_size(cb_in1));
     
+    // num_routed_tokens is 1D tensor (E/D,) - all elements in one page
     constexpr auto num_routed_args = TensorAccessorArgs<weights_args.next_compile_time_args_offset()>();
-    const auto num_routed_accessor = TensorAccessor(num_routed_args, num_routed_addr, sizeof(uint32_t));
+    const auto num_routed_accessor = TensorAccessor(num_routed_args, num_routed_addr, num_experts * sizeof(uint32_t));
 
     // Calculate strides in tiles
     // Input: (E/D, T, H_in) in tiles -> (num_experts, Mt_max, Kt)
@@ -48,20 +49,18 @@ void kernel_main() {
     // Cache for Mt (number of token tiles) per expert
     uint32_t num_tiled[num_experts];  // Number of token tiles per expert
     uint32_t total_tiles = 0;
-    
-    // Pre-fetch all num_routed_tokens values and calculate Mt per expert
-    // Allocate temporary L1 space for reading num_routed_tokens
-    uint64_t temp_l1_addr = get_write_ptr(cb_in0);  // Use cb_in0 space temporarily
-    
-    for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
-        noc_async_read(
-            num_routed_accessor.get_noc_addr(expert_idx),
-            temp_l1_addr,
-            sizeof(uint32_t));
-        noc_async_read_barrier();
 
-        volatile tt_l1_ptr uint32_t* num_routed_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(temp_l1_addr);
-        uint32_t num_routed_value = num_routed_ptr[0];
+    // Read entire num_routed_tokens tensor once (1D tensor with all num_experts elements)
+    uint64_t temp_l1_addr = get_write_ptr(cb_in0);  // Use cb_in0 space temporarily
+    uint64_t num_routed_base_addr = num_routed_accessor.get_noc_addr(0);  // Page 0
+    noc_async_read(num_routed_base_addr, temp_l1_addr, num_experts * sizeof(uint32_t));
+    noc_async_read_barrier();
+
+    volatile tt_l1_ptr uint32_t* num_routed_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(temp_l1_addr);
+
+    // Calculate Mt per expert from the loaded array
+    for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
+        uint32_t num_routed_value = num_routed_ptr[expert_idx];
         num_tiled[expert_idx] = (num_routed_value + 31) / 32;
         total_tiles += num_tiled[expert_idx];
     }

@@ -52,7 +52,9 @@ def pad_to_tile_size(size, tile_size=32):
 @pytest.mark.parametrize("config", [
     # {"num_experts": 8, "max_tokens": 16, "h_in": 4, "h_out": 8},
     {"num_experts": 16, "max_tokens": 64, "h_in": 2048, "h_out": 768},
-    # {"num_experts": 32, "max_tokens": 1024, "h_in": 2048, "h_out": 768},
+    {"num_experts": 32, "max_tokens": 1024, "h_in": 2048, "h_out": 768},
+    {"num_experts": 16, "max_tokens": 64, "h_in": 768, "h_out": 2048},
+    {"num_experts": 32, "max_tokens": 1024, "h_in": 768, "h_out": 2048},
 ])
 @pytest.mark.parametrize(
     "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True

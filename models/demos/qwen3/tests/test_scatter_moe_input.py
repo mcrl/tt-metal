@@ -20,7 +20,7 @@ def reference_scatter_moe_input(input_hidden_state, num_routed_tokens, routed_to
     """
     T, H = input_hidden_state.shape
     # Only handle 1D (E/D) shape
-        num_local_experts = num_routed_tokens.shape[0]
+    num_local_experts = num_routed_tokens.shape[0]
     _, max_tokens = routed_tokens.shape
 
     # Initialize output with zeros
@@ -28,8 +28,7 @@ def reference_scatter_moe_input(input_hidden_state, num_routed_tokens, routed_to
 
     # For each local expert
     for expert_idx in range(num_local_experts):
-            t_e = num_routed_tokens[expert_idx].item()
-        if num_routed_tokens.ndim == 1:
+        t_e = num_routed_tokens[expert_idx].item()
 
         # Gather assigned tokens
         for i in range(t_e):
@@ -189,17 +188,10 @@ def test_scatter_moe_input(mesh_device, num_tokens, top_k, num_experts, hidden_d
     assert output_tt.dtype == ttnn.bfloat16, \
         f"Dtype should be bfloat16, got {output_tt.dtype}"
 
-    # Check values with tolerance
-    max_diff = torch.abs(output_torch - reference_output).max().item()
-    mean_diff = torch.abs(output_torch - reference_output).mean().item()
-
-    print(f"Max difference: {max_diff}")
-    print(f"Mean difference: {mean_diff}")
-
     # Verify correctness per expert
     total_experts = num_routed_torch.shape[0]
     for expert_idx in range(total_experts):
-        t_e = num_routed_torch[expert_idx, 0].item()
+        t_e = num_routed_torch[expert_idx].item()  # num_routed_torch is 1D (E,)
 
         # Check assigned tokens (non-zero region)
         if t_e > 0:
