@@ -124,7 +124,7 @@ operation::ProgramWithCallbacks MoEBMM::create_program(
     const uint32_t h_in = input_shape[2];
     const uint32_t h_out = weights_shape[2];
 
-    return moe_bmm_multi_core(
+    return moe_bmm_multi_core_optimized(
         input,
         weights,
         num_routed_tokens,
