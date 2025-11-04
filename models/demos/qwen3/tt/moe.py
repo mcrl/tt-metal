@@ -10,7 +10,6 @@ from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
 from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
 
-
 class Qwen3MoeMLP(nn.Module):
     def __init__(self, config: Qwen3MoeConfig, intermediate_size: int, mesh_device: ttnn.Device):
         super().__init__()
@@ -356,12 +355,12 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             up_proj = ttnn.squeeze(self.up_proj, dim=0)
             down_proj = ttnn.squeeze(self.down_proj, dim=0)
 
-        # Step 2: Gate & Up Projection (batched matmul for all experts)
+        # Step 3: Gate & Up Projection (batched matmul for all experts)
         with Profiler().trace_with_timer("gate-projection", level=4):
-            gate_output = ttnn.experimental.moe_bmm(scattered_hidden_states, gate_proj, num_routed)
+            gate_output = ttnn.experimental.moe_bmm(scattered_hidden_states, gate_proj, num_routed, mode="optimized")
 
         with Profiler().trace_with_timer("up-projection", level=4):
-            up_output = ttnn.experimental.moe_bmm(scattered_hidden_states, up_proj, num_routed)
+            up_output = ttnn.experimental.moe_bmm(scattered_hidden_states, up_proj, num_routed, mode="optimized")
 
         # Step 3: SiLU(gate) * up
         with Profiler().trace_with_timer("silu-multiply", level=4):
@@ -373,7 +372,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         # Step 4: Down Projection with routing weights and accumulation
         with Profiler().trace_with_timer("down-projection", level=4):
-            moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed)
+            moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed, mode="optimized")
             moe_output = ttnn.typecast(moe_output, ttnn.bfloat16)
 
         # Step 5: Local Reduce

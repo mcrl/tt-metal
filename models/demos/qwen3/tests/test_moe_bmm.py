@@ -102,22 +102,22 @@ def test_moe_bmm(mesh_device, config):
     # Input: (E/D, T, H_in) TILE_LAYOUT, sharded across devices
     num_devices = mesh_device.get_num_devices()
     experts_per_device = num_experts // num_devices
-    
+
     # Shard input across devices by expert dimension
     input_tt = ttnn.from_torch(
         input_torch,
         device=mesh_device,
-        dtype=ttnn.bfloat16,
+        dtype=ttnn.bfloat8_b,
         layout=ttnn.TILE_LAYOUT,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
-    
+
     # Shard weights across devices by expert dimension
     weights_tt = ttnn.from_torch(
         weights_torch,
         device=mesh_device,
-        dtype=ttnn.bfloat16,
+        dtype=ttnn.bfloat8_b,
         layout=ttnn.TILE_LAYOUT,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
@@ -136,15 +136,15 @@ def test_moe_bmm(mesh_device, config):
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
     
-    # Run moe_bmm operation
+    # Run moe_bmm operation (bfloat8_b inputs/weights -> bfloat8_b output)
     output_tt = ttnn.experimental.moe_bmm(
         input_tt,
         weights_tt,
         num_routed_tt,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
-    
-    # Convert back to torch
+
+    # Convert back to torch (bfloat8_b automatically converted to bfloat16)
     output_torch = ttnn.to_torch(
         output_tt,
         mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
@@ -164,8 +164,8 @@ def test_moe_bmm(mesh_device, config):
     # Verify layout and dtype
     assert output_tt.layout == ttnn.TILE_LAYOUT, \
         f"Layout should be TILE, got {output_tt.layout}"
-    assert output_tt.dtype == ttnn.bfloat16, \
-        f"Dtype should be bfloat16, got {output_tt.dtype}"
+    assert output_tt.dtype == ttnn.bfloat8_b, \
+        f"Dtype should be bfloat8_b, got {output_tt.dtype}"
     
     # Compare outputs per expert (only active tokens)
     max_diff_overall = 0.0

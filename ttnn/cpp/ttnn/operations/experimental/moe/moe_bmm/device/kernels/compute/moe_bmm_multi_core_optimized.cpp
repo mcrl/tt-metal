@@ -27,7 +27,6 @@ void MAIN {
     constexpr uint32_t cb_out_buffer = tt::CBIndex::c_24;
 
     mm_block_init(cb_input, cb_weights, cb_out_buffer, false, BNt, BMt, BKt);
-    unary_op_init_common(cb_out_buffer, cb_output);
 
     cb_wait_front(cb_metadata, 1);
     tensix_sync();
@@ -40,8 +39,6 @@ void MAIN {
     uint32_t row_nblocks_per_core = metadata_ptr[1];
     uint32_t col_nblocks_per_core = metadata_ptr[3];
     cb_release_tile(cb_metadata);
-
-    // DPRINT << "Mt: " << Mt << " row_bidx0: " << row_bidx0 << " col_bidx0: " << col_bidx0 << " row_nblocks_per_core: " << row_nblocks_per_core << " col_nblocks_per_core: " << col_nblocks_per_core << ENDL();
 
     uint32_t num_ki_iterations = Kt / BKt;
     uint32_t num_output_tiles = BMt * BNt;
@@ -66,7 +63,7 @@ void MAIN {
                         tile_regs_acquire();
                         // Reload: Read current accumulated value from Cbuffer
                         if (!is_first_ki) {
-                            copy_tile_to_dst_init_short(cb_out_buffer);
+                            copy_tile_to_dst_init_short_with_dt(cb_weights, cb_out_buffer);
                             cb_wait_front(cb_out_buffer, subblock_size);
                             copy_block_matmul_partials(cb_out_buffer, 0, 0,
                                                        subblock_size);
@@ -75,7 +72,9 @@ void MAIN {
 
                         // Compute one subblock. matmul_block handles (SBMt x
                         // 1) @ (1 x SBNt) matmul with accumulation.
-                        mm_block_init_short(cb_input, cb_weights, false, SBNt, SBMt,
+                        // mm_block_init_short(cb_input, cb_weights, false, SBNt, SBMt,
+                        //     BKt);
+                        mm_block_init_short_with_dt(cb_input, cb_weights, cb_out_buffer, false, SBNt, SBMt,
                                             BKt);
                         for (uint32_t k = 0; k < BKt; k++) {
                             uint32_t input_cb_tile_idx = h * BKt + k;
@@ -91,6 +90,7 @@ void MAIN {
                         // Spill/Write: Write updated result back to Cbuffer/C
                         uint32_t out_cb = is_last_ki ? cb_output : cb_out_buffer;
                         cb_reserve_back(out_cb, subblock_size);
+                        PACK((pack_reconfig_data_format(out_cb)));
                         pack_tile_block(0, out_cb, subblock_size);
                         cb_push_back(out_cb, subblock_size);
                         tile_regs_release();

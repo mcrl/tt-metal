@@ -277,7 +277,7 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
         "ttnn/cpp/ttnn/operations/experimental/moe/moe_bmm/device/kernels/compute/moe_bmm_multi_core.cpp",
         all_cores,
         ComputeConfig{
-            .math_fidelity = MathFidelity::HiFi2,
+            .math_fidelity = MathFidelity::HiFi4,
             .fp32_dest_acc_en = false,
             .math_approx_mode = false,
             .compile_args = compute_compile_time_args});
@@ -448,9 +448,11 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
     CreateCircularBuffer(program, all_cores, cb_out_config);
 
     // CB for intermediate accumulation buffer (spilling for K-dimension reduction)
+    // Use Float16_b for intermediate accumulation to maintain precision
+    uint32_t intermediate_tile_size = tt_metal::detail::TileSize(tt::DataFormat::Float16_b);
     CircularBufferConfig cb_out_buffer_config =
-        CircularBufferConfig(pipeline_factor * BMt * BNt * output_tile_size, {{cb_out_buffer, output_data_format}})
-            .set_page_size(cb_out_buffer, output_tile_size);
+        CircularBufferConfig(pipeline_factor * BMt * BNt * intermediate_tile_size, {{cb_out_buffer, tt::DataFormat::Float16_b}})
+            .set_page_size(cb_out_buffer, intermediate_tile_size);
     CreateCircularBuffer(program, all_cores, cb_out_buffer_config);
 
     // Create unified semaphores for multicast (shared by all cores)

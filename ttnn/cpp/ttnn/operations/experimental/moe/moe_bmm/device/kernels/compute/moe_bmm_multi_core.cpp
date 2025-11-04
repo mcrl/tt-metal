@@ -72,30 +72,31 @@ void MAIN {
     for (uint32_t tile_idx = 0; tile_idx < work_per_core; tile_idx++) {
         // Acquire destination registers and zero them for accumulation
         tile_regs_acquire();
-        
+
         // Accumulate over K dimension
         for (uint32_t kt = 0; kt < Kt; kt++) {
             // Wait for input tiles
             cb_wait_front(cb_in0, 1);
             cb_wait_front(cb_in1, 1);
-            
+
             // Perform tile matrix multiplication and accumulate
             matmul_tiles(cb_in0, cb_in1, 0, 0, 0, false);
-            
+
             // Pop input tiles
             cb_pop_front(cb_in0, 1);
             cb_pop_front(cb_in1, 1);
         }
-        
+
         // Commit and wait for FPU operations to complete
         tile_regs_commit();
         tile_regs_wait();
-        
+
         // Reserve output buffer and pack result
         cb_reserve_back(cb_out, 1);
+        PACK((pack_reconfig_data_format(cb_out)));
         pack_tile(0, cb_out);
         cb_push_back(cb_out, 1);
-        
+
         // Release destination registers
         tile_regs_release();
     }
