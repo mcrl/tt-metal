@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Optional, List
 import torch
 import ttnn
@@ -44,8 +45,19 @@ class Qwen3MoEReference:
             self.model = Qwen3MoeModelReference(self.config)
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
 
-        materialize(self.model)
-        load(ckpt_dir, self.model)
+        # Check environment variable to enable/disable materialize (default: disabled)
+        enable_materialize = os.environ.get("TT_ENABLE_MATERIALIZE", "0").lower() in ("1", "true", "yes")
+
+        if enable_materialize:
+            print("Materialize enabled via TT_ENABLE_MATERIALIZE")
+            from models.demos.qwen3.common.lazy_loader import materialize as lazy_materialize, load as lazy_load
+            lazy_materialize(self.model)
+            lazy_load(ckpt_dir, self.model, lazy=False)
+        else:
+            print("Materialize disabled (default) - loading weights directly")
+            materialize(self.model)
+            load(ckpt_dir, self.model)
+
         self.model.eval()
 
     def generate(
@@ -140,13 +152,16 @@ class Qwen3MoETT:
         self.config.block_size = 32
         self.config.max_num_blocks = 512 # 1024 FIXME: reduce for memory
 
+        self.dp_degree = mesh_device.shape[0]
+        self.bsz_per_device = batch_size // self.dp_degree
+
         with Profiler().trace_with_timer("Create-Model", level=0):
             with torch.device("meta"):
                 self.model = Qwen3MoeModelTT(self.config, self.mesh_device)
 
             self.rope = RotarySetup(
                 device=self.mesh_device,
-                batch_size=batch_size // 4,
+                batch_size=self.bsz_per_device,
                 head_dim=self.config.head_dim,
                 max_seq_len=self.config.max_seq_len,
                 rope_theta=self.config.rope_theta,
@@ -155,10 +170,19 @@ class Qwen3MoETT:
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
 
         with Profiler().trace_with_timer("Load-Model", level=0):
-            # Use lazy loading to minimize RAM usage
-            from models.demos.qwen3.common.lazy_loader import materialize, load
-            materialize(self.model)  # Keep as meta tensors
-            load(ckpt_dir, self.model, lazy=True)  # Initialize lazy loader
+            # Check environment variable to enable/disable materialize (default: disabled)
+            enable_materialize = os.environ.get("TT_ENABLE_MATERIALIZE", "0").lower() in ("1", "true", "yes")
+
+            if enable_materialize:
+                print("Materialize enabled via TT_ENABLE_MATERIALIZE")
+                from models.demos.qwen3.common.lazy_loader import materialize, load
+                materialize(self.model)  # Keep as meta tensors
+                load(ckpt_dir, self.model, lazy=False)
+            else:
+                print("Materialize disabled (default) - loading weights directly")
+                from models.demos.qwen3.common.loader import load, materialize
+                materialize(self.model)
+                load(ckpt_dir, self.model)
 
         self.model.eval()
 
@@ -252,6 +276,7 @@ class Qwen3MoETT:
         prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
 
         batch_size = len(prompt_tokens)
+        bsz_per_device = batch_size // self.dp_degree
         # assert batch_size <= self.config.max_batch_size
 
         permutation = torch.randperm(self.config.max_num_blocks, device="cpu")
@@ -299,7 +324,7 @@ class Qwen3MoETT:
                     layout=ttnn.ROW_MAJOR_LAYOUT,
                 )
                 start_pos = ttnn.as_tensor(
-                    torch.tensor([prev_pos for _ in range(batch_size // 4)]),
+                    torch.tensor([prev_pos for _ in range(bsz_per_device)]),
                     dtype=ttnn.int32,
                     layout=ttnn.ROW_MAJOR_LAYOUT,
                     device=self.mesh_device,
@@ -311,7 +336,7 @@ class Qwen3MoETT:
                     rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
                     trans_mat = self.rope.transformation_mat_prefill
                 else:
-                    position_idxs = torch.full((batch_size // 4,), prev_pos, dtype=torch.long)
+                    position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
                     rot_mats = self.rope.get_rot_mats(position_idxs)
                     trans_mat = self.rope.transformation_mat
 
@@ -364,7 +389,7 @@ class Qwen3MoETT:
                     layout=ttnn.ROW_MAJOR_LAYOUT,
                 )
                 start_pos = ttnn.as_tensor(
-                    torch.tensor([prev_pos for _ in range(batch_size // 4)]),
+                    torch.tensor([prev_pos for _ in range(bsz_per_device)]),
                     dtype=ttnn.int32,
                     layout=ttnn.ROW_MAJOR_LAYOUT,
                     device=self.mesh_device,
@@ -376,7 +401,7 @@ class Qwen3MoETT:
                     rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
                     trans_mat = self.rope.transformation_mat_prefill
                 else:
-                    position_idxs = torch.full((batch_size // 4,), prev_pos, dtype=torch.long)
+                    position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
                     rot_mats = self.rope.get_rot_mats(position_idxs)
                     trans_mat = self.rope.transformation_mat
 

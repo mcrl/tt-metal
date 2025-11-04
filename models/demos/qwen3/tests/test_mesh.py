@@ -51,17 +51,20 @@ def load_reference_layer(layer_idx=0, seq_len=32):
     return layer, rotary_emb
 
 @pytest.mark.parametrize(
-    "batch_size,seq_len",
+    "bsz_per_device,seq_len",
     [
-        (128, 128),
+        (32, 128),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
-def test_attn_fullmesh(batch_size, seq_len, mesh_device):
+def test_attn_fullmesh(bsz_per_device, seq_len, mesh_device):
     """Test prefill with paged cache followed by one decode step."""
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
+
+    dp_degree = mesh_device.shape[0]
+    batch_size = bsz_per_device * dp_degree
 
     ref_layer, ref_rope = load_reference_layer()
     ref_attention = ref_layer.self_attn
@@ -90,7 +93,7 @@ def test_attn_fullmesh(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size // 4,
+        batch_size=bsz_per_device,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
@@ -130,7 +133,7 @@ def test_attn_fullmesh(batch_size, seq_len, mesh_device):
     trans_mat_prefill = rope.transformation_mat_prefill
 
     start_pos_tt_prefill = ttnn.as_tensor(
-        torch.full((batch_size // 4,), start_pos),
+        torch.full((bsz_per_device,), start_pos),
         dtype=ttnn.int32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
@@ -174,7 +177,7 @@ def test_attn_fullmesh(batch_size, seq_len, mesh_device):
     hidden_states_decode = hidden_states_full[:, seq_len:seq_len + 1, :]
 
     # TT decode
-    position_idxs = torch.full((batch_size // 4,), start_pos_decode, dtype=torch.long)
+    position_idxs = torch.full((bsz_per_device,), start_pos_decode, dtype=torch.long)
     rot_mats_decode = rope.get_rot_mats(position_idxs)
     trans_mat_decode = rope.transformation_mat
 
@@ -221,16 +224,21 @@ def test_attn_fullmesh(batch_size, seq_len, mesh_device):
     print("\n=== Test completed successfully! ===")
 
 @pytest.mark.parametrize(
-    "batch_size,seq_len",
+    "bsz_per_device,seq_len",
     [
-        (128, 128),
+        (32, 128),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
-def test_attn_submesh(batch_size, seq_len, mesh_device):
+def test_attn_submesh(bsz_per_device, seq_len, mesh_device):
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
+
+    dp_degree = mesh_device.shape[0]
+    batch_size = bsz_per_device * dp_degree
+    num_submeshes = 2
+    bsz_per_submesh = batch_size // num_submeshes
 
     ref_layer, ref_rope = load_reference_layer()
     ref_attention = ref_layer.self_attn
@@ -279,7 +287,7 @@ def test_attn_submesh(batch_size, seq_len, mesh_device):
 
         rope = RotarySetup(
             device=mesh_device,
-            batch_size=batch_size // 4,
+            batch_size=bsz_per_device,
             head_dim=config.head_dim,
             max_seq_len=config.max_seq_len,
             rope_theta=config.rope_theta,
@@ -305,7 +313,7 @@ def test_attn_submesh(batch_size, seq_len, mesh_device):
         trans_mat_prefill = rope.transformation_mat_prefill
 
         start_pos_tt_prefill = ttnn.as_tensor(
-            torch.full((batch_size // 4,), start_pos),
+            torch.full((bsz_per_device,), start_pos),
             dtype=ttnn.int32,
             layout=ttnn.ROW_MAJOR_LAYOUT,
             device=mesh_device,
@@ -336,10 +344,10 @@ def test_attn_submesh(batch_size, seq_len, mesh_device):
             output_tt_prefill, 
             dtype=torch.bfloat16, 
             mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
-        )[:batch_size // 2, :, :]
+        )[:bsz_per_submesh, :, :]
 
         print("Comparing prefill outputs...")
-        compare_tensor_pcc(ref_output_full[(batch_size // 2) * i:(batch_size // 2) * (i + 1), :seq_len, :], tt_output_prefill)
+        compare_tensor_pcc(ref_output_full[(bsz_per_submesh) * i:(bsz_per_submesh) * (i + 1), :seq_len, :], tt_output_prefill)
 
         # ========== DECODE PHASE ==========
         print(f"\n=== Running TT DECODE phase (1 step) ===")
@@ -349,12 +357,12 @@ def test_attn_submesh(batch_size, seq_len, mesh_device):
         hidden_states_decode = hidden_states_full[:, seq_len:seq_len + 1, :]
 
         # TT decode
-        position_idxs = torch.full((batch_size // 4,), start_pos_decode, dtype=torch.long)
+        position_idxs = torch.full((bsz_per_device,), start_pos_decode, dtype=torch.long)
         rot_mats_decode = rope.get_rot_mats(position_idxs)
         trans_mat_decode = rope.transformation_mat
 
         start_pos_tt_decode = ttnn.as_tensor(
-            torch.full((batch_size // 2,), start_pos_decode),
+            torch.full((bsz_per_submesh,), start_pos_decode),
             dtype=ttnn.int32,
             layout=ttnn.ROW_MAJOR_LAYOUT,
             device=mesh_device,
@@ -362,7 +370,7 @@ def test_attn_submesh(batch_size, seq_len, mesh_device):
             mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
         )
 
-        hidden_states_decode_reshaped = hidden_states_decode.reshape((1, 1, batch_size // 2, config.hidden_size))
+        hidden_states_decode_reshaped = hidden_states_decode.reshape((1, 1, bsz_per_submesh, config.hidden_size))
         hidden_states_tt_decode = ttnn.from_torch(
             hidden_states_decode_reshaped,
             dtype=ttnn.bfloat16,
@@ -381,17 +389,17 @@ def test_attn_submesh(batch_size, seq_len, mesh_device):
             mode=InferenceMode.DECODE,
             save_file_name=f"submesh_{i}"
         )
-        output_tt_decode = ttnn.reshape(output_tt_decode, (batch_size // 2, 1, config.hidden_size))
+        output_tt_decode = ttnn.reshape(output_tt_decode, (bsz_per_submesh, 1, config.hidden_size))
         output_tt_decode = ttnn.to_layout(output_tt_decode, ttnn.ROW_MAJOR_LAYOUT)
 
         tt_output_decode = ttnn.to_torch(
             output_tt_decode,
             dtype=torch.bfloat16,
             mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
-        )[:batch_size // 2, :, :]
+        )[:bsz_per_submesh, :, :]
 
         print("Comparing decode outputs...")
-        compare_tensor_pcc(ref_output_full[(batch_size // 2) * i:(batch_size // 2) * (i + 1), seq_len:seq_len + 1, :], tt_output_decode)
+        compare_tensor_pcc(ref_output_full[(bsz_per_submesh) * i:(bsz_per_submesh) * (i + 1), seq_len:seq_len + 1, :], tt_output_decode)
 
     print("\n=== Test completed successfully! ===")
 

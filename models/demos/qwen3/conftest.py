@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import os
 from pathlib import Path
+import warnings
 
 import pytest
 from loguru import logger
@@ -11,6 +12,15 @@ import ttnn
 
 # from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.demos.qwen3.utils.device import create_mesh_device
+
+# Silence noisy deprecation warnings from third-party packages (Pydantic V2 migration)
+try:
+    from pydantic.warnings import PydanticDeprecatedSince20  # type: ignore
+except Exception:  # pragma: no cover
+    PydanticDeprecatedSince20 = None  # type: ignore
+
+if PydanticDeprecatedSince20 is not None:  # type: ignore
+    warnings.simplefilter("ignore", PydanticDeprecatedSince20)  # type: ignore
 
 
 @pytest.fixture(scope="function")

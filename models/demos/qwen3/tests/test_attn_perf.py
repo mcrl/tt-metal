@@ -48,19 +48,22 @@ def load_reference_layer(layer_idx=0):
 
 
 @pytest.mark.parametrize(
-    "batch_size,seq_len",
+    "bsz_per_device,seq_len",
     [
         # (8, 64),
-        (128, 128),
+        (32, 128),
         # (2, 64),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
-def test_attn_prefill(batch_size, seq_len, mesh_device):
+def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
     """Compare TT Attention implementation with PyTorch reference."""
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
+
+    dp_degree = mesh_device.shape[0]
+    batch_size = bsz_per_device * dp_degree
 
     ref_layer, ref_rope = load_reference_layer()
     ref_attention = ref_layer.self_attn
@@ -88,7 +91,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size // mesh_device.shape[0],
+        batch_size=bsz_per_device,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
@@ -109,7 +112,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
     )
     start_pos_tt = ttnn.as_tensor(
-        torch.full((batch_size // mesh_device.shape[0],), start_pos),
+        torch.full((bsz_per_device,), start_pos),
         dtype=ttnn.int32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
@@ -148,17 +151,20 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
     )
 
 @pytest.mark.parametrize(
-    "batch_size,seq_len",
+    "bsz_per_device,seq_len",
     [
-        (128, 128),
+        (32, 128),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
-def test_attn_decode(batch_size, seq_len, mesh_device):
+def test_attn_decode(bsz_per_device, seq_len, mesh_device):
     """Compare TT Attention implementation with PyTorch reference."""
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
+
+    dp_degree = mesh_device.shape[0]
+    batch_size = bsz_per_device * dp_degree
 
     ref_layer, ref_rope = load_reference_layer()
     ref_attention = ref_layer.self_attn
@@ -185,13 +191,13 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size // mesh_device.shape[0],
+        batch_size=bsz_per_device,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
     )
 
-    position_idxs = torch.full((batch_size // mesh_device.shape[0],), start_pos, dtype=torch.long)
+    position_idxs = torch.full((bsz_per_device,), start_pos, dtype=torch.long)
     rot_mats = rope.get_rot_mats(position_idxs)
     trans_mat = rope.transformation_mat
 
@@ -207,7 +213,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None)),
     )
     start_pos_tt = ttnn.as_tensor(
-        torch.full((batch_size // mesh_device.shape[0],), start_pos),
+        torch.full((bsz_per_device,), start_pos),
         dtype=ttnn.int32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
