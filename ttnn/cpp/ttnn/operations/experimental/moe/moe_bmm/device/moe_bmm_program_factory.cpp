@@ -397,7 +397,7 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
 
     // FIXME: How to set this properly? Maybe we need to distinguish prefill/decode
     uint32_t BMt = 1;
-    uint32_t BNt = Nt / cores_per_expert; // ???
+    uint32_t BNt = 1; // ???
     uint32_t BKt = 1;
     uint32_t SBMt = 1;
     uint32_t SBNt = 1;
@@ -409,8 +409,10 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
     uint32_t metadata_size = 16;
     uint32_t pipeline_factor = 2;
 
-    std::cout << "Nt: " << Nt << " cores_per_expert: " << cores_per_expert << std::endl;
-    std::cout << "BMt: " << BMt << " BNt: " << BNt << " BKt: " << BKt << " SBMt: " << SBMt << " SBNt: " << SBNt << std::endl;
+    TT_FATAL(Nt % BNt == 0, "Nt ({}) must be divisible by BNt ({})", Nt, BNt);
+
+    // std::cout << "Nt: " << Nt << " cores_per_expert: " << cores_per_expert << std::endl;
+    // std::cout << "BMt: " << BMt << " BNt: " << BNt << " BKt: " << BKt << " SBMt: " << SBMt << " SBNt: " << SBNt << std::endl;
 
     // Tile sizes
     uint32_t input_tile_size = tt_metal::detail::TileSize(input_data_format);

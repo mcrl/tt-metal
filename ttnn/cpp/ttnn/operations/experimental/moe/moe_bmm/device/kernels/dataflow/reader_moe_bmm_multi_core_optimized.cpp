@@ -87,6 +87,17 @@ void kernel_main() {
     uint32_t col_nblocks_per_core = Nt / BNt / cores_per_expert;
     uint32_t col_bidx0 = my_rank_in_expert * col_nblocks_per_core;
 
+    // Uneven col block distribution. First few cores get remainder col blocks
+    if (Nt / BNt % cores_per_expert != 0) {
+        if (my_rank_in_expert < Nt / BNt % cores_per_expert) {
+            col_nblocks_per_core += 1;
+            col_bidx0 += my_rank_in_expert;
+        }
+        else {
+            col_bidx0 += Nt / BNt % cores_per_expert;
+        }
+    }
+
     uint32_t num_ki_iterations = Kt / BKt;
     uint32_t input_cb_tile_size = get_tile_size(cb_input);
     uint32_t weights_cb_tile_size = get_tile_size(cb_weights);
@@ -102,7 +113,11 @@ void kernel_main() {
     metadata_ptr[5] = my_expert;
     cb_push_back(cb_metadata, 1);
 
+    uint32_t sender_x = core_x;
+    uint32_t sender_y = core_y / pw * pw;
     // DPRINT << "row_bidx0: " << row_bidx0 << " col_bidx0: " << col_bidx0 << " row_nblocks_per_core: " << row_nblocks_per_core << " col_nblocks_per_core: " << col_nblocks_per_core << ENDL();
+    // DPRINT << "sender_x: " << sender_x << " sender_y: " << sender_y << ENDL();
+
 
     // Main loop.
     for (uint32_t block_idx_row = row_bidx0; block_idx_row < row_bidx0 + row_nblocks_per_core; block_idx_row++) {
@@ -122,6 +137,13 @@ void kernel_main() {
                     }
                 }
                 noc_async_read_barrier();
+
+                // input_l1_ptr = get_write_ptr(cb_input);
+                // broadcast(input_l1_ptr, BMt * BKt * input_cb_tile_size,
+                //     sender_x, sender_y,
+                //     sender_x, sender_x,
+                //     sender_y, sender_y + pw - 1,
+                //     sender_sem, receiver_sem, noc);
                 cb_push_back(cb_input, BMt * BKt);
 
                 /************ Read weights block ************/
