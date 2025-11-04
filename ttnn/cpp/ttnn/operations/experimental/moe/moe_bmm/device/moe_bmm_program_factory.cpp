@@ -397,8 +397,8 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
 
     // FIXME: How to set this properly? Maybe we need to distinguish prefill/decode
     uint32_t BMt = 1;
-    uint32_t BNt = 1; // ???
-    uint32_t BKt = 1;
+    uint32_t BNt = Nt / cores_per_expert;
+    uint32_t BKt = 4;
     uint32_t SBMt = 1;
     uint32_t SBNt = 1;
     for (int i = 1; i <= std::min(4, (int)BNt); i++) {
