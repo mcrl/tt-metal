@@ -19,11 +19,13 @@ from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 
 from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
+from models.demos.qwen3.tt.model_cache import get_model_path
 
 from models.tt_transformers.tt.rope import RotarySetup
 
 def create_test_config():
-    config_path = "/shared/models/Qwen3-235B-A22B/config.json"
+    model_path = get_model_path()
+    config_path = os.path.join(model_path, "config.json")
 
     with open(config_path, "r") as f:
         data = json.load(f)
@@ -31,7 +33,8 @@ def create_test_config():
 
 
 def load_reference_layer(layer_idx=0, seq_len=32):
-    config = AutoConfig.from_pretrained("/shared/models/Qwen3-235B-A22B/")
+    model_path = get_model_path()
+    config = AutoConfig.from_pretrained(model_path)
 
     config.max_batch_size = 32
     config.max_seq_len = seq_len
@@ -39,9 +42,9 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 
     layer = Qwen3MoeDecoderLayer(config, layer_idx)
 
-    weight_path = f"/shared/models/Qwen3-235B-A22B/layer_{layer_idx}.pt"
+    weight_path = os.path.join(model_path, f"layer_{layer_idx}.pt")
     if os.path.exists(weight_path):
-        layer.load_state_dict(torch.load(weight_path))
+        layer.load_state_dict(torch.load(weight_path)["state_dict"])
     else:
         print(f"Warning: Weight file {weight_path} not found, using random weights")
     layer.to(torch.bfloat16)
@@ -55,7 +58,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
     "batch_size,seq_len",
     [
         # (8, 64),
-        (128, 128),
+        (64, 128),
         # (2, 64),
     ],
 )
@@ -65,6 +68,10 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
+
+    dp_degree = mesh_device.shape[0]
+    tp_degree = mesh_device.shape[1]
+    assert batch_size // dp_degree == 32
 
     ref_layer, ref_rope = load_reference_layer(seq_len=seq_len)
     ref_attention = ref_layer.self_attn
@@ -101,7 +108,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size // 4,
+        batch_size=batch_size // dp_degree,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
@@ -122,7 +129,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
     )
 
     start_pos_tt = ttnn.as_tensor(
-        torch.full((batch_size // 4,), start_pos),
+        torch.full((batch_size // dp_degree,), start_pos),
         dtype=ttnn.int32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
@@ -159,7 +166,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (128, 1),
+        (64, 1),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -168,6 +175,10 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
+
+    dp_degree = mesh_device.shape[0]
+    tp_degree = mesh_device.shape[1]
+    assert batch_size // dp_degree == 32
 
     ref_layer, ref_rope = load_reference_layer(seq_len=seq_len)
     ref_attention = ref_layer.self_attn
@@ -204,13 +215,13 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=batch_size // 4,
+        batch_size=batch_size // dp_degree,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
     )
 
-    position_idxs = torch.full((batch_size // 4,), start_pos, dtype=torch.long)
+    position_idxs = torch.full((batch_size // dp_degree,), start_pos, dtype=torch.long)
     rot_mats = rope.get_rot_mats(position_idxs)
     trans_mat = rope.transformation_mat
 

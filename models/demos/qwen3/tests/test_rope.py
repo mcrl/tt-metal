@@ -23,6 +23,7 @@ from models.tt_transformers.tt.common import get_rot_transformation_mat
 
 from transformers import AutoConfig
 from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeRotaryEmbedding, apply_rotary_pos_emb
+from models.demos.qwen3.tt.model_cache import get_model_path
 
 def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
     x_half1, x_half2 = x.chunk(2, dim=-1)
@@ -90,7 +91,8 @@ def test_rope(batch_size, seq_len, heads, head_dim, mesh_device):
 
     ref_out = ref_apply_rotary_emb(q, k, ref_position_embeddings)
 
-    config = AutoConfig.from_pretrained("/shared/models/Qwen3-30B-A3B/")
+    model_path = get_model_path()
+    config = AutoConfig.from_pretrained(model_path)
     ref_rope = Qwen3MoeRotaryEmbedding(config=config)
 
     start_pos = 0

@@ -52,6 +52,8 @@ class Qwen3MoeRMSNorm(nn.Module):
             mem_cfg = hidden_states.memory_config()
             hidden_states = ttnn.to_memory_config(hidden_states, ttnn.L1_MEMORY_CONFIG, dtype=hidden_states.dtype)
         
+        print(f"hidden_states.shape: {hidden_states.shape}")
+        print(f"self.weight_tensor.shape: {self.weight_tensor.shape}")
         hidden_states = ttnn.rms_norm(hidden_states, epsilon=self.variance_epsilon, weight=self.weight_tensor)
 
         if mode == InferenceMode.DECODE:

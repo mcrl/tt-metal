@@ -10,7 +10,8 @@ from models.demos.qwen3.utils.timer import set_and_get_device_cache
 from models.demos.qwen3.utils.profiler import profile_trace
 from models.demos.qwen3.utils.timer import print_timer_all
 from models.demos.qwen3.utils.device import create_mesh_device
-
+from models.demos.qwen3.utils.profiler import init_trace_file
+from models.demos.qwen3.tt.model_cache import get_model_path
 
 ttnn.CONFIG.enable_model_cache = True
 
@@ -19,10 +20,13 @@ def perftest_tt(
     batch_size: int,
     prompt_len: int,
     gen_tokens: int,
-    ckpt_dir: str,
-    tokenizer_path: str,
-    config_path: str,
 ):
+    # Get model paths from environment variables
+    model_path = get_model_path()
+    ckpt_dir = model_path
+    tokenizer_path = os.path.join(model_path, "tokenizer.json")
+    config_path = os.path.join(model_path, "config.json")
+
     # Create device with trace region size for trace capture
     device_params = {"trace_region_size": 128 * 1024 * 1024, "fabric_config": ttnn.FabricConfig.FABRIC_1D}  # 256MB
     mesh_device = create_mesh_device(device_params)
@@ -46,10 +50,13 @@ def perftest_reference(
     batch_size: int,
     prompt_len: int,
     gen_tokens: int,
-    ckpt_dir: str,
-    tokenizer_path: str,
-    config_path: str,
 ):
+    # Get model paths from environment variables
+    model_path = get_model_path()
+    ckpt_dir = model_path
+    tokenizer_path = os.path.join(model_path, "tokenizer.json")
+    config_path = os.path.join(model_path, "config.json")
+
     qwen3_moe_reference = Qwen3MoEReference(ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, config_path=config_path)
 
     prompts = load_prompts(batch_size, prompt_len)
@@ -61,9 +68,6 @@ def perftest_reference(
 
 
 def main(
-    ckpt_dir: str = "/shared/models/Qwen3-30B-A3B",
-    tokenizer_path: str = "/shared/models/Qwen3-30B-A3B/tokenizer.json",
-    config_path: Optional[str] = "/shared/models/Qwen3-30B-A3B/config.json",
     batch_size: int = 128,
     prompt_len: int = 64,
     gen_tokens: int = 32,
@@ -77,7 +81,7 @@ def main(
     if run_tt:
         ran_any = True
         prompt_and_responses_tt, iter_times_tt = perftest_tt(
-            batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path
+            batch_size, prompt_len, gen_tokens
         )
         print(f"TT Generation Results:")
         for i in range(batch_size):
@@ -96,7 +100,7 @@ def main(
     if run_reference:
         ran_any = True
         prompt_and_responses_reference, iter_times_reference = perftest_reference(
-            batch_size, prompt_len, gen_tokens, ckpt_dir, tokenizer_path, config_path
+            batch_size, prompt_len, gen_tokens
         )
         print(f"Reference Time: {sum(iter_times_reference)}")
 

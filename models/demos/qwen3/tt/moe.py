@@ -7,7 +7,7 @@ from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.tt_transformers.tt.ccl import TT_CCL
 
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
-from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
+from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_short_name
 from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
 
 class Qwen3MoeMLP(nn.Module):
@@ -71,7 +71,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_moe_gate"),
+                cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_decoder_{self.layer_idx}_moe_gate"),
             )
 
         self.num_devices = self.mesh_device.get_num_devices()
@@ -134,7 +134,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"235b_gate_proj_{self.layer_idx}"),
+                cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_gate_proj_{self.layer_idx}"),
             )
 
             self.up_proj = ttnn.as_tensor(
@@ -144,7 +144,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"235b_up_proj_{self.layer_idx}"),
+                cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_up_proj_{self.layer_idx}"),
             )
 
             self.down_proj = ttnn.as_tensor(
@@ -154,7 +154,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"235b_down_proj_{self.layer_idx}"),
+                cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_down_proj_{self.layer_idx}"),
             )
         self.is_tt_setup = True
 
