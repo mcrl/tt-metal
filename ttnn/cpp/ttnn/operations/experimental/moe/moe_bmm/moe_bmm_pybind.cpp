@@ -12,13 +12,13 @@ namespace py = pybind11;
 
 void bind_moe_bmm(py::module& module) {
     const auto doc = R"doc(
-moe_bmm(input: ttnn.Tensor, weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> ttnn.Tensor
+moe_bmm(input: ttnn.Tensor, weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, mode: str = "optimized", queue_id: int = 0) -> ttnn.Tensor
 
 Performs batched matrix multiplication for Mixture-of-Experts (MoE) processing.
 
 For each expert e, computes:
     output[e, :, :] = input[e, :, :] @ weights[e, :, :]
-    
+
 This multiplies (T × H_in) @ (H_in × H_out) → (T × H_out) per expert.
 Only the first num_routed_tokens[e, 0] rows produce non-zero results.
 
@@ -32,6 +32,7 @@ Args:
 
 Keyword Args:
     * :attr:`memory_config`: Memory configuration for output tensor
+    * :attr:`mode`: Implementation mode - "single_core", "multi_core", or "optimized" (default)
     * :attr:`queue_id`: Command queue ID
 
 Returns:
@@ -48,13 +49,14 @@ Example:
     >>> expert_input = ...  # (E/D, T, H_in) TILE_LAYOUT
     >>> expert_weights = ...  # (E/D, H_in, H_out) TILE_LAYOUT
     >>> num_routed = ...  # (E/D, 1) ROW_MAJOR
-    >>> 
+    >>>
     >>> # Perform batched matmul per expert
     >>> output = ttnn.experimental.moe_bmm(
     ...     expert_input,
     ...     expert_weights,
     ...     num_routed,
     ...     memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    ...     mode="optimized",
     ...     queue_id=0
     >>> )
     >>> # output shape: (E/D, T, H_out) TILE_LAYOUT
@@ -72,14 +74,16 @@ Example:
                const ttnn::Tensor& weights,
                const ttnn::Tensor& num_routed_tokens,
                const std::optional<MemoryConfig>& memory_config,
+               const std::string& mode,
                QueueId queue_id) {
-                return self(queue_id, input, weights, num_routed_tokens, memory_config);
+                return self(queue_id, input, weights, num_routed_tokens, memory_config, mode);
             },
             py::arg("input").noconvert(),
             py::arg("weights").noconvert(),
             py::arg("num_routed_tokens").noconvert(),
             py::kw_only(),
             py::arg("memory_config") = std::nullopt,
+            py::arg("mode") = "optimized",
             py::arg("queue_id") = DefaultQueueId,
         });
 }

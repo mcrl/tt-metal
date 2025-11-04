@@ -80,9 +80,10 @@ void MAIN {
                 
                 // Reserve output buffer and pack result
                 cb_reserve_back(cb_out, 1);
+                PACK((pack_reconfig_data_format(cb_out)));
                 pack_tile(0, cb_out);
                 cb_push_back(cb_out, 1);
-                
+
                 // Release destination register
                 release_dst();
             }
