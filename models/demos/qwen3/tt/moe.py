@@ -72,7 +72,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"decoder_{self.layer_idx}_moe_gate"),
+                cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_moe_gate"),
             )
 
         self.num_devices = self.mesh_device.get_num_devices()
@@ -135,7 +135,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"gate_proj_{self.layer_idx}"),
+                cache_file_name=ttnn_model_cache_path(f"235b_gate_proj_{self.layer_idx}"),
             )
 
             self.up_proj = ttnn.as_tensor(
@@ -145,7 +145,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"up_proj_{self.layer_idx}"),
+                cache_file_name=ttnn_model_cache_path(f"235b_up_proj_{self.layer_idx}"),
             )
 
             self.down_proj = ttnn.as_tensor(
@@ -155,7 +155,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"down_proj_{self.layer_idx}"),
+                cache_file_name=ttnn_model_cache_path(f"235b_down_proj_{self.layer_idx}"),
             )
         self.is_tt_setup = True
 
@@ -175,14 +175,14 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("softmax-topk-div", level=4):
-            routing_weights = ttnn.softmax(router_logits, dim=1, memory_config=mem_cfg)
+            routing_weights = ttnn.softmax(router_logits, memory_config=mem_cfg)
             routing_weights, selected_experts = ttnn.topk(
-                routing_weights, self.top_k, dim=1, largest=True, memory_config=mem_cfg
+                routing_weights, self.top_k, largest=True, memory_config=mem_cfg
             )
             if self.norm_topk_prob:
                 routing_weights = ttnn.div(
                     routing_weights,
-                    ttnn.sum(routing_weights, dim=1, keepdim=True, memory_config=mem_cfg),
+                    ttnn.sum(routing_weights, dim=-1, keepdim=True, memory_config=mem_cfg),
                     memory_config=mem_cfg,
                 )
 
@@ -247,21 +247,18 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 selected_experts,
                 axis=1,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=1,
-                global_semaphore=self.ccl.get_semaphore(0),
-                init_semaphore=self.ccl.get_semaphore(0),
+                num_links=1
             )
 
             all_to_all_combine_output_tensors = ttnn.experimental.all_gather_async(
                 all_to_all_combine_output_tensors,
-                dim=1,
+                1,
                 cluster_axis=1,
                 mesh_device=self.mesh_device,
                 topology=ttnn.Topology.Linear,
+                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
-                multi_device_global_semaphore=self.ccl.get_semaphore(0),
-                barrier_semaphore=self.ccl.get_semaphore(1),
             )
             ttnn.synchronize_device(self.mesh_device)
             combined_output = ttnn.reshape(
@@ -396,7 +393,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             final_output = ttnn.reshape(moe_output, shape=(1, 1, T, H), memory_config=mem_cfg)
             final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
 
-            for cluster_axis in [1, 0]:
+            for cluster_axis in [1]:
                 final_output = ttnn.experimental.reduce_scatter_minimal_async(
                     final_output,
                     persistent_output_buffers=None,
