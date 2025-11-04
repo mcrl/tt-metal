@@ -189,7 +189,6 @@ class Qwen3MoeAttention(nn.Module):
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
         )
         self.cache_v = ttnn.as_tensor(
             cache_v,
@@ -198,7 +197,6 @@ class Qwen3MoeAttention(nn.Module):
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
         )
 
     def forward_prefill(
@@ -241,6 +239,9 @@ class Qwen3MoeAttention(nn.Module):
             )
             ttnn.deallocate(qkv_states)
             # B n S H
+
+        # print(f"query_states_pre_rot.shape: {query_states_pre_rot.shape}")
+        
 
         with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.PREFILL)
@@ -354,21 +355,22 @@ class Qwen3MoeAttention(nn.Module):
                 num_links=1,
             )
             
-            linear_output = ttnn.experimental.all_gather_async(
-                linear_output,
-                2,
-                cluster_axis=0,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=1,
-            )
+            # linear_output = ttnn.experimental.all_gather_async(
+            #     linear_output,
+            #     2,
+            #     cluster_axis=0,
+            #     mesh_device=self.mesh_device,
+            #     topology=ttnn.Topology.Linear,
+            #     multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
+            #     memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            #     num_links=1,
+            # )
 
             ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.view(linear_output, (-1, S, H))
             linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
 
+        print(f"linear_output.shape: {linear_output.shape} {H=} {S=} {B=}")
         return linear_output
 
     def forward_decode(
@@ -494,16 +496,16 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-            linear_output = ttnn.experimental.all_gather_async(
-                linear_output,
-                2,
-                cluster_axis=0,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=1,
-            )
+            # linear_output = ttnn.experimental.all_gather_async(
+            #     linear_output,
+            #     2,
+            #     cluster_axis=0,
+            #     mesh_device=self.mesh_device,
+            #     topology=ttnn.Topology.Linear,
+            #     multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
+            #     memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            #     num_links=1,
+            # )
 
             ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))

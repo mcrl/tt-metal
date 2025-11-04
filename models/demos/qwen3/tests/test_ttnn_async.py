@@ -1,25 +1,7 @@
 import ttnn
 import time
 import torch
-from tests.scripts.common import get_updated_device_params
-import ttnn
-
-
-def create_mesh_device(device_params):
-    params = dict(device_params or {})
-    updated_device_params = get_updated_device_params(params)
-    device_ids = ttnn.get_device_ids()
-
-    default_mesh_shape = ttnn.MeshShape(4, 8) if len(device_ids) == 32 else ttnn.MeshShape(1, len(device_ids))
-
-    fabric_config = params.pop("fabric_config", None)
-    if fabric_config:
-        ttnn.set_fabric_config(fabric_config)
-
-    updated_device_params.setdefault("mesh_shape", default_mesh_shape)
-    mesh_device = ttnn.open_mesh_device(**updated_device_params)
-
-    return mesh_device
+from models.demos.qwen3.utils.device import create_mesh_device
 
 
 def test_ttnn_async(mesh_device):
