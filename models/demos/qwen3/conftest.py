@@ -35,6 +35,7 @@ def mesh_device(request, device_params):
 
     # Use centralized create_mesh_device function
     mesh_device = create_mesh_device(device_params)
+    # submeshes = mesh_device.create_submeshes(ttnn.MeshShape(2, 8))
 
     logger.debug(f"multidevice with {mesh_device.get_num_devices()} devices is created with shape {mesh_device.shape}")
     yield mesh_device

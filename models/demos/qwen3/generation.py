@@ -155,8 +155,10 @@ class Qwen3MoETT:
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
 
         with Profiler().trace_with_timer("Load-Model", level=0):
-            materialize(self.model)
-            load(ckpt_dir, self.model)
+            # Use lazy loading to minimize RAM usage
+            from models.demos.qwen3.common.lazy_loader import materialize, load
+            materialize(self.model)  # Keep as meta tensors
+            load(ckpt_dir, self.model, lazy=True)  # Initialize lazy loader
 
         self.model.eval()
 
@@ -261,14 +263,6 @@ class Qwen3MoETT:
             layout=ttnn.ROW_MAJOR_LAYOUT,
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
-        )
-        page_table_tt_decode = ttnn.as_tensor(
-            page_table,
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=self.mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(0, None))
         )
 
@@ -288,8 +282,69 @@ class Qwen3MoETT:
         input_text_mask = torch.ne(tokens, pad_id)
 
         ttnn.synchronize_device(self.mesh_device)
-        prev_pos = 0
 
+        with Profiler().trace_with_timer("Warmup", level=0):
+            for curr_pos in range(min_prompt_len, total_len):
+                print(f"curr_pos: {curr_pos}")
+                iter_start_time = time.time()
+                mode = "prefill" if prev_pos == 0 else "decode"
+                page_table = page_table_tt # if mode == "prefill" else page_table_tt_decode
+
+                ids = ttnn.from_torch(
+                    tokens[:, prev_pos:curr_pos],
+                    device=self.mesh_device,
+                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                    dtype=ttnn.uint32,
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    layout=ttnn.ROW_MAJOR_LAYOUT,
+                )
+                start_pos = ttnn.as_tensor(
+                    torch.tensor([prev_pos for _ in range(batch_size // 4)]),
+                    dtype=ttnn.int32,
+                    layout=ttnn.ROW_MAJOR_LAYOUT,
+                    device=self.mesh_device,
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
+                )
+
+                if mode == "prefill":
+                    rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
+                    trans_mat = self.rope.transformation_mat_prefill
+                else:
+                    position_idxs = torch.full((batch_size // 4,), prev_pos, dtype=torch.long)
+                    rot_mats = self.rope.get_rot_mats(position_idxs)
+                    trans_mat = self.rope.transformation_mat
+
+                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
+
+                logits = ttnn.to_torch(
+                    logits_tt,
+                    dtype=self.config.dtype,
+                    mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
+                )
+
+                if temperature > 0:
+                    probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
+                    next_tokens = sample_top_p(probs, top_p).reshape(-1)
+                else:
+                    next_tokens = torch.argmax(logits[:, -1, :], dim=-1)
+                next_tokens = torch.where(
+                    condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
+                )
+                tokens[:, curr_pos] = next_tokens
+
+                eos_reached = torch.logical_or(
+                    eos_reached,
+                    torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
+                )
+                prev_pos = curr_pos
+                # print_memory_state(self.mesh_device)
+                if all(eos_reached):
+                    break
+
+        ttnn.synchronize_device(self.mesh_device)
+
+        prev_pos = 0
         iter_times = []
         generate_start_time = time.time()
 
@@ -298,7 +353,7 @@ class Qwen3MoETT:
                 print(f"curr_pos: {curr_pos}")
                 iter_start_time = time.time()
                 mode = "prefill" if prev_pos == 0 else "decode"
-                page_table = page_table_tt if mode == "prefill" else page_table_tt_decode
+                page_table = page_table_tt # if mode == "prefill" else page_table_tt_decode
 
                 ids = ttnn.from_torch(
                     tokens[:, prev_pos:curr_pos],

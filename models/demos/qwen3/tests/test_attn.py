@@ -125,7 +125,7 @@ def test_attn_prefill(batch_size, seq_len, mesh_device):
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+        mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
     )
 
     start_pos_tt = ttnn.as_tensor(
@@ -234,14 +234,6 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
-    )
-    page_table_tt_decode = ttnn.as_tensor(
-        page_table,
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=mesh_device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
     )
 
@@ -269,7 +261,7 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
         rot_mats=rot_mats,
         trans_mat=trans_mat,
         start_pos=start_pos_tt,
-        page_table=page_table_tt_decode,
+        page_table=page_table_tt,
         mode=InferenceMode.DECODE,
     )
     output_tt = ttnn.reshape(output_tt, (batch_size, 1, config.hidden_size))
@@ -282,14 +274,16 @@ def test_attn_decode(batch_size, seq_len, mesh_device):
     compare_tensor_pcc(ref_output, tt_output)
 
 @pytest.mark.parametrize(
-    "batch_size,seq_len",
+    "batch_size,seq_len,num_decode_tokens",
     [
-        (128, 128),
+        (128, 128, 4),
+        # (128, 128, 5),
+        # (128, 128, 10),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
-def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
-    """Test prefill with paged cache followed by one decode step."""
+def test_attn_prefill_and_decode(batch_size, seq_len, num_decode_tokens, mesh_device):
+    """Test prefill with paged cache followed by multiple decode steps."""
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
@@ -330,26 +324,19 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
-    )
-    page_table_tt_decode = ttnn.as_tensor(
-        page_table,
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=mesh_device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
     )
 
-    hidden_states_full = torch.randn(batch_size, seq_len + 1, config.hidden_size, dtype=torch.bfloat16)
+    total_seq_len = seq_len + num_decode_tokens
+    hidden_states_full = torch.randn(batch_size, total_seq_len, config.hidden_size, dtype=torch.bfloat16)
     
-    print(f"\n=== Running REFERENCE for full sequence (seq_len={seq_len + 1}) ===")
+    print(f"\n=== Running REFERENCE for full sequence (seq_len={total_seq_len}) ===")
     attention_mask_full = (
-        torch.full(size=(1, 1, seq_len + 1, seq_len + 1), fill_value=True, dtype=torch.bool)
+        torch.full(size=(1, 1, total_seq_len, total_seq_len), fill_value=True, dtype=torch.bool)
         .triu_(diagonal=1)
         .logical_not_()
     )
-    position_ids_full = torch.arange(0, seq_len + 1, dtype=torch.long).unsqueeze(0)
+    position_ids_full = torch.arange(0, total_seq_len, dtype=torch.long).unsqueeze(0)
     ref_position_embeddings_full = ref_rope(hidden_states_full, position_ids_full)
     ref_output_full = ref_attention(
         hidden_states_full, 
@@ -405,55 +392,58 @@ def test_attn_prefill_and_decode(batch_size, seq_len, mesh_device):
     compare_tensor_pcc(ref_output_full[:, :seq_len, :], tt_output_prefill)
 
     # ========== DECODE PHASE ==========
-    print(f"\n=== Running TT DECODE phase (1 step) ===")
-    start_pos_decode = seq_len
+    print(f"\n=== Running TT DECODE phase ({num_decode_tokens} steps) ===")
     
-    # Use the decode token input from full sequence
-    hidden_states_decode = hidden_states_full[:, seq_len:seq_len + 1, :]
+    for decode_step in range(num_decode_tokens):
+        start_pos_decode = seq_len + decode_step
+        print(f"\nDecode step {decode_step + 1}/{num_decode_tokens} (start_pos={start_pos_decode})")
+        
+        # Use the decode token input from full sequence
+        hidden_states_decode = hidden_states_full[:, start_pos_decode:start_pos_decode + 1, :]
 
-    # TT decode
-    position_idxs = torch.full((batch_size // 4,), start_pos_decode, dtype=torch.long)
-    rot_mats_decode = rope.get_rot_mats(position_idxs)
-    trans_mat_decode = rope.transformation_mat
+        # TT decode
+        position_idxs = torch.full((batch_size // 4,), start_pos_decode, dtype=torch.long)
+        rot_mats_decode = rope.get_rot_mats(position_idxs)
+        trans_mat_decode = rope.transformation_mat
 
-    start_pos_tt_decode = ttnn.as_tensor(
-        torch.full((batch_size,), start_pos_decode),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=mesh_device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
-    )
+        start_pos_tt_decode = ttnn.as_tensor(
+            torch.full((batch_size,), start_pos_decode),
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None))
+        )
 
-    hidden_states_decode_reshaped = hidden_states_decode.reshape((1, 1, batch_size, config.hidden_size))
-    hidden_states_tt_decode = ttnn.from_torch(
-        hidden_states_decode_reshaped,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=mesh_device,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
-        memory_config=ttnn.L1_MEMORY_CONFIG,
-    )
+        hidden_states_decode_reshaped = hidden_states_decode.reshape((1, 1, batch_size, config.hidden_size))
+        hidden_states_tt_decode = ttnn.from_torch(
+            hidden_states_decode_reshaped,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+            memory_config=ttnn.L1_MEMORY_CONFIG,
+        )
 
-    output_tt_decode = tt_attention(
-        hidden_states=hidden_states_tt_decode,
-        rot_mats=rot_mats_decode,
-        trans_mat=trans_mat_decode,
-        start_pos=start_pos_tt_decode,
-        page_table=page_table_tt_decode,
-        mode=InferenceMode.DECODE,
-    )
-    output_tt_decode = ttnn.reshape(output_tt_decode, (batch_size, 1, config.hidden_size))
-    output_tt_decode = ttnn.to_layout(output_tt_decode, ttnn.ROW_MAJOR_LAYOUT)
+        output_tt_decode = tt_attention(
+            hidden_states=hidden_states_tt_decode,
+            rot_mats=rot_mats_decode,
+            trans_mat=trans_mat_decode,
+            start_pos=start_pos_tt_decode,
+            page_table=page_table_tt,
+            mode=InferenceMode.DECODE,
+        )
+        output_tt_decode = ttnn.reshape(output_tt_decode, (batch_size, 1, config.hidden_size))
+        output_tt_decode = ttnn.to_layout(output_tt_decode, ttnn.ROW_MAJOR_LAYOUT)
 
-    tt_output_decode = ttnn.to_torch(
-        output_tt_decode,
-        dtype=torch.bfloat16,
-        mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
-    )[:batch_size, :, :]
+        tt_output_decode = ttnn.to_torch(
+            output_tt_decode,
+            dtype=torch.bfloat16,
+            mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
+        )[:batch_size, :, :]
 
-    print("Comparing decode outputs...")
-    compare_tensor_pcc(ref_output_full[:, seq_len:seq_len + 1, :], tt_output_decode)
+        print(f"Comparing decode step {decode_step + 1} output...")
+        compare_tensor_pcc(ref_output_full[:, start_pos_decode:start_pos_decode + 1, :], tt_output_decode)
 
     print("\n=== Test completed successfully! ===")
 

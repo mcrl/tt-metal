@@ -1,4 +1,4 @@
-import tt_lock
+# import tt_lock
 import fire
 from typing import Optional, Dict
 import os
@@ -69,7 +69,7 @@ def perftest_reference(
 
 def main(
     batch_size: int = 128,
-    prompt_len: int = 64,
+    prompt_len: int = 32,
     gen_tokens: int = 32,
     run_tt: bool = True,
     run_reference: bool = False,
@@ -96,6 +96,7 @@ def main(
         print(f"TT TTFT: {ttft_ms:.2f} ms")
         print(f"TT T/S/U: {tokens_per_second_per_user:.2f}")
         print(f"TT Output Tokens/s: {tokens_per_second_per_user * batch_size:.2f}")
+        print(f"Decode times (s): {[f'{t:.4f}' for t in decode_times]}")
 
     if run_reference:
         ran_any = True
