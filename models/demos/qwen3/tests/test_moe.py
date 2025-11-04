@@ -46,7 +46,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (128, 64)
+        (64, 64)
     ],
 )
 @pytest.mark.parametrize(
@@ -99,7 +99,7 @@ def test_moe_prefill(batch_size, seq_len, mesh_device):
 @pytest.mark.parametrize(
     "batch_size,seq_len",
     [
-        (128, 1)
+        (64, 1)
     ],
 )
 @pytest.mark.parametrize(

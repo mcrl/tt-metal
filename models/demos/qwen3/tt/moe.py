@@ -426,7 +426,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             final_output = ttnn.reshape(moe_output, shape=(1, 1, T, H), memory_config=mem_cfg)
             final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
 
-            for cluster_axis in [1]:
+            for cluster_axis in [0, 1]:
                 final_output = ttnn.experimental.reduce_scatter_minimal_async(
                     final_output,
                     persistent_output_buffers=None,
