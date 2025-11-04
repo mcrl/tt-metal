@@ -41,7 +41,7 @@ void MAIN {
     uint32_t col_nblocks_per_core = metadata_ptr[3];
     cb_release_tile(cb_metadata);
 
-    // DPRINT << "row_bidx0: " << row_bidx0 << " col_bidx0: " << col_bidx0 << " row_nblocks_per_core: " << row_nblocks_per_core << " col_nblocks_per_core: " << col_nblocks_per_core << ENDL();
+    // DPRINT << "Mt: " << Mt << " row_bidx0: " << row_bidx0 << " col_bidx0: " << col_bidx0 << " row_nblocks_per_core: " << row_nblocks_per_core << " col_nblocks_per_core: " << col_nblocks_per_core << ENDL();
 
     uint32_t num_ki_iterations = Kt / BKt;
     uint32_t num_output_tiles = BMt * BNt;
