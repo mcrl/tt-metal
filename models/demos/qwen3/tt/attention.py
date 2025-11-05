@@ -9,7 +9,7 @@ import ttnn
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 
-from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path
+from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_short_name
 from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.tt_transformers.tt.ccl import TT_CCL
 
@@ -86,7 +86,8 @@ class Qwen3MoeAttention(nn.Module):
 
         self.q_heads_per_device = self.num_attention_heads // self.tp
 
-        self.KV_REPEAT_COEF = 1
+        assert self.num_key_value_heads % self.tp == 0
+        self.KV_REPEAT_COEF = max(self.tp // self.num_key_value_heads, 1)
         self.kv_heads_per_device = self.num_key_value_heads * self.KV_REPEAT_COEF // self.tp
 
         self.cache_shape = (
@@ -159,9 +160,8 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            # cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_qkv_proj"),
+            cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_decoder_{self.layer_idx}_qkv_proj"),
         )
-        
         # Free intermediate tensors
         del q_weight, k_weight, v_weight, qkv_list, wq, wk, wv
 
@@ -179,7 +179,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            # cache_file_name=ttnn_model_cache_path(f"235b_decoder_{self.layer_idx}_o_proj"),
+            cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_decoder_{self.layer_idx}_o_proj"),
         )
         
         # Free intermediate tensor
