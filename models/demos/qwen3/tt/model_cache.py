@@ -5,7 +5,7 @@ from pathlib import Path
 from functools import lru_cache
 
 
-__all__ = ["ttnn_model_cache_path", "get_model_path", "get_model_name", "get_model_short_name"]
+__all__ = ["ttnn_model_cache_path", "get_model_path", "get_model_name", "get_model_short_name", "get_model_cache_prefix"]
 
 # Flag to track if we've already printed the model info
 _printed_model_info = False
@@ -55,6 +55,24 @@ def get_model_short_name() -> str:
         return "235b"
     else:
         raise ValueError(f"Unknown model size in: {model_name}")
+
+
+def get_model_cache_prefix(mesh_device) -> str:
+    """Get model cache prefix including model name and mesh shape.
+
+    Args:
+        mesh_device: TT mesh device
+
+    Returns:
+        Cache prefix string (e.g., "30b_4x8_" or "30b_1x8_")
+
+    Example:
+        >>> prefix = get_model_cache_prefix(mesh_device)
+        >>> cache_path = ttnn_model_cache_path(f"{prefix}decoder_0_qkv_proj")
+    """
+    model_short = get_model_short_name()
+    mesh_shape = mesh_device.shape
+    return f"{model_short}_{mesh_shape[0]}x{mesh_shape[1]}_"
 
 
 def get_model_path() -> str:
