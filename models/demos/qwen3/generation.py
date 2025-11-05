@@ -29,105 +29,6 @@ def sample_top_p(probs, p):
     return next_token
 
 
-class Qwen3MoEReference:
-    def __init__(self, ckpt_dir: str, tokenizer_path: str, config_path: Optional[str] = None) -> None:
-        torch.manual_seed(42)
-        torch.set_default_device(torch.device("cpu"))
-        torch.set_default_dtype(torch.float16)
-
-        data = None
-        if config_path is not None:
-            with open(config_path, "r") as f:
-                data = json.load(f)
-
-        self.config = Qwen3MoeConfig.from_dict(data)
-        with torch.device("meta"):
-            self.model = Qwen3MoeModelReference(self.config)
-        self.tokenizer = Tokenizer.from_file(tokenizer_path)
-
-        # Check environment variable to enable/disable materialize (default: disabled)
-        enable_materialize = os.environ.get("TT_ENABLE_MATERIALIZE", "0").lower() in ("1", "true", "yes")
-
-        if enable_materialize:
-            print("Materialize enabled via TT_ENABLE_MATERIALIZE")
-            from models.demos.qwen3.common.lazy_loader import materialize as lazy_materialize, load as lazy_load
-            lazy_materialize(self.model)
-            lazy_load(ckpt_dir, self.model, lazy=False)
-        else:
-            print("Materialize disabled (default) - loading weights directly")
-            materialize(self.model)
-            load(ckpt_dir, self.model)
-
-        self.model.eval()
-
-    def generate(
-        self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9
-    ) -> List[List[str]]:
-        prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
-        batch_size = len(prompt_tokens)
-        assert batch_size <= self.config.max_batch_size
-
-        min_prompt_len = min(len(t) for t in prompt_tokens)
-        max_prompt_len = max(len(t) for t in prompt_tokens)
-        assert max_prompt_len <= self.config.max_seq_len
-
-        total_len = min(self.config.max_seq_len, max_gen_len + max_prompt_len)
-        pad_id = self.config.pad_token_id
-        tokens = torch.full(size=(batch_size, total_len), fill_value=pad_id, dtype=torch.int64)
-        for k, t in enumerate(prompt_tokens):
-            tokens[k, : len(t)] = torch.tensor(t, dtype=torch.int64)
-
-        prev_pos = 0
-        eos_id = self.config.eos_token_id
-        eos_reached = torch.tensor([False] * batch_size)
-        input_text_mask = torch.ne(tokens, pad_id)
-
-        warmup = True
-        if warmup is True:
-            for curr_pos in range(min_prompt_len, total_len):
-                with torch.inference_mode():
-                    mode = "prefill" if prev_pos == 0 else "decode"
-                    logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode=mode)
-                prev_pos = curr_pos
-        prev_pos = 0
-
-        iter_times = []
-        generate_start_time = time.time()
-        for curr_pos in range(min_prompt_len, total_len):
-            iter_start_time = time.time()
-            with torch.inference_mode():
-                logits = self.model(tokens[:, prev_pos:curr_pos], start_pos=prev_pos, mode="decode")
-            iter_times.append(time.time() - iter_start_time)
-
-            if temperature > 0:
-                probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
-                next_tokens = sample_top_p(probs, top_p).reshape(-1)
-            else:
-                next_tokens = torch.argmax(logits[:, -1, :], dim=-1)
-            next_tokens = torch.where(
-                condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
-            )
-            tokens[:, curr_pos] = next_tokens
-
-            eos_reached = torch.logical_or(
-                eos_reached,
-                torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
-            )
-            prev_pos = curr_pos
-            if all(eos_reached):
-                break
-
-        generate_end_time = time.time()
-        print(
-            f"Generation Time: {generate_end_time - generate_start_time:.3f}s, {batch_size=}, {min_prompt_len=}, {max_prompt_len=}, {max_gen_len=}"
-        )
-
-        tokens = tokens.tolist()
-        prompt_lengths = [len(t) for t in prompt_tokens]
-        split_tokens = [(output[:length], output[length:]) for output, length in zip(tokens, prompt_lengths)]
-        return list(map(self.tokenizer.decode_batch, split_tokens)), iter_times
-
-
 class Qwen3MoETT:
     def __init__(
         self, mesh_device: ttnn.Device, ckpt_dir: str, tokenizer_path: str, batch_size: int, config_path: Optional[str] = None
@@ -177,7 +78,7 @@ class Qwen3MoETT:
                 print("Materialize enabled via TT_ENABLE_MATERIALIZE")
                 from models.demos.qwen3.common.lazy_loader import materialize, load
                 materialize(self.model)  # Keep as meta tensors
-                load(ckpt_dir, self.model, lazy=False)
+                load(ckpt_dir, self.model)
             else:
                 print("Materialize disabled (default) - loading weights directly")
                 from models.demos.qwen3.common.loader import load, materialize

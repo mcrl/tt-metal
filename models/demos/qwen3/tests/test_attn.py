@@ -42,7 +42,10 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 
     weight_path = f"/mnt/nvme0/models/qwen3-30b/layer_{layer_idx}.pt"
     if os.path.exists(weight_path):
-        layer.load_state_dict(torch.load(weight_path)["state_dict"])
+        if '235b' in model_path:
+            layer.load_state_dict(torch.load(weight_path))
+        else:
+            layer.load_state_dict(torch.load(weight_path)["state_dict"])
     else:
         print(f"Warning: Weight file {weight_path} not found, using random weights")
     layer.to(torch.bfloat16)

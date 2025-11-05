@@ -290,7 +290,7 @@ def materialize(model: nn.Module) -> None:
 
 
 @profile_trace("load-with-lazy-loader", level=1)
-def load(ckpt_dir: str, model: nn.Module, lazy: bool = False, io_workers: int = 4, blas_workers: int = 2) -> None:
+def load(ckpt_dir: str, model: nn.Module, lazy: bool = True, io_workers: int = 4, blas_workers: int = 2) -> None:
     """
     Load model weights with optional lazy loading.
     

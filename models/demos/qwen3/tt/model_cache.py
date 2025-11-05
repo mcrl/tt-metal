@@ -31,7 +31,7 @@ def get_model_name() -> str:
     """
     model_name = os.getenv("QWEN3_MODEL", "Qwen3-30B-A3B")
 
-    valid_models = ["Qwen3-30B-A3B", "Qwen3-235B-A22B"]
+    valid_models = ["Qwen3-30B-A3B", "Qwen3-235B-A22B", "qwen3-235b"]
     if model_name not in valid_models:
         raise ValueError(
             f"Invalid QWEN3_MODEL: {model_name}. "
@@ -47,11 +47,11 @@ def get_model_short_name() -> str:
     Returns:
         Short name (e.g., "30b" or "235b")
     """
-    model_name = get_model_name()
+    model_name = get_model_name().lower()
     # Extract model size: "Qwen3-30B-A3B" -> "30b"
-    if "30B" in model_name:
+    if "30b" in model_name:
         return "30b"
-    elif "235B" in model_name:
+    elif "235b" in model_name:
         return "235b"
     else:
         raise ValueError(f"Unknown model size in: {model_name}")
