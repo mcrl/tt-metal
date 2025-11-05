@@ -7,7 +7,7 @@ from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.tt_transformers.tt.ccl import TT_CCL
 
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
-from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_short_name
+from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_cache_prefix
 from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
 
 class Qwen3MoeMLP(nn.Module):
@@ -60,22 +60,25 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         if self.is_tt_setup:
             return
 
+        # Create cache prefix for this mesh configuration
+        cache_prefix = get_model_cache_prefix(self.mesh_device)
+
         # Load weights lazily if they're still in meta state
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
         lazy_loader = get_lazy_loader()
-        
+
         if lazy_loader is not None and self.layer_idx > 90: # for RAM, other layers are already cached
             param_prefix = f"layers.{self.layer_idx}.mlp"
-            
+
             # Load gate weight
             if is_meta_tensor(self.gate.weight):
                 load_parameter_for_module(self.gate, "weight", f"{param_prefix}.gate.weight")
-            
+
             # Load expert weights
             for expert_idx in range(self.num_experts):
                 expert = self.experts[expert_idx]
                 expert_prefix = f"{param_prefix}.experts.{expert_idx}"
-                
+
                 if is_meta_tensor(expert.gate_proj.weight):
                     load_parameter_for_module(expert.gate_proj, "weight", f"{expert_prefix}.gate_proj.weight")
                 if is_meta_tensor(expert.up_proj.weight):
@@ -94,7 +97,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat16,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_decoder_{self.layer_idx}_moe_gate"),
+                cache_file_name=ttnn_model_cache_path(f"{cache_prefix}decoder_{self.layer_idx}_moe_gate"),
             )
 
         self.num_devices = self.mesh_device.get_num_devices()
@@ -157,7 +160,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_gate_proj_{self.layer_idx}"),
+                cache_file_name=ttnn_model_cache_path(f"{cache_prefix}gate_proj_{self.layer_idx}"),
             )
 
             self.up_proj = ttnn.as_tensor(
@@ -167,7 +170,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_up_proj_{self.layer_idx}"),
+                cache_file_name=ttnn_model_cache_path(f"{cache_prefix}up_proj_{self.layer_idx}"),
             )
 
             self.down_proj = ttnn.as_tensor(
@@ -177,7 +180,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
-                cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_down_proj_{self.layer_idx}"),
+                cache_file_name=ttnn_model_cache_path(f"{cache_prefix}down_proj_{self.layer_idx}"),
             )
             
             # Free intermediate tensors
@@ -427,6 +430,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
 
             for cluster_axis in [0, 1]:
+                if self.mesh_device.shape[cluster_axis] == 1:
+                    continue
                 final_output = ttnn.experimental.reduce_scatter_minimal_async(
                     final_output,
                     persistent_output_buffers=None,

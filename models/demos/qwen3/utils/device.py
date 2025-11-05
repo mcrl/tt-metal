@@ -1,4 +1,5 @@
 from typing import Optional, Dict
+import os
 from loguru import logger
 from tests.scripts.common import get_updated_device_params
 import ttnn
@@ -7,12 +8,32 @@ import ttnn
 _printed_device_info = False
 
 
+def parse_mesh_shape_from_env() -> Optional[ttnn.MeshShape]:
+    """Parse mesh shape from TT_MESHDEVICE_SHAPE environment variable.
+
+    Format: TT_MESHDEVICE_SHAPE=rows,cols (e.g., "2,4" or "1,8")
+
+    Returns:
+        MeshShape if environment variable is set, None otherwise
+    """
+    env_shape = os.getenv("TT_MESHDEVICE_SHAPE")
+    if not env_shape:
+        return None
+
+    try:
+        rows, cols = map(int, env_shape.split(","))
+        return ttnn.MeshShape(rows, cols)
+    except (ValueError, AttributeError) as e:
+        raise ValueError(f"Invalid TT_MESHDEVICE_SHAPE format '{env_shape}': expected 'rows,cols' (e.g., '2,4')")
+
+
 def create_mesh_device(device_params: Optional[Dict] = None):
     """Create mesh device with appropriate mesh shape based on available devices.
 
     Mesh shape selection:
+    - TT_MESHDEVICE_SHAPE env var (e.g., "2,4" or "1,8") if set
     - Galaxy (32 devices): 4x8
-    - T3000 (8+ devices): 1x8
+    - T3000 (8+ devices): 2x4
     - Single/Few devices: 1x{num_devices}
 
     Args:
@@ -32,12 +53,14 @@ def create_mesh_device(device_params: Optional[Dict] = None):
     updated_device_params = get_updated_device_params(params)
     device_ids = ttnn.get_device_ids()
 
-    # Determine default mesh shape based on number of devices
-    if len(device_ids) == 32:  # Galaxy system
+    # Determine mesh shape: env var takes priority, then auto-detect
+    env_mesh_shape = parse_mesh_shape_from_env()
+    if env_mesh_shape:
+        default_mesh_shape = env_mesh_shape
+    elif len(device_ids) == 32:  # Galaxy system
         default_mesh_shape = ttnn.MeshShape(4, 8)
     elif len(device_ids) >= 8:  # T3000 or similar
         default_mesh_shape = ttnn.MeshShape(2, 4)
-        # default_mesh_shape = ttnn.MeshShape(1, 8)
     else:  # Single device or smaller configurations
         default_mesh_shape = ttnn.MeshShape(1, len(device_ids))
 

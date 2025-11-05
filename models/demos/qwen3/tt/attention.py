@@ -9,7 +9,7 @@ import ttnn
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 
-from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_short_name
+from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_cache_prefix
 from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.tt_transformers.tt.ccl import TT_CCL
 
@@ -86,8 +86,11 @@ class Qwen3MoeAttention(nn.Module):
 
         self.q_heads_per_device = self.num_attention_heads // self.tp
 
-        assert self.num_key_value_heads % self.tp == 0
-        self.KV_REPEAT_COEF = max(self.tp // self.num_key_value_heads, 1)
+        self.KV_REPEAT_COEF = 1
+        while self.num_key_value_heads * self.KV_REPEAT_COEF % self.tp != 0:
+            self.KV_REPEAT_COEF += 1
+            if self.KV_REPEAT_COEF > 100:
+                raise ValueError(f"KV_REPEAT_COEF is too large for this mesh configuration: {self.num_key_value_heads=} {self.tp=}")
         self.kv_heads_per_device = self.num_key_value_heads * self.KV_REPEAT_COEF // self.tp
 
         self.cache_shape = (
@@ -106,14 +109,17 @@ class Qwen3MoeAttention(nn.Module):
         if self.is_tt_setup:
             return
 
+        # Create cache prefix for this mesh configuration
+        cache_prefix = get_model_cache_prefix(self.mesh_device)
+
         # Load weights lazily if they're still in meta state
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
         lazy_loader = get_lazy_loader()
-        
+
         if lazy_loader is not None:
             # Load weights on-demand if still in meta state
             param_prefix = f"layers.{self.layer_idx}.self_attn"
-            
+
             if is_meta_tensor(self.q_proj.weight):
                 load_parameter_for_module(self.q_proj, "weight", f"{param_prefix}.q_proj.weight")
             if is_meta_tensor(self.k_proj.weight):
@@ -122,7 +128,7 @@ class Qwen3MoeAttention(nn.Module):
                 load_parameter_for_module(self.v_proj, "weight", f"{param_prefix}.v_proj.weight")
             if is_meta_tensor(self.o_proj.weight):
                 load_parameter_for_module(self.o_proj, "weight", f"{param_prefix}.o_proj.weight")
-            
+
             # Load RMSNorm weights before calling their setup_tt()
             if is_meta_tensor(self.q_norm.weight):
                 load_parameter_for_module(self.q_norm, "weight", f"{param_prefix}.q_norm.weight")
@@ -160,7 +166,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_decoder_{self.layer_idx}_qkv_proj"),
+            cache_file_name=ttnn_model_cache_path(f"{cache_prefix}decoder_{self.layer_idx}_qkv_proj"),
         )
         # Free intermediate tensors
         del q_weight, k_weight, v_weight, qkv_list, wq, wk, wv
@@ -179,7 +185,7 @@ class Qwen3MoeAttention(nn.Module):
             dtype=ttnn.bfloat8_b,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             layout=ttnn.TILE_LAYOUT,
-            cache_file_name=ttnn_model_cache_path(f"{get_model_short_name()}_decoder_{self.layer_idx}_o_proj"),
+            cache_file_name=ttnn_model_cache_path(f"{cache_prefix}decoder_{self.layer_idx}_o_proj"),
         )
         
         # Free intermediate tensor
