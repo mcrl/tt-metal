@@ -419,7 +419,6 @@ class Qwen3MoeAttention(nn.Module):
 
     def forward_decode(
         self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor,
-        save_file_name: str = None
     ) -> ttnn.Tensor:
         mem_cfg = ttnn.L1_MEMORY_CONFIG
 
@@ -436,10 +435,6 @@ class Qwen3MoeAttention(nn.Module):
             memory_config=mem_cfg,
         )
 
-        save_activations(self.mesh_device, self.cache_k, save_file_name, "init_k_cache")
-        save_activations(self.mesh_device, self.cache_v, save_file_name, "init_v_cache")
-        save_activations(self.mesh_device, hidden_states, save_file_name, "init_hidden_states")
-
         # OLD CODE (replaced by extract_attention_input API):
         # hidden_states = ttnn.view(hidden_states, (batch_size, hidden_size))
         # hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
@@ -448,7 +443,6 @@ class Qwen3MoeAttention(nn.Module):
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
             qkv_states = ttnn.typecast(qkv_states, ttnn.bfloat16)
-            save_activations(self.mesh_device, qkv_states, save_file_name, "qkv_states")
             # ttnn.deallocate(hidden_states)
         """ QKV: [1, 1, B, H] """
 
@@ -459,53 +453,32 @@ class Qwen3MoeAttention(nn.Module):
                 num_kv_heads=self.kv_heads_per_device,
                 memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
             )
-            save_activations(self.mesh_device, query_states_pre_rot, save_file_name, "query_states_create_heads")
-            save_activations(self.mesh_device, key_states_pre_rot, save_file_name, "key_states_create_heads")
-            save_activations(self.mesh_device, value_states, save_file_name, "value_states_create_heads")
             ttnn.deallocate(qkv_states)
         """ QKV: [S=1, B, n, H] """
 
         with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.DECODE)
-            save_activations(self.mesh_device, query_states_pre_rot, save_file_name, "query_states_after_rmsnorm")
             key_states_pre_rot = self.k_norm(key_states_pre_rot, mode=InferenceMode.DECODE)
-            save_activations(self.mesh_device, key_states_pre_rot, save_file_name, "key_states_after_rmsnorm")
         """ QKV: [1, B, n, H] """
 
         with Profiler().trace_with_timer("rope", level=4):
-            save_activations(self.mesh_device, query_states_pre_rot, save_file_name, "query_states_pre_rope")
-            save_activations(self.mesh_device, rot_mats[0], save_file_name, "rot_mat_cos")
-            save_activations(self.mesh_device, rot_mats[1], save_file_name, "rot_mat_sin")
-            save_activations(self.mesh_device, trans_mat, save_file_name, "trans_mat")
-            
             query_states = ttnn.experimental.rotary_embedding_llama(
                 query_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
             )
-            save_activations(self.mesh_device, query_states, save_file_name, "query_states")
             ttnn.deallocate(query_states_pre_rot)
 
             key_states = ttnn.experimental.rotary_embedding_llama(
                 key_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
             )
-            save_activations(self.mesh_device, key_states, save_file_name, "key_states")
             ttnn.deallocate(key_states_pre_rot)
         """ Q: [S=1, B, n, H], K: [S=1, B, n, H], V: [S=1, B, n, H] """
-
-        save_activations(self.mesh_device, self.cache_k, save_file_name, "before_update_k_cache")
-        save_activations(self.mesh_device, self.cache_v, save_file_name, "before_update_v_cache")
-        save_activations(self.mesh_device, query_states, save_file_name, "query_states_before_update")
-
         ttnn.experimental.paged_update_cache(self.cache_k, key_states, update_idxs_tensor=start_pos, page_table=page_table)
         ttnn.experimental.paged_update_cache(self.cache_v, value_states, update_idxs_tensor=start_pos, page_table=page_table)
         ttnn.synchronize_device(self.mesh_device) # If not, cause hanging
 
-        save_activations(self.mesh_device, self.cache_k, save_file_name, "after_update_k_cache")
-        save_activations(self.mesh_device, self.cache_v, save_file_name, "after_update_v_cache")
-
         ttnn.deallocate(key_states)
         ttnn.deallocate(value_states)
 
-        save_activations(self.mesh_device, query_states, save_file_name, "query_states_before_sdpa")
         attn_output = tt_sdpa_forward(
             query_states,
             self.cache_k,
@@ -522,7 +495,6 @@ class Qwen3MoeAttention(nn.Module):
             attn_output, 
             num_heads=self.q_heads_per_device
         )
-        save_activations(self.mesh_device, attn_output, save_file_name, "attn_output")
         ttnn.deallocate(attn_output)
 
         with Profiler().trace_with_timer("output-proj", level=4):
@@ -594,13 +566,12 @@ class Qwen3MoeAttention(nn.Module):
         start_pos: ttnn.Tensor,
         page_table: ttnn.Tensor,
         mode: InferenceMode = InferenceMode.PREFILL,
-        save_file_name: str = None,
     ) -> ttnn.Tensor:
 
         if mode == InferenceMode.PREFILL:
             return self.forward_prefill(hidden_states, rot_mats, trans_mat, page_table)
         elif mode == InferenceMode.DECODE:
-            return self.forward_decode(hidden_states, start_pos, rot_mats, trans_mat, page_table, save_file_name)
+            return self.forward_decode(hidden_states, start_pos, rot_mats, trans_mat, page_table)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
