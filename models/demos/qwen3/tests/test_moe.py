@@ -35,10 +35,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 
     weight_path = os.path.join(model_path, f"layer_{layer_idx}.pt")
     if os.path.exists(weight_path):
-        if '235b' in model_path:
-            layer.load_state_dict(torch.load(weight_path))
-        else:
-            layer.load_state_dict(torch.load(weight_path)["state_dict"])
+        layer.load_state_dict(torch.load(weight_path))
     else:
         print(f"Warning: Weight file {weight_path} not found, using random weights")
 
