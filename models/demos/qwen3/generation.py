@@ -243,17 +243,21 @@ class Qwen3MoETT:
 
                 logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
 
+                """
                 logits = ttnn.to_torch(
                     logits_tt,
                     dtype=self.config.dtype,
                     mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
                 )
+                """
 
-                if temperature > 0:
-                    probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
-                    next_tokens = sample_top_p(probs, top_p).reshape(-1)
-                else:
-                    next_tokens = torch.argmax(logits[:, -1, :], dim=-1)
+                _, next_tokens_tt = ttnn.topk(logits_tt[:, -1, :], k=1, dim=-1, largest=True)
+                next_tokens = ttnn.to_torch(
+                    next_tokens_tt,
+                    dtype=torch.int32,
+                    mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=1),
+                )[:, 0]
+
                 next_tokens = torch.where(
                     condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
                 )
@@ -308,31 +312,35 @@ class Qwen3MoETT:
 
                 logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
 
-                logits = ttnn.to_torch(
-                    logits_tt,
-                    dtype=self.config.dtype,
-                    mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
-                )
-                iter_times.append(time.time() - iter_start_time)
+                with Profiler().trace_with_timer("Sampling", level=2):        
+                    _, next_tokens_tt = ttnn.topk(logits_tt[:, -1, :], k=1, dim=-1, largest=True)
+                    next_tokens = ttnn.to_torch(
+                        next_tokens_tt,
+                        dtype=torch.int32,
+                        mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=1),
+                    )[:, 0]
+                    iter_times.append(time.time() - iter_start_time)
 
-                if temperature > 0:
-                    probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
-                    next_tokens = sample_top_p(probs, top_p).reshape(-1)
-                else:
-                    next_tokens = torch.argmax(logits[:, -1, :], dim=-1)
-                next_tokens = torch.where(
-                    condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
-                )
-                tokens[:, curr_pos] = next_tokens
+                    """
+                    if temperature > 0:
+                        probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
+                        next_tokens = sample_top_p(probs, top_p).reshape(-1)
+                    else:
+                        next_tokens = torch.argmax(logits[:, -1, :], dim=-1)
+                    """
+                    next_tokens = torch.where(
+                        condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
+                    )
+                    tokens[:, curr_pos] = next_tokens
 
-                eos_reached = torch.logical_or(
-                    eos_reached,
-                    torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
-                )
-                prev_pos = curr_pos
-                # print_memory_state(self.mesh_device)
-                if all(eos_reached):
-                    break
+                    eos_reached = torch.logical_or(
+                        eos_reached,
+                        torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
+                    )
+                    prev_pos = curr_pos
+                    # print_memory_state(self.mesh_device)
+                    if all(eos_reached):
+                        break
 
         tokens = tokens.tolist()
         prompt_lengths = [len(t) for t in prompt_tokens]

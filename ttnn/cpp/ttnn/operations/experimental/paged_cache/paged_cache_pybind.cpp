@@ -168,6 +168,52 @@ void bind_experimental_paged_cache_operations(py::module& module) {
             py::arg("compute_kernel_config").noconvert() = std::nullopt,
             py::arg("mesh_coords").noconvert() = std::nullopt,
         });
+
+    auto batched_paged_fill_cache_doc =
+        R"doc(
+        Batched paged fill cache operation. This operation iterates through batch indices from 0 to batch_size-1
+        and performs the same operation as paged_fill_cache for each batch index.
+        
+        This operation expects the following inputs:
+        - cache_tensor of shape [max_num_blocks, 1, block_size, head_dim]
+        - input_tensor of shape [1, num_heads, input_seq_len, head_dim]
+        - page_table of shape [batch_size, max_num_blocks_per_seq]
+        - batch_size: number of batches to process (will iterate from 0 to batch_size-1)
+        
+        Keyword Args:
+            compute_kernel_config (DeviceComputeKernelConfig, Optional): Optional configuration for the device compute kernel. Defaults to None.
+            mesh_coords (Set[MeshCoordinate], optional): Set of mesh coordinates to execute on.
+        )doc";
+
+    using BatchedPagedFillCacheType = decltype(ttnn::experimental::batched_paged_fill_cache);
+    ttnn::bind_registered_operation(
+        module,
+        ttnn::experimental::batched_paged_fill_cache,
+        batched_paged_fill_cache_doc,
+        ttnn::pybind_overload_t{
+            [](const BatchedPagedFillCacheType& self,
+               const ttnn::Tensor& cache_tensor,
+               const ttnn::Tensor& input_tensor,
+               const ttnn::Tensor& page_table,
+               const uint32_t batch_size,
+               std::optional<const ttnn::DeviceComputeKernelConfig> compute_kernel_config,
+               std::optional<const std::set<ttnn::MeshCoordinate>> mesh_coords) {
+                return self(
+                    cache_tensor,
+                    input_tensor,
+                    page_table,
+                    batch_size,
+                    compute_kernel_config,
+                    mesh_coords);
+            },
+            py::arg("cache_tensor").noconvert(),
+            py::arg("input_tensor").noconvert(),
+            py::arg("page_table").noconvert(),
+            py::arg("batch_size"),
+            py::kw_only(),
+            py::arg("compute_kernel_config").noconvert() = std::nullopt,
+            py::arg("mesh_coords").noconvert() = std::nullopt,
+        });
 }
 
 }  // namespace ttnn::operations::experimental::paged_cache::detail

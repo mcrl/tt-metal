@@ -52,8 +52,8 @@ def main(
     tokenizer_path: str = "/mnt/nvme0/models/qwen3-235b/tokenizer.json",
     config_path: Optional[str] = "/mnt/nvme0/models/qwen3-235b/config.json",
     batch_size: int = 128,
-    prompt_len: int = 32,
-    gen_tokens: int = 32
+    prompt_len: int = 64,
+    gen_tokens: int = 64
 ):
     init_trace_file()
 
