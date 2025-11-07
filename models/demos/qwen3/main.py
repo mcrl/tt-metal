@@ -1,4 +1,4 @@
-# import tt_lock
+import tt_lock
 import fire
 from typing import Optional, Dict
 import os
@@ -14,7 +14,6 @@ from models.demos.qwen3.utils.profiler import init_trace_file
 from models.demos.qwen3.tt.model_cache import get_model_path
 
 ttnn.CONFIG.enable_model_cache = True
-
 
 def perftest_tt(
     batch_size: int,

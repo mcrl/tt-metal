@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+import os
 
 from tracy import *
-
 
 def main():
     from optparse import OptionParser
@@ -184,6 +184,8 @@ def main():
                 logger.error("No available port found")
                 sys.exit(1)
             import tt_lock
+            os.environ["TT_LOCK"] = "1"
+
             logger.info(f"Using port {port}")
             doReport, captureProcess = run_report_setup(options.verbose, outputFolder, binaryFolder, port)
 
@@ -280,9 +282,18 @@ def main():
                     f"No profiling data could be captured. Please make sure you are on the correct build. Use build_metal.sh --enable-profiler to build if you are not sure."
                 )
                 sys.exit(1)
+            finally:
+                # Clean up TT_LOCK environment variable
+                if "TT_LOCK" in os.environ:
+                    del os.environ["TT_LOCK"]
 
     else:
         parser.print_usage()
+    
+    # Clean up TT_LOCK if it was set (in case of early exit paths)
+    if "TT_LOCK" in os.environ:
+        del os.environ["TT_LOCK"]
+    
     return parser
 
 
