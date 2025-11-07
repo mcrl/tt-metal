@@ -11,6 +11,7 @@ target_sources(
         device/paged_fill_cache_program_factory.cpp
         device/paged_fused_update_cache_program_factory.cpp
         device/paged_update_cache_program_factory.cpp
+        device/batched_paged_fill_cache_program_factory.cpp
         paged_cache.cpp
 )
 

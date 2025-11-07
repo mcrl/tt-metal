@@ -49,8 +49,8 @@ def perftest_tt(
 
 def main(
     batch_size: int = 128,
-    prompt_len: int = 32,
-    gen_tokens: int = 32
+    prompt_len: int = 64,
+    gen_tokens: int = 64
 ):
     init_trace_file()
 

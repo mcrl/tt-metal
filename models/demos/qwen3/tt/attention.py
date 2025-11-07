@@ -329,6 +329,7 @@ class Qwen3MoeAttention(nn.Module):
 
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("fill-cache", level=4):
+            """
             for b in range(batch_size // self.dp):
                 k_fill = ttnn.clone(key_states[b:b+1])
                 v_fill = ttnn.clone(value_states[b:b+1])
@@ -338,6 +339,14 @@ class Qwen3MoeAttention(nn.Module):
 
                 ttnn.experimental.paged_fill_cache(self.cache_k, k_fill, page_table, batch_idx=b)
                 ttnn.experimental.paged_fill_cache(self.cache_v, v_fill, page_table, batch_idx=b)
+            """
+            k_fill = ttnn.clone(key_states)
+            v_fill = ttnn.clone(value_states)
+            k_fill = ttnn.typecast(k_fill, ttnn.bfloat8_b)
+            v_fill = ttnn.typecast(v_fill, ttnn.bfloat8_b)
+
+            ttnn.experimental.batched_paged_fill_cache(self.cache_k, k_fill, page_table, batch_size // self.dp)
+            ttnn.experimental.batched_paged_fill_cache(self.cache_v, v_fill, page_table, batch_size // self.dp)
 
             ttnn.deallocate(k_fill)
             ttnn.deallocate(v_fill)
@@ -410,8 +419,6 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-
-            ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.view(linear_output, (-1, S, H))
             linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
 
@@ -427,13 +434,14 @@ class Qwen3MoeAttention(nn.Module):
 
         # Extract attention input for this device using new multi-core API
         # Replaces: view → matmul(slice_mat) → view
-        hidden_states = ttnn.extract_attention_input(
-            hidden_states,
-            self.dp_degree,
-            mesh_device=self.mesh_device,
-            output_dtype=ttnn.bfloat16,
-            memory_config=mem_cfg,
-        )
+        with Profiler().trace_with_timer("extract-attention-input", level=4):
+            hidden_states = ttnn.extract_attention_input(
+                hidden_states,
+                self.dp_degree,
+                mesh_device=self.mesh_device,
+                output_dtype=ttnn.bfloat16,
+                memory_config=mem_cfg,
+            )
 
         # OLD CODE (replaced by extract_attention_input API):
         # hidden_states = ttnn.view(hidden_states, (batch_size, hidden_size))
@@ -471,13 +479,14 @@ class Qwen3MoeAttention(nn.Module):
                 key_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
             )
             ttnn.deallocate(key_states_pre_rot)
-        """ Q: [S=1, B, n, H], K: [S=1, B, n, H], V: [S=1, B, n, H] """
-        ttnn.experimental.paged_update_cache(self.cache_k, key_states, update_idxs_tensor=start_pos, page_table=page_table)
-        ttnn.experimental.paged_update_cache(self.cache_v, value_states, update_idxs_tensor=start_pos, page_table=page_table)
-        ttnn.synchronize_device(self.mesh_device) # If not, cause hanging
 
-        ttnn.deallocate(key_states)
-        ttnn.deallocate(value_states)
+        """ Q: [S=1, B, n, H], K: [S=1, B, n, H], V: [S=1, B, n, H] """
+        with Profiler().trace_with_timer("update-cache", level=4):
+            ttnn.experimental.paged_update_cache(self.cache_k, key_states, update_idxs_tensor=start_pos, page_table=page_table)
+            ttnn.experimental.paged_update_cache(self.cache_v, value_states, update_idxs_tensor=start_pos, page_table=page_table)
+
+            ttnn.deallocate(key_states)
+            ttnn.deallocate(value_states)
 
         attn_output = tt_sdpa_forward(
             query_states,
@@ -491,11 +500,12 @@ class Qwen3MoeAttention(nn.Module):
         )
         ttnn.deallocate(query_states)
         
-        attn_output_cat = ttnn.experimental.nlp_concat_heads_decode(
-            attn_output, 
-            num_heads=self.q_heads_per_device
-        )
-        ttnn.deallocate(attn_output)
+        with Profiler().trace_with_timer("concat-heads", level=4):
+            attn_output_cat = ttnn.experimental.nlp_concat_heads_decode(
+                attn_output, 
+                num_heads=self.q_heads_per_device
+            )
+            ttnn.deallocate(attn_output)
 
         with Profiler().trace_with_timer("output-proj", level=4):
             linear_output = ttnn.linear(
@@ -549,8 +559,6 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-
-            ttnn.synchronize_device(self.mesh_device)
             linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))
             linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
         """ O: [1, 1, B, H] """

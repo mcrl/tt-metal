@@ -296,7 +296,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-            ttnn.synchronize_device(self.mesh_device)
             combined_output = ttnn.reshape(
                 all_to_all_combine_output_tensors,
                 shape=(self.top_k, 1, batch_size * sequence_length, hidden_dim),
@@ -413,7 +412,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             moe_output = ttnn.typecast(moe_output, ttnn.bfloat16)
 
         # Step 5: Local Reduce
-        with Profiler().trace_with_timer("sum", level=4):
+        with Profiler().trace_with_timer("local reduce", level=4):
             moe_output = ttnn.to_layout(moe_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
             moe_output = ttnn.local_reduce_moe_output(
                 moe_output,
@@ -426,7 +425,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         # Step 5: Allreduce across devices (sum partial outputs from all devices)
         with Profiler().trace_with_timer("allreduce", level=4):
             T, H = moe_output.shape
-            final_output = ttnn.reshape(moe_output, shape=(1, 1, T, H), memory_config=mem_cfg)
+            final_output = ttnn.view(moe_output, shape=(1, 1, T, H))
             final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
 
             for cluster_axis in [0, 1]:
@@ -457,23 +456,20 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     memory_config=ttnn.DRAM_MEMORY_CONFIG,
                     num_links=1,
                 )
-            ttnn.synchronize_device(self.mesh_device)
 
         # Reshape to original shape
         with Profiler().trace_with_timer("reshape", level=4):
-            final_output = ttnn.reshape(final_output, (T, H), memory_config=mem_cfg)
+            # final_output = ttnn.view(final_output, (T, H))
 
             if mode == InferenceMode.PREFILL:
-                final_hidden_states = ttnn.reshape(
+                final_hidden_states = ttnn.view(
                     final_output,
                     (batch_size, sequence_length, hidden_dim),
-                    memory_config=mem_cfg,
                 )
             elif mode == InferenceMode.DECODE:
-                final_hidden_states = ttnn.reshape(
+                final_hidden_states = ttnn.view(
                     final_output,
                     (1, 1, batch_size, hidden_dim),
-                    memory_config=mem_cfg,
                 )
 
         return final_hidden_states
