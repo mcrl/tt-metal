@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
 
 # SPDX-License-Identifier: Apache-2.0
-# import tt_lock
+import os
+# Only import tt_lock if not running through tracy profiler
+if os.environ.get("TT_LOCK") != "1":
+    import tt_lock
 import pytest
 import torch
 import random
-import os
 import numpy as np
 from functools import partial
 from operator import contains, eq, getitem
