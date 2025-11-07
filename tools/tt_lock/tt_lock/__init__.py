@@ -9,6 +9,10 @@ LOCK_FILE = "/tmp/tt_lock.lock"
 reset_command = ["tt-smi", "-r"]
 _lock_fd = None
 
+# Check if TT_MESHDEVICE_SHAPE is set to "4,8"
+mesh_shape = os.environ.get("TT_MESHDEVICE_SHAPE", "")
+_skip_lock = mesh_shape == "4,8"
+
 def _cleanup_lock():
     """
     Clean up function to release lock and remove lock file.
@@ -35,8 +39,14 @@ def _cleanup_lock():
 def acquire_lock():
     """
     Acquires an exclusive file lock, blocking until successful.
+    Skips locking if TT_MESHDEVICE_SHAPE is set to "4,8".
     """
     global _lock_fd
+    
+    # Skip locking if TT_MESHDEVICE_SHAPE is "4,8"
+    if _skip_lock:
+        print("TT_MESHDEVICE_SHAPE is 4,8. Skipping lock acquisition.")
+        return
     
     # Clean up any existing lock first
     if _lock_fd is not None:
