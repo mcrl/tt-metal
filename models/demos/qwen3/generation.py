@@ -6,6 +6,7 @@ import ttnn
 import time
 from tokenizers import Tokenizer
 from utils.profiler import Profiler
+from loguru import logger
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeModel as Qwen3MoeModelReference
 from models.demos.qwen3.tt.qwen import Qwen3MoeModel as Qwen3MoeModelTT
@@ -91,6 +92,11 @@ class Qwen3MoETT:
             self.model.setup_tt()
 
         enable_persistent_kernel_cache()
+        
+        # Trace variables for decode mode
+        self.trace_id_decode = None
+        self.trace_inputs_decode = None
+        self.trace_output_decode = None
 
     def measure_prefill_time(self, batch_size: int, input_length: int):
         input_tokens = torch.randint(0, self.config.vocab_size, (batch_size, input_length), dtype=torch.int64)
@@ -170,6 +176,161 @@ class Qwen3MoETT:
         ttnn.release_trace(self.mesh_device, trace_id)
         return times
 
+    def _capture_trace_decode(self, tokens, prev_pos, page_table, bsz_per_device):
+        """
+        Captures a trace for decode mode execution.
+
+        """
+        logger.info("Capturing decode trace...")
+        
+        # Allocate persistent input tensors for trace
+        ids_host = tokens[:, prev_pos:prev_pos+1]
+        self.trace_ids_persistent = ttnn.from_torch(
+            ids_host,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            dtype=ttnn.uint32,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+        
+        start_pos_host = torch.tensor([prev_pos for _ in range(bsz_per_device)])
+        self.trace_start_pos_persistent = ttnn.as_tensor(
+            start_pos_host,
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
+        )
+        
+        # Get initial rotation matrices and extract their specs for persistent allocation
+        position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+        rot_mats_initial = self.rope.get_rot_mats(position_idxs)
+        trans_mat = self.rope.transformation_mat
+        
+        # Store the specs of rotation matrices so we can verify updates match
+        self.trace_rot_cos_spec = rot_mats_initial[0].shape
+        self.trace_rot_sin_spec = rot_mats_initial[1].shape
+        
+        # Allocate persistent rotation matrix buffers with same config
+        # Note: get_rot_mats() returns sharded tensors, we need to match that
+        self.trace_rot_mats_persistent = rot_mats_initial
+        
+        # Compile run
+        logits_tt = self.model(
+            self.trace_ids_persistent, 
+            rot_mats=self.trace_rot_mats_persistent, 
+            trans_mat=trans_mat, 
+            start_pos=self.trace_start_pos_persistent, 
+            mode="decode", 
+            page_table=page_table
+        )
+        ttnn.synchronize_device(self.mesh_device)
+        logger.info("Done compiling model for trace")
+        
+        # Warmup runs - need to update rotation matrices each time
+        for i in range(3):
+            # Get fresh rotation matrices for this position
+            position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+            rot_mats_warmup = self.rope.get_rot_mats(position_idxs)
+            
+            # Deallocate old rotation matrices
+            self.trace_rot_mats_persistent[0].deallocate()
+            self.trace_rot_mats_persistent[1].deallocate()
+            
+            # Use new rotation matrices
+            self.trace_rot_mats_persistent = rot_mats_warmup
+            
+            logits_tt = self.model(
+                self.trace_ids_persistent, 
+                rot_mats=self.trace_rot_mats_persistent, 
+                trans_mat=trans_mat, 
+                start_pos=self.trace_start_pos_persistent, 
+                mode="decode", 
+                page_table=page_table
+            )
+        ttnn.synchronize_device(self.mesh_device)
+        
+        # Capture trace with current rotation matrices
+        # Get fresh rotation matrices for capture
+        position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+        rot_mats_capture = self.rope.get_rot_mats(position_idxs)
+        
+        # Deallocate old and use capture matrices
+        self.trace_rot_mats_persistent[0].deallocate()
+        self.trace_rot_mats_persistent[1].deallocate()
+        self.trace_rot_mats_persistent = rot_mats_capture
+        
+        self.trace_id_decode = ttnn.begin_trace_capture(self.mesh_device, cq_id=0)
+        self.trace_output_decode = self.model(
+            self.trace_ids_persistent, 
+            rot_mats=self.trace_rot_mats_persistent, 
+            trans_mat=trans_mat, 
+            start_pos=self.trace_start_pos_persistent, 
+            mode="decode", 
+            page_table=page_table
+        )
+        ttnn.end_trace_capture(self.mesh_device, self.trace_id_decode, cq_id=0)
+        ttnn.synchronize_device(self.mesh_device)
+        
+        logger.info("Done capturing decode trace")
+
+    def _execute_trace_decode(self, tokens, prev_pos, page_table, bsz_per_device):
+        """
+        Executes the captured decode trace with updated inputs.
+
+        """
+        # Update persistent input token tensor with new data
+        ids_host = tokens[:, prev_pos:prev_pos+1]
+        ids_to_copy = ttnn.from_torch(
+            ids_host,
+            dtype=ttnn.uint32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+        ttnn.copy_host_to_device_tensor(
+            ids_to_copy, 
+            self.trace_ids_persistent,
+            cq_id=0
+        )
+        
+        # Update persistent start_pos tensor with new position
+        start_pos_host = torch.tensor([prev_pos for _ in range(bsz_per_device)])
+        start_pos_to_copy = ttnn.from_torch(
+            start_pos_host,
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+        ttnn.copy_host_to_device_tensor(
+            start_pos_to_copy,
+            self.trace_start_pos_persistent,
+            cq_id=0
+        )
+        
+        # CRITICAL: Update rotation matrices for the current position
+        # Get new rotation matrices for current position
+        position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+        rot_mats_new = self.rope.get_rot_mats(position_idxs)
+        
+        # Verify shapes match what was captured
+        assert rot_mats_new[0].shape == self.trace_rot_cos_spec, \
+            f"Rotation cos matrix shape mismatch: {rot_mats_new[0].shape} vs {self.trace_rot_cos_spec}"
+        assert rot_mats_new[1].shape == self.trace_rot_sin_spec, \
+            f"Rotation sin matrix shape mismatch: {rot_mats_new[1].shape} vs {self.trace_rot_sin_spec}"
+        
+        # Deallocate old rotation matrices
+        self.trace_rot_mats_persistent[0].deallocate()
+        self.trace_rot_mats_persistent[1].deallocate()
+        
+        # Update to use new rotation matrices at the same memory locations
+        # Note: Since we deallocated, the new tensors should allocate at the same addresses
+        self.trace_rot_mats_persistent = rot_mats_new
+        
+        # Execute trace
+        ttnn.execute_trace(self.mesh_device, self.trace_id_decode, cq_id=0, blocking=False)
+        
+        return self.trace_output_decode
+
     def generate(
         self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9
     ) -> List[List[str]]:
@@ -209,68 +370,75 @@ class Qwen3MoETT:
 
         ttnn.synchronize_device(self.mesh_device)
 
+        # Check if trace is enabled
+        use_trace = True
+        if use_trace:
+            logger.warning("Trace ENABLED")
+
         with Profiler().trace_with_timer("Warmup", level=0):
-            for curr_pos in range(min_prompt_len, total_len):
-                print(f"curr_pos: {curr_pos}")
-                iter_start_time = time.time()
-                mode = "prefill" if prev_pos == 0 else "decode"
-                page_table = page_table_tt # if mode == "prefill" else page_table_tt_decode
-
-                ids = ttnn.from_torch(
-                    tokens[:, prev_pos:curr_pos],
-                    device=self.mesh_device,
-                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                    dtype=ttnn.uint32,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    layout=ttnn.ROW_MAJOR_LAYOUT,
-                )
-                start_pos = ttnn.as_tensor(
-                    torch.tensor([prev_pos for _ in range(bsz_per_device)]),
-                    dtype=ttnn.int32,
-                    layout=ttnn.ROW_MAJOR_LAYOUT,
-                    device=self.mesh_device,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
-                )
-
-                if mode == "prefill":
-                    rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
-                    trans_mat = self.rope.transformation_mat_prefill
-                else:
-                    position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
-                    rot_mats = self.rope.get_rot_mats(position_idxs)
-                    trans_mat = self.rope.transformation_mat
-
-                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
-
-                """
-                logits = ttnn.to_torch(
-                    logits_tt,
-                    dtype=self.config.dtype,
-                    mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=2),
-                )
-                """
-
-                _, next_tokens_tt = ttnn.topk(logits_tt[:, -1, :], k=1, dim=-1, largest=True)
-                next_tokens = ttnn.to_torch(
-                    next_tokens_tt,
-                    dtype=torch.int32,
-                    mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=1),
-                )[:, 0]
-
-                next_tokens = torch.where(
-                    condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
-                )
-                tokens[:, curr_pos] = next_tokens
-
-                eos_reached = torch.logical_or(
-                    eos_reached,
-                    torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
-                )
-                prev_pos = curr_pos
-                # print_memory_state(self.mesh_device)
-                if all(eos_reached):
-                    break
+            # Warmup: Run prefill once, then decode once
+            logger.info("Warmup: Running prefill...")
+            curr_pos = min_prompt_len
+            
+            # Prefill warmup
+            ids = ttnn.from_torch(
+                tokens[:, 0:curr_pos],
+                device=self.mesh_device,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                dtype=ttnn.uint32,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+            )
+            start_pos = ttnn.as_tensor(
+                torch.tensor([0 for _ in range(bsz_per_device)]),
+                dtype=ttnn.int32,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+                device=self.mesh_device,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
+            )
+            rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
+            trans_mat = self.rope.transformation_mat_prefill
+            
+            logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode="prefill", page_table=page_table_tt)
+            ttnn.synchronize_device(self.mesh_device)
+            logger.info("Warmup: Prefill complete")
+            
+            # Decode warmup - run 1 token decode to compile
+            logger.info("Warmup: Running decode (1 token)...")
+            prev_pos = min_prompt_len
+            
+            # Use dummy token for decode warmup
+            ids_decode = ttnn.from_torch(
+                tokens[:, prev_pos:prev_pos+1],
+                device=self.mesh_device,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                dtype=ttnn.uint32,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+            )
+            start_pos_decode = ttnn.as_tensor(
+                torch.tensor([prev_pos for _ in range(bsz_per_device)]),
+                dtype=ttnn.int32,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+                device=self.mesh_device,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
+            )
+            position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+            rot_mats_decode = self.rope.get_rot_mats(position_idxs)
+            trans_mat_decode = self.rope.transformation_mat
+            
+            logits_tt = self.model(ids_decode, rot_mats=rot_mats_decode, trans_mat=trans_mat_decode, 
+                                 start_pos=start_pos_decode, mode="decode", page_table=page_table_tt)
+            ttnn.synchronize_device(self.mesh_device)
+            logger.info("Warmup: Decode compilation complete")
+            
+            # If trace enabled, capture decode trace during warmup
+            if use_trace:
+                logger.info("Capturing decode trace during warmup...")
+                self._capture_trace_decode(tokens, prev_pos, page_table_tt, bsz_per_device)
+                logger.info("Decode trace captured")
 
         ttnn.synchronize_device(self.mesh_device)
 
@@ -285,32 +453,53 @@ class Qwen3MoETT:
                 mode = "prefill" if prev_pos == 0 else "decode"
                 page_table = page_table_tt # if mode == "prefill" else page_table_tt_decode
 
-                ids = ttnn.from_torch(
-                    tokens[:, prev_pos:curr_pos],
-                    device=self.mesh_device,
-                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                    dtype=ttnn.uint32,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    layout=ttnn.ROW_MAJOR_LAYOUT,
-                )
-                start_pos = ttnn.as_tensor(
-                    torch.tensor([prev_pos for _ in range(bsz_per_device)]),
-                    dtype=ttnn.int32,
-                    layout=ttnn.ROW_MAJOR_LAYOUT,
-                    device=self.mesh_device,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
-                )
-
                 if mode == "prefill":
+                    ids = ttnn.from_torch(
+                        tokens[:, prev_pos:curr_pos],
+                        device=self.mesh_device,
+                        mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                        dtype=ttnn.uint32,
+                        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                        layout=ttnn.ROW_MAJOR_LAYOUT,
+                    )
+                    start_pos = ttnn.as_tensor(
+                        torch.tensor([prev_pos for _ in range(bsz_per_device)]),
+                        dtype=ttnn.int32,
+                        layout=ttnn.ROW_MAJOR_LAYOUT,
+                        device=self.mesh_device,
+                        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                        mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
+                    )
                     rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
                     trans_mat = self.rope.transformation_mat_prefill
+                    logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
                 else:
-                    position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
-                    rot_mats = self.rope.get_rot_mats(position_idxs)
-                    trans_mat = self.rope.transformation_mat
-
-                logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
+                    # Decode phase - use trace if it was captured during warmup
+                    if use_trace and self.trace_id_decode is not None:
+                        # Use captured trace for decode iterations
+                        logits_tt = self._execute_trace_decode(tokens, prev_pos, page_table, bsz_per_device)
+                    else:
+                        # Fallback to non-trace execution
+                        ids = ttnn.from_torch(
+                            tokens[:, prev_pos:curr_pos],
+                            device=self.mesh_device,
+                            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+                            dtype=ttnn.uint32,
+                            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                            layout=ttnn.ROW_MAJOR_LAYOUT,
+                        )
+                        start_pos = ttnn.as_tensor(
+                            torch.tensor([prev_pos for _ in range(bsz_per_device)]),
+                            dtype=ttnn.int32,
+                            layout=ttnn.ROW_MAJOR_LAYOUT,
+                            device=self.mesh_device,
+                            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
+                        )
+                        position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+                        rot_mats = self.rope.get_rot_mats(position_idxs)
+                        trans_mat = self.rope.transformation_mat
+                        logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
 
                 with Profiler().trace_with_timer("Sampling", level=2):        
                     _, next_tokens_tt = ttnn.topk(logits_tt[:, -1, :], k=1, dim=-1, largest=True)
@@ -319,6 +508,7 @@ class Qwen3MoETT:
                         dtype=torch.int32,
                         mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=1),
                     )[:, 0]
+                    # Record iteration time after sampling completes
                     iter_times.append(time.time() - iter_start_time)
 
                     """
@@ -352,3 +542,9 @@ class Qwen3MoETT:
         )
 
         return list(map(self.tokenizer.decode_batch, split_tokens)), iter_times
+
+    def __del__(self):
+        """Destructor to release trace resources"""
+        if self.trace_id_decode is not None:
+            logger.info("Releasing decode trace")
+            ttnn.release_trace(self.mesh_device, self.trace_id_decode)
