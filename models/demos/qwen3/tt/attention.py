@@ -378,7 +378,7 @@ class Qwen3MoeAttention(nn.Module):
                 multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
                 barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(1),
                 cluster_axis=1,
-                num_links=1,
+                num_links=self.num_links,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 topology=ttnn.Topology.Linear,
@@ -394,7 +394,7 @@ class Qwen3MoeAttention(nn.Module):
                 topology=ttnn.Topology.Linear,
                 multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=1,
+                num_links=self.num_links,
             )
             linear_output = ttnn.experimental.all_gather_async(
                 linear_output,
@@ -404,7 +404,7 @@ class Qwen3MoeAttention(nn.Module):
                 topology=ttnn.Topology.Linear,
                 multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=1,
+                num_links=self.num_links,
             )
             linear_output = ttnn.view(linear_output, (-1, S, H))
             linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
@@ -518,7 +518,7 @@ class Qwen3MoeAttention(nn.Module):
                 multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
                 barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(1),
                 cluster_axis=1,
-                num_links=1,
+                num_links=self.num_links,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 topology=ttnn.Topology.Linear,
@@ -534,7 +534,7 @@ class Qwen3MoeAttention(nn.Module):
                 topology=ttnn.Topology.Linear,
                 multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=1,
+                num_links=self.num_links,
             )
             linear_output = ttnn.experimental.all_gather_async(
                 linear_output,
@@ -544,7 +544,7 @@ class Qwen3MoeAttention(nn.Module):
                 topology=ttnn.Topology.Linear,
                 multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=1,
+                num_links=self.num_links,
             )
             linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))
             linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
