@@ -100,6 +100,8 @@ class Qwen3MoeAttention(nn.Module):
             self.head_dim,
         )
 
+        self.num_links = 3 if self.num_devices == 32 else 1
+
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
         assert config.sliding_window is None
@@ -277,7 +279,7 @@ class Qwen3MoeAttention(nn.Module):
             hidden_states,
             self.dp_degree,
             mesh_device=self.mesh_device,
-            output_dtype=ttnn.bfloat16,
+            output_dtype=ttnn.bfloat8_b,
             memory_config=mem_cfg
         )
 
@@ -289,7 +291,6 @@ class Qwen3MoeAttention(nn.Module):
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
             # ttnn.deallocate(hidden_states)
-            qkv_states = ttnn.typecast(qkv_states, ttnn.bfloat16)
             qkv_states = ttnn.view(qkv_states, hidden_shape)
 
         with Profiler().trace_with_timer("qkv-split", level=4):
@@ -303,13 +304,12 @@ class Qwen3MoeAttention(nn.Module):
             ttnn.deallocate(qkv_states)
             # B n S H
 
-        
-
         with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.PREFILL)
             key_states_pre_rot = self.k_norm(key_states_pre_rot, mode=InferenceMode.PREFILL)
 
         with Profiler().trace_with_timer("rope", level=4):
+            query_states_pre_rot = ttnn.typecast(query_states_pre_rot, ttnn.bfloat16)
             query_states = ttnn.experimental.rotary_embedding_llama(
                 query_states_pre_rot,
                 rot_mats[0],
@@ -318,6 +318,8 @@ class Qwen3MoeAttention(nn.Module):
                 is_decode_mode=False
             )
             ttnn.deallocate(query_states_pre_rot)
+
+            key_states_pre_rot = ttnn.typecast(key_states_pre_rot, ttnn.bfloat16)
             key_states = ttnn.experimental.rotary_embedding_llama(
                 key_states_pre_rot,
                 rot_mats[0],
@@ -327,29 +329,14 @@ class Qwen3MoeAttention(nn.Module):
             )
             ttnn.deallocate(key_states_pre_rot)
 
+        with Profiler().trace_with_timer("typecast", level=4):
+            query_states = ttnn.typecast(query_states, ttnn.bfloat8_b)
+            key_states = ttnn.typecast(key_states, ttnn.bfloat8_b)
+
         # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("fill-cache", level=4):
-            """
-            for b in range(batch_size // self.dp):
-                k_fill = ttnn.clone(key_states[b:b+1])
-                v_fill = ttnn.clone(value_states[b:b+1])
-
-                k_fill = ttnn.typecast(k_fill, ttnn.bfloat8_b)
-                v_fill = ttnn.typecast(v_fill, ttnn.bfloat8_b)
-
-                ttnn.experimental.paged_fill_cache(self.cache_k, k_fill, page_table, batch_idx=b)
-                ttnn.experimental.paged_fill_cache(self.cache_v, v_fill, page_table, batch_idx=b)
-            """
-            k_fill = ttnn.clone(key_states)
-            v_fill = ttnn.clone(value_states)
-            k_fill = ttnn.typecast(k_fill, ttnn.bfloat8_b)
-            v_fill = ttnn.typecast(v_fill, ttnn.bfloat8_b)
-
-            ttnn.experimental.batched_paged_fill_cache(self.cache_k, k_fill, page_table, batch_size // self.dp)
-            ttnn.experimental.batched_paged_fill_cache(self.cache_v, v_fill, page_table, batch_size // self.dp)
-
-            ttnn.deallocate(k_fill)
-            ttnn.deallocate(v_fill)
+            ttnn.experimental.batched_paged_fill_cache(self.cache_k, key_states, page_table, batch_size // self.dp)
+            ttnn.experimental.batched_paged_fill_cache(self.cache_v, value_states, page_table, batch_size // self.dp)
 
         attn_out = tt_sdpa_forward(
             query_states,

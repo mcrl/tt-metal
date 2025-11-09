@@ -38,7 +38,7 @@ class Qwen3MoeRMSNorm(nn.Module):
         if self.interleaved:
             self.weight_tensor = ttnn.as_tensor(
                 reshape_to_interleaved(self.weight),
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
                 layout=ttnn.TILE_LAYOUT,
                 device=self.mesh_device,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -48,7 +48,7 @@ class Qwen3MoeRMSNorm(nn.Module):
         else:
             self.weight_tensor = ttnn.as_tensor(
                 self.weight,
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
                 layout=ttnn.TILE_LAYOUT,
                 device=self.mesh_device,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
