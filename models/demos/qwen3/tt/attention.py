@@ -30,6 +30,15 @@ def reshape_weight(x, head_dim, repeats):
     x = x.view(hidden_size, -1)
     return x.contiguous()
 
+def typecast_reshard(x, dtype=ttnn.bfloat8_b):
+    mem_cfg = x.memory_config()
+
+    x = ttnn.to_memory_config(x, ttnn.L1_MEMORY_CONFIG)
+    x = ttnn.typecast(x, dtype)
+    x = ttnn.to_memory_config(x, mem_cfg)
+
+    return x
+
 def save_activations(mesh_device, tensor: ttnn.Tensor, file_name: str, layer_name: str):
     if file_name == None:
         return
@@ -428,7 +437,7 @@ class Qwen3MoeAttention(nn.Module):
                 hidden_states,
                 self.dp_degree,
                 mesh_device=self.mesh_device,
-                output_dtype=ttnn.bfloat16,
+                output_dtype=ttnn.bfloat8_b,
                 memory_config=mem_cfg,
             )
 
@@ -438,8 +447,7 @@ class Qwen3MoeAttention(nn.Module):
         # hidden_states = ttnn.view(hidden_states, (1, 1, batch_size // self.dp, hidden_size))
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
-            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
-            qkv_states = ttnn.typecast(qkv_states, ttnn.bfloat16)
+            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
             # ttnn.deallocate(hidden_states)
         """ QKV: [1, 1, B, H] """
 
@@ -497,6 +505,7 @@ class Qwen3MoeAttention(nn.Module):
             ttnn.deallocate(attn_output)
 
         with Profiler().trace_with_timer("output-proj", level=4):
+            attn_output_cat = typecast_reshard(attn_output_cat, ttnn.bfloat8_b)
             linear_output = ttnn.linear(
                 attn_output_cat,
                 self.o_proj_weight,
