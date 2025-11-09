@@ -343,14 +343,15 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("reshape", level=4):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
+            hidden_states = ttnn.typecast(hidden_states, ttnn.bfloat8_b)
 
         with Profiler().trace_with_timer("moe-router", level=4):
-            router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+            router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("softmax-topk-div", level=4):
             routing_weights = ttnn.softmax(router_logits, memory_config=mem_cfg)
             routing_weights, selected_experts = ttnn.topk(
-                routing_weights, self.top_k, largest=True, memory_config=mem_cfg
+                routing_weights, self.top_k, largest=True, memory_config=mem_cfg,
             )
             if self.norm_topk_prob:
                 routing_weights = ttnn.div(
@@ -358,6 +359,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     ttnn.sum(routing_weights, dim=-1, keepdim=True, memory_config=mem_cfg),
                     memory_config=mem_cfg,
                 )
+            routing_weights = ttnn.typecast(routing_weights, ttnn.bfloat8_b)
 
         # Convert selected_experts to UINT32 and ROW_MAJOR for routing tensor preparation
         with Profiler().trace_with_timer("typecast-selected-experts", level=4):
@@ -382,8 +384,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             scattered_hidden_states = ttnn.scatter_moe_input(hidden_states, num_routed, routed_tokens)
 
         with Profiler().trace_with_timer("to-layout", level=4):
-            scattered_hidden_states = ttnn.to_layout(scattered_hidden_states, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
-            scattered_hidden_states = ttnn.typecast(scattered_hidden_states, ttnn.bfloat8_b)
+            scattered_hidden_states = ttnn.to_layout(scattered_hidden_states, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
         # Prepare expert weights - squeeze first dimension from (1, E/D, H, H') to (E/D, H, H')
         with Profiler().trace_with_timer("prepare-expert-weights", level=4):
@@ -409,7 +410,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         # Step 4: Down Projection with routing weights and accumulation
         with Profiler().trace_with_timer("down-projection", level=4):
             moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed, mode="optimized")
-            moe_output = ttnn.typecast(moe_output, ttnn.bfloat16)
 
         # Step 5: Local Reduce
         with Profiler().trace_with_timer("local reduce", level=4):
@@ -426,7 +426,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         with Profiler().trace_with_timer("allreduce", level=4):
             T, H = moe_output.shape
             final_output = ttnn.view(moe_output, shape=(1, 1, T, H))
-            final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, memory_config=mem_cfg)
+            final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
             for cluster_axis in [0, 1]:
                 if self.mesh_device.shape[cluster_axis] == 1:
@@ -460,6 +460,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         # Reshape to original shape
         with Profiler().trace_with_timer("reshape", level=4):
             # final_output = ttnn.view(final_output, (T, H))
+            final_output = ttnn.typecast(final_output, ttnn.bfloat16)
 
             if mode == InferenceMode.PREFILL:
                 final_hidden_states = ttnn.view(
