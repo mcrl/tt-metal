@@ -371,7 +371,7 @@ class Qwen3MoETT:
         ttnn.synchronize_device(self.mesh_device)
 
         # Check if trace is enabled
-        use_trace = True
+        use_trace = os.environ.get("TT_TRACE", "1") == "1"
         if use_trace:
             logger.warning("Trace ENABLED")
 
