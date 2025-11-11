@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 #include "debug/dprint.h"
@@ -12,7 +8,6 @@
 #define PW 8
 
 void kernel_main() {
-    // Runtime arguments
     uint32_t input_addr = get_arg_val<uint32_t>(0);
     uint32_t weights_addr = get_arg_val<uint32_t>(1);
     uint32_t num_routed_addr = get_arg_val<uint32_t>(2);
@@ -28,7 +23,6 @@ void kernel_main() {
     uint32_t sender_sem = get_arg_val<uint32_t>(12);
     uint32_t receiver_sem = get_arg_val<uint32_t>(13);
 
-    // Circular buffer indices
     constexpr uint32_t cb_input = tt::CBIndex::c_0;
     constexpr uint32_t cb_weights = tt::CBIndex::c_1;
     constexpr uint32_t cb_num_routed = tt::CBIndex::c_2;
@@ -36,7 +30,6 @@ void kernel_main() {
     constexpr uint32_t cb_out = tt::CBIndex::c_16;
     constexpr uint8_t noc = noc_index;
 
-    // Get core coordinates from NOC
     uint32_t core_x = (uint32_t)my_x[noc] - WH_LOGICAL_TO_VIRTUALL_OFFSET;
     uint32_t core_y = (uint32_t)my_y[noc] - WH_LOGICAL_TO_VIRTUALL_OFFSET;
 
@@ -59,11 +52,10 @@ void kernel_main() {
     constexpr auto weights_args = TensorAccessorArgs<input_args.next_compile_time_args_offset()>();
     const auto weights_tensor = TensorAccessor(weights_args, weights_addr, get_tile_size(cb_weights));
     
-    // num_routed_tokens is 1D tensor (E/D,) - all elements in one page
+    // num_routed_tokens is 1D tensor (E/D,)
     constexpr auto num_routed_args = TensorAccessorArgs<weights_args.next_compile_time_args_offset()>();
     const auto num_routed_accessor = TensorAccessor(num_routed_args, num_routed_addr, num_experts * sizeof(uint32_t));
 
-    // Read num_routed_tokens - broadcast to all cores - get Mt value for my expert
     cb_reserve_back(cb_num_routed, 1);
     uint64_t num_routed_l1_addr = get_write_ptr(cb_num_routed);
 
@@ -115,15 +107,10 @@ void kernel_main() {
 
     uint32_t sender_x = core_x;
     uint32_t sender_y = core_y / pw * pw;
-    // DPRINT << "row_bidx0: " << row_bidx0 << " col_bidx0: " << col_bidx0 << " row_nblocks_per_core: " << row_nblocks_per_core << " col_nblocks_per_core: " << col_nblocks_per_core << ENDL();
-    // DPRINT << "sender_x: " << sender_x << " sender_y: " << sender_y << ENDL();
 
-
-    // Main loop.
     for (uint32_t block_idx_row = row_bidx0; block_idx_row < row_bidx0 + row_nblocks_per_core; block_idx_row++) {
         for (uint32_t block_idx_col = col_bidx0; block_idx_col < col_bidx0 + col_nblocks_per_core; block_idx_col++) {
             for (uint32_t ki_iter = 0; ki_iter < num_ki_iterations; ki_iter++) {
-                /************ Read input block ************/
                 cb_reserve_back(cb_input, BMt * BKt);
                 uint32_t input_l1_ptr = get_write_ptr(cb_input);
                 for (uint32_t h = 0; h < BMt; h++) {
@@ -138,15 +125,8 @@ void kernel_main() {
                 }
                 noc_async_read_barrier();
 
-                // input_l1_ptr = get_write_ptr(cb_input);
-                // broadcast(input_l1_ptr, BMt * BKt * input_cb_tile_size,
-                //     sender_x, sender_y,
-                //     sender_x, sender_x,
-                //     sender_y, sender_y + pw - 1,
-                //     sender_sem, receiver_sem, noc);
                 cb_push_back(cb_input, BMt * BKt);
 
-                /************ Read weights block ************/
                 cb_reserve_back(cb_weights, BKt * BNt);
                 uint32_t weights_l1_ptr = get_write_ptr(cb_weights);
                 for (uint32_t ki = 0; ki < BKt; ki++) {
@@ -161,9 +141,9 @@ void kernel_main() {
                 }
                 noc_async_read_barrier();
                 cb_push_back(cb_weights, BKt * BNt);
-            } // ki_iter loop
-        } // block_idx_col loop
-    } // block_idx_row loop
+            }
+        }
+    }
 
     cb_pop_front(cb_metadata, 1);
     cb_pop_front(cb_num_routed, 1);

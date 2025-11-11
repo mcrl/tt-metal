@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "prepare_moe_routing_tensors_op.hpp"
 #include "prepare_moe_routing_tensors_program_factory.hpp"
 
@@ -65,19 +61,17 @@ std::vector<TensorSpec> PrepareMoeRoutingTensors::compute_output_specs(
 
     const uint32_t num_tokens = experts_shape[0];
 
-    // Extract num_local_experts from device_expert_mapping shape
     uint32_t num_local_experts;
     if (mapping_shape.rank() == 1) {
         num_local_experts = mapping_shape[0];
     } else {
-        // 2D tensor: (1, E/D) or (E/D, 1)
         num_local_experts = (mapping_shape[0] == 1) ? mapping_shape[1] : mapping_shape[0];
     }
 
     // Maximum tokens that can be routed to any single expert (worst case: all tokens choose that expert)
     const uint32_t max_tokens_per_expert = num_tokens;
 
-    // Output 1: num_routed_tokens (E/D) - device-local expert count (1D tensor, treated as single-page)
+    // Output 1: num_routed_tokens (E/D) - device-local expert count
     ttnn::Shape num_routed_shape({num_local_experts});
     auto num_routed_spec = TensorSpec(
         num_routed_shape,
@@ -130,18 +124,15 @@ tt::tt_metal::operation::ProgramWithCallbacks PrepareMoeRoutingTensors::create_p
     auto& routed_token_weights = output_tensors.at(2);
     auto& token_idx_map = output_tensors.at(3);
 
-    // Extract dimensions from input tensors
     const auto& experts_shape = selected_experts.padded_shape();
     const auto& mapping_shape = device_expert_mapping.padded_shape();
 
     const uint32_t num_tokens = experts_shape[0];
 
-    // Extract num_local_experts from device_expert_mapping shape
     uint32_t num_local_experts;
     if (mapping_shape.rank() == 1) {
         num_local_experts = mapping_shape[0];
     } else {
-        // 2D tensor: (1, E/D) or (E/D, 1)
         num_local_experts = (mapping_shape[0] == 1) ? mapping_shape[1] : mapping_shape[0];
     }
 
@@ -160,4 +151,4 @@ tt::tt_metal::operation::ProgramWithCallbacks PrepareMoeRoutingTensors::create_p
         max_tokens_per_expert);
 }
 
-}  // namespace ttnn::operations::experimental::moe
+}

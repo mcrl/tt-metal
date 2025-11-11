@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "device/prepare_moe_routing_tensors_op.hpp"
 #include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors.hpp"
 
@@ -29,4 +25,4 @@ std::vector<ttnn::Tensor> PrepareMoeRoutingTensorsOperation::invoke(
     );
 }
 
-}  // namespace ttnn::operations::experimental
+}

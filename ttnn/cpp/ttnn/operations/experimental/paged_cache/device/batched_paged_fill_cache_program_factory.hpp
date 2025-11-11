@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <tt-metalium/constants.hpp>
 #include <tt-metalium/util.hpp>
 #include "ttnn/operations/cb_utils.hpp"
@@ -16,4 +12,4 @@ tt::tt_metal::operation::ProgramWithCallbacks batched_paged_fill_cache_multi_cor
     const Tensor& page_table_tensor,
     uint32_t batch_size);
 
-}  // namespace ttnn::operations::experimental::paged_cache::detail
+}

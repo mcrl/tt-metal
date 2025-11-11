@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #pragma once
 
 #include "ttnn/operation.hpp"
@@ -20,4 +16,4 @@ tt::tt_metal::operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_
     uint32_t num_local_experts,
     uint32_t max_tokens_per_expert);
 
-}  // namespace ttnn::operations::experimental::moe
+}

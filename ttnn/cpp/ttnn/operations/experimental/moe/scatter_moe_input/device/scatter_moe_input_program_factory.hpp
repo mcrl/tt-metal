@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #pragma once
 
 #include "ttnn/tensor/tensor.hpp"
@@ -15,4 +11,4 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_multi_core(
     const Tensor& routed_tokens,
     Tensor& output);
 
-}  // namespace ttnn::operations::experimental::moe::detail
+}

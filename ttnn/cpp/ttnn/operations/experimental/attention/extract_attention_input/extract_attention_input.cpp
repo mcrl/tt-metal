@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "device/extract_attention_input_op.hpp"
 #include "ttnn/operations/experimental/attention/extract_attention_input/extract_attention_input.hpp"
 
@@ -15,13 +11,9 @@ ttnn::Tensor ExtractAttentionInputOperation::invoke(
     const std::optional<DataType>& output_dtype,
     const std::optional<MemoryConfig>& memory_config) {
 
-    // Extract DP from mesh device
-    uint32_t dp = mesh_device.shape()[0];  // Number of rows (data parallelism)
-
-    // Default output dtype to input dtype
+    uint32_t dp = mesh_device.shape()[0];
     auto out_dtype = output_dtype.value_or(hidden_state.dtype());
 
-    // Validate output dtype
     TT_FATAL(
         out_dtype == DataType::BFLOAT16 || out_dtype == DataType::BFLOAT8_B,
         "output_dtype must be BFLOAT16 or BFLOAT8_B, got {}",
@@ -42,4 +34,4 @@ ttnn::Tensor ExtractAttentionInputOperation::invoke(
     ).at(0);
 }
 
-}  // namespace ttnn::operations::experimental
+}

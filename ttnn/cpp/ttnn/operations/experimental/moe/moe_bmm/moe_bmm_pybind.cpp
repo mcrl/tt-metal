@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "moe_bmm_pybind.hpp"
 #include "moe_bmm.hpp"
 #include <pybind11/pybind11.h>
@@ -88,4 +84,4 @@ Example:
         });
 }
 
-}  // namespace ttnn::operations::experimental::moe_bmm::detail
+}

@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <cstdint>
 #include "compute_kernel_api/tile_move_copy.h"
 #include "compute_kernel_api/matmul.h"
@@ -32,7 +28,7 @@ void MAIN {
     tensix_sync();
     uint32_t* metadata_ptr;
     cb_get_tile(cb_metadata, 0, &metadata_ptr);
-    metadata_ptr += 4; // Need this offset!
+    metadata_ptr += 4;
     uint32_t Mt = metadata_ptr[0];
     uint32_t row_bidx0 = metadata_ptr[2];
     uint32_t col_bidx0 = metadata_ptr[4];
@@ -44,20 +40,18 @@ void MAIN {
     uint32_t num_output_tiles = BMt * BNt;
     uint32_t subblock_size = SBMt * SBNt;
 
-    // Main loop.
     for (uint32_t block_idx_row = row_bidx0; block_idx_row < row_bidx0 + row_nblocks_per_core; block_idx_row++) {
         for (uint32_t block_idx_col = col_bidx0; block_idx_col < col_bidx0 + col_nblocks_per_core; block_idx_col++) {
             for (uint32_t ki_iter = 0; ki_iter < num_ki_iterations; ki_iter++) {
                 bool is_first_ki = (ki_iter == 0);
                 bool is_last_ki = (ki_iter == num_ki_iterations - 1);
 
-                // Compute: Process all BMt × BNt output blocks in order
+                // Process all BMt × BNt output blocks in order
                 // Wait for BMt × BKt tiles from A and BKt × BNt tiles from B
                 cb_wait_front(cb_input, BMt * BKt);
                 cb_wait_front(cb_weights, BKt * BNt);
 
-                // Process one block (BMt x BNt) in unit of subblock (SBMt x
-                // SBNt tiles)
+                // Process one block (BMt x BNt) in unit of subblock (SBMt x SBNt tiles)
                 for (uint32_t h = 0; h < BMt; h += SBMt) {
                     for (uint32_t w = 0; w < BNt; w += SBNt) {
                         tile_regs_acquire();
@@ -97,12 +91,11 @@ void MAIN {
                     }
                 }
 
-                // Release A and B tiles after done
                 cb_pop_front(cb_input, BMt * BKt);
                 cb_pop_front(cb_weights, BKt * BNt);
-            } // ki_iter loop
-        } // block_idx_col loop
-    } // block_idx_row loop
+            }
+        }
+    }
 }
 
-}  // namespace NAMESPACE
+}

@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "local_reduce_moe_output_op.hpp"
 #include "local_reduce_moe_output_program_factory.hpp"
 
@@ -94,4 +90,4 @@ operation::ProgramWithCallbacks LocalReduceMoeOutput::create_program(
         output_tensors.at(0));
 }
 
-}  // namespace ttnn::operations::experimental::moe
+}

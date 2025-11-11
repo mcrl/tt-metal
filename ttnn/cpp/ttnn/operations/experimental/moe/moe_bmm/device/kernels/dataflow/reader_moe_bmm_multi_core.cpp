@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 #include "debug/dprint.h"
@@ -9,7 +5,6 @@
 #include "moe_bmm_dataflow.hpp"
 
 void kernel_main() {
-    // Runtime arguments
     uint32_t input_addr = get_arg_val<uint32_t>(0);
     uint32_t weights_addr = get_arg_val<uint32_t>(1);
     uint32_t num_routed_addr = get_arg_val<uint32_t>(2);
@@ -21,14 +16,12 @@ void kernel_main() {
     uint32_t Nt = get_arg_val<uint32_t>(8);
     uint32_t Mt_max = get_arg_val<uint32_t>(9);
 
-    // Circular buffer indices
     constexpr uint32_t cb_in0 = 0;
     constexpr uint32_t cb_in1 = 1;
     constexpr uint32_t cb_num_tiles = 2;
     constexpr uint32_t cb_num_routed = 3;
     constexpr uint8_t noc = noc_index;
 
-    // Get core coordinates from NOC
     uint32_t core_x = (uint32_t)my_x[noc] - WH_LOGICAL_TO_VIRTUALL_OFFSET;
     uint32_t core_y = (uint32_t)my_y[noc] - WH_LOGICAL_TO_VIRTUALL_OFFSET;
 
@@ -39,11 +32,11 @@ void kernel_main() {
     constexpr auto weights_args = TensorAccessorArgs<input_args.next_compile_time_args_offset()>();
     const auto weights_accessor = TensorAccessor(weights_args, weights_addr, get_tile_size(cb_in1));
     
-    // num_routed_tokens is 1D tensor (E/D,) - all elements in one page
+    // num_routed_tokens is 1D tensor (E/D,)
     constexpr auto num_routed_args = TensorAccessorArgs<weights_args.next_compile_time_args_offset()>();
     const auto num_routed_accessor = TensorAccessor(num_routed_args, num_routed_addr, num_experts * sizeof(uint32_t));
 
-    // Semaphores for multicast (after 3 TensorAccessorArgs: input, weights, num_routed)
+    // Semaphores for multicast
     constexpr uint32_t sender_sem = get_compile_time_arg_val(3);
     constexpr uint32_t receiver_sem = get_compile_time_arg_val(4);
 
@@ -77,7 +70,7 @@ void kernel_main() {
               sender_sem, receiver_sem, noc);
     cb_push_back(cb_num_routed, 1);
 
-    // Access num_routed_tokens from CB (data is at the same address as write_ptr)
+    // Access num_routed_tokens from CB
     volatile tt_l1_ptr uint32_t* num_routed_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(num_routed_l1_addr);
 
     // Calculate Mt per expert from the loaded array
@@ -95,7 +88,7 @@ void kernel_main() {
     cb_push_back(cb_num_tiles, 1);
 
     // Calculate work for this core dynamically
-    constexpr uint32_t NUM_CORES = 64;  // 8x8 grid
+    constexpr uint32_t NUM_CORES = 64;
     uint32_t core_id = core_y * 8 + core_x;
     uint32_t work_per_core = num_output_tiles_total / NUM_CORES;
     uint32_t remainder = num_output_tiles_total % NUM_CORES;
@@ -109,8 +102,6 @@ void kernel_main() {
     }
 
     // Calculate the cumulative tile offset for each expert
-    // Note: expert_tile_offsets[e] is the starting global tile ID for expert e
-    // expert_tile_offsets[e+1] is the ending global tile ID (exclusive) for expert e
     uint32_t expert_tile_offsets[num_experts + 1];  // Need num_experts + 1 entries
     expert_tile_offsets[0] = 0;
 
@@ -122,8 +113,7 @@ void kernel_main() {
     for (uint32_t work_idx = 0; work_idx < work_per_core; work_idx++) {
         uint32_t global_output_tile_id = work_offset + work_idx;
         // Find which expert this tile belongs to
-        // Handle empty experts (those with 0 tiles) correctly
-        uint32_t expert_idx = num_experts - 1;  // Default to last expert
+        uint32_t expert_idx = num_experts - 1;
         for (uint32_t e = 0; e < num_experts; e++) {
             if (global_output_tile_id < expert_tile_offsets[e + 1]) {
                 expert_idx = e;
@@ -140,9 +130,7 @@ void kernel_main() {
         uint32_t input_expert_base = expert_idx * input_expert_stride;
         uint32_t weights_expert_base = expert_idx * weights_expert_stride;
         
-        // Inner loop over K dimension for this output tile
         for (uint32_t kt = 0; kt < Kt; kt++) {
-            // Read input tile at (expert, mt, kt)
             uint32_t input_tile_idx = input_expert_base + mt * input_row_stride + kt;
             cb_reserve_back(cb_in0, 1);
             uint32_t l1_write_addr_in0 = get_write_ptr(cb_in0);
@@ -150,7 +138,6 @@ void kernel_main() {
             noc_async_read_barrier();
             cb_push_back(cb_in0, 1);
 
-            // Read weight tile at (expert, kt, nt)
             uint32_t weight_tile_idx = weights_expert_base + kt * weights_row_stride + nt;
             cb_reserve_back(cb_in1, 1);
             uint32_t l1_write_addr_in1 = get_write_ptr(cb_in1);

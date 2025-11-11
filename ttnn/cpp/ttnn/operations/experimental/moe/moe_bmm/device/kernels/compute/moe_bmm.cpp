@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <cstdint>
 #include "compute_kernel_api/tile_move_copy.h"
 #include "compute_kernel_api/matmul.h"
@@ -42,14 +38,10 @@ void MAIN {
 
     volatile uint32_t* num_rows_addr_ptr;
 
-    // Initialize matrix multiplication unit
     mm_init(cb_in0, cb_in1, cb_out);
 
     // Process all experts
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
-        // For each expert, process Mt_max * Nt output tiles
-        // (dataflow only sends tiles for active Mt rows based on num_routed_tokens)
-
         cb_wait_front(cb_num_rows, 1);
         tensix_sync();
         cb_get_tile(cb_num_rows, 0, &num_rows_addr_ptr);
@@ -61,35 +53,26 @@ void MAIN {
 
         for (uint32_t mt = 0; mt < Mt; mt++) {
             for (uint32_t nt = 0; nt < Nt; nt++) {
-                // Acquire destination register for accumulation
                 acquire_dst();
                 
-                // Accumulate over K dimension
                 for (uint32_t kt = 0; kt < Kt; kt++) {
-                    // Wait for input tiles
                     cb_wait_front(cb_in0, 1);
                     cb_wait_front(cb_in1, 1);
                     
-                    // Perform tile matrix multiplication and accumulate
                     matmul_tiles(cb_in0, cb_in1, 0, 0, 0, false);
                     
-                    // Pop input tiles
                     cb_pop_front(cb_in0, 1);
                     cb_pop_front(cb_in1, 1);
                 }
-                
-                // Reserve output buffer and pack result
                 cb_reserve_back(cb_out, 1);
                 PACK((pack_reconfig_data_format(cb_out)));
                 pack_tile(0, cb_out);
                 cb_push_back(cb_out, 1);
 
-                // Release destination register
                 release_dst();
             }
         }
     }
 }
 
-}  // namespace NAMESPACE
-
+}

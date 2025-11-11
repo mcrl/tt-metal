@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 #include "debug/dprint.h"
@@ -36,7 +32,6 @@ void kernel_main() {
     uint32_t col_nblocks_per_core = metadata_ptr[3];
     uint32_t my_expert = metadata_ptr[5];
 
-    // DPRINT << "row_bidx0: " << row_bidx0 << " col_bidx0: " << col_bidx0 << " row_nblocks_per_core: " << row_nblocks_per_core << " col_nblocks_per_core: " << col_nblocks_per_core << ENDL();
     uint32_t output_tile_size = get_tile_size(cb_output);
     constexpr auto output_args = TensorAccessorArgs<0>();
     const auto output_tensor = TensorAccessor(output_args, output_addr, output_tile_size);
@@ -68,6 +63,6 @@ void kernel_main() {
            }
            noc_async_write_barrier();
            cb_pop_front(cb_output, BMt * BNt);
-       }  // block_idx_col loop
-   }      // block_idx_row loop
+       }
+   }
 }

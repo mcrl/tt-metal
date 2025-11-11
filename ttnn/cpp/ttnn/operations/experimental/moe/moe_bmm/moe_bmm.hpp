@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #pragma once
 
 #include "ttnn/run_operation.hpp"
@@ -11,9 +7,7 @@
 
 // moe_bmm Operation
 //
-// PURPOSE:
 //   Performs batched matrix multiplication for Mixture-of-Experts (MoE) processing.
-//   Each expert processes only its assigned tokens (first num_routed_tokens[e, 0] rows).
 //
 // INPUTS:
 //   - input: (E/D, T, H_in) bfloat16 tensor, TILE_LAYOUT, sharded across devices
@@ -33,14 +27,6 @@
 //        This multiplies (T_e × H_in) @ (H_in × H_out) → (T_e × H_out)
 //     3. Remaining rows (T_e to T-1) are zero (unused tokens)
 //
-// NOTES:
-//   - Multi-core implementation using output-stationary parallelization
-//   - Work distributed manually in kernel based on core ID (not using split_work_to_cores)
-//   - Distributes output tiles across all available Tensix cores
-//   - Each device processes E/D experts in parallel (expert parallelism)
-//   - Only first num_routed_tokens[e, 0] rows per expert produce non-zero results
-//   - Output is zero-padded per expert (each expert has T rows with padding after active tokens)
-//   - Expected ~50-60× speedup for large workloads compared to single-core
 
 namespace ttnn {
 namespace operations::experimental {

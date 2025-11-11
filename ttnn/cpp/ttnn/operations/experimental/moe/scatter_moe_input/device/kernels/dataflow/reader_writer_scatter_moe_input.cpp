@@ -1,12 +1,8 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 
 /**
- * Scatter MoE Input Kernel (Multi-Core)
+ * Scatter MoE Input Kernel
  *
  * This kernel rearranges input tokens based on expert assignments.
  * Each core processes a subset of local experts assigned to it.
@@ -40,7 +36,6 @@
  */
 
 void kernel_main() {
-    // Runtime arguments
     uint32_t input_buffer_addr = get_arg_val<uint32_t>(0);
     uint32_t num_routed_tokens_addr = get_arg_val<uint32_t>(1);
     uint32_t routed_tokens_addr = get_arg_val<uint32_t>(2);
@@ -48,7 +43,6 @@ void kernel_main() {
     uint32_t start_expert_idx = get_arg_val<uint32_t>(4);
     uint32_t num_experts_per_core = get_arg_val<uint32_t>(5);
 
-    // Compile-time arguments
     constexpr uint32_t cb_id_input = get_compile_time_arg_val(0);
     constexpr uint32_t cb_id_output = get_compile_time_arg_val(1);
     constexpr uint32_t cb_id_num_routed = get_compile_time_arg_val(2);
@@ -61,16 +55,14 @@ void kernel_main() {
     constexpr uint32_t num_local_experts = get_compile_time_arg_val(9);
     constexpr uint32_t row_size_bytes = get_compile_time_arg_val(10);
 
-    // Create address generators
     const InterleavedAddrGen<input_is_dram> input_addrgen = {
         .bank_base_address = input_buffer_addr,
         .page_size = row_size_bytes
     };
 
-    // num_routed_tokens is 1D tensor (E/D,) - all elements in one page
     const InterleavedAddrGen<num_routed_is_dram> num_routed_addrgen = {
         .bank_base_address = num_routed_tokens_addr,
-        .page_size = num_local_experts * sizeof(uint32_t)  // Full array in one page
+        .page_size = num_local_experts * sizeof(uint32_t)
     };
 
     const InterleavedAddrGen<routed_tokens_is_dram> routed_tokens_addrgen = {
@@ -83,7 +75,6 @@ void kernel_main() {
         .page_size = row_size_bytes
     };
 
-    // Read entire num_routed_tokens tensor once (1D tensor with all num_local_experts elements)
     cb_reserve_back(cb_id_num_routed, 1);
     uint32_t num_routed_l1_addr = get_write_ptr(cb_id_num_routed);
 
@@ -112,7 +103,6 @@ void kernel_main() {
 
         // Step 3: Gather assigned tokens and write to output
         for (uint32_t i = 0; i < t_e; i++) {
-            // Get token index
             uint32_t token_idx = routed_tokens_ptr[i];
 
             // Read input row: input_hidden_state[token_idx, :]
@@ -132,11 +122,7 @@ void kernel_main() {
 
             cb_pop_front(cb_id_input, 1);
         }
-
-        // Free routed_tokens buffer
         cb_pop_front(cb_id_output, 1);
     }
-
-    // Free num_routed_tokens buffer
     cb_pop_front(cb_id_num_routed, 1);
 }

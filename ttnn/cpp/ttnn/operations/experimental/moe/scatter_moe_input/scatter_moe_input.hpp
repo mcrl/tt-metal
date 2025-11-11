@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #pragma once
 
 #include "ttnn/run_operation.hpp"
@@ -10,8 +6,7 @@
 
 // scatter_moe_input Operation
 //
-// PURPOSE:
-//   Rearranges input tokens based on expert assignments for MoE V2 pipeline.
+//   Rearranges input tokens based on expert assignments.
 //   Gathers all tokens assigned to each local expert into contiguous memory.
 //
 // INPUTS:
@@ -31,11 +26,6 @@
 //     3. For remaining positions i in [t_e, T):
 //        - Zero-pad: output[e, i, :] = 0
 //
-// NOTES:
-//   - Part of MoE V2 pipeline (separates scatter logic from projection)
-//   - Enables efficient BMM operations on already-scattered data
-//   - Output is zero-padded to uniform shape (E/D, T, H)
-//   - Routing tensors are device-local from prepare_moe_routing_tensors
 
 namespace ttnn {
 namespace operations::experimental {
@@ -49,10 +39,10 @@ struct ScatterMoeInputOperation {
         const std::optional<MemoryConfig>& memory_config = std::nullopt);
 };
 
-}  // namespace operations::experimental
+}
 
 constexpr auto scatter_moe_input = ttnn::register_operation<
     "ttnn::scatter_moe_input",
     ttnn::operations::experimental::ScatterMoeInputOperation>();
 
-}  // namespace ttnn
+}

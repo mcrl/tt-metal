@@ -70,7 +70,6 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
         hidden_states_0 = hidden_states
-        """Hidden states: [B, S, H]"""
 
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             attn_input = self.input_layernorm(hidden_states_0, mode=InferenceMode.PREFILL)
@@ -99,8 +98,6 @@ class Qwen3MoeDecoderLayer(nn.Module):
     def forward_decode(
         self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
-        """Hidden states: [1, 1, B, H]"""
-
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             attn_input = self.input_layernorm(hidden_states, mode=InferenceMode.DECODE)
 
@@ -112,20 +109,16 @@ class Qwen3MoeDecoderLayer(nn.Module):
             page_table=page_table,
             mode=InferenceMode.DECODE
         )
-        """attn result: [1, 1, B, H]"""
 
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             hidden_states = ttnn.add(attn_result, hidden_states)
-        """Hidden states: [1, 1, B, H]"""
 
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             mlp_input = self.post_attention_layernorm(hidden_states, mode=InferenceMode.DECODE)
         mlp_result = self.mlp(mlp_input, mode=InferenceMode.DECODE)
-        """mlp_result: [1, 1, B, H]"""
 
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             output = ttnn.add(hidden_states, mlp_result)
-        """output: [1, 1, B, H]"""
 
         return output
 
@@ -232,7 +225,7 @@ class Qwen3MoeModel(nn.Module):
         if lazy_loader is not None:
             from models.demos.qwen3.common.lazy_loader import clear_module_weights
             clear_module_weights(self)
-            print(f"✓ All model weights cleared from CPU RAM")
+            print(f"All model weights cleared from CPU RAM")
             print(f"Final memory usage: {get_memory_usage_gb():.2f} GB")
 
     @profile_trace("Qwen3MoeModel", level=1)

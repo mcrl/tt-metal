@@ -197,7 +197,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
 
     @profile_trace("Qwen3MoeSparseMoeBlock", level=3)
-    def forward_v1(self, hidden_states: ttnn.Tensor, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
+    def forward_tt(self, hidden_states: ttnn.Tensor, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
         if mode == InferenceMode.PREFILL:
             batch_size, sequence_length, hidden_dim = hidden_states.shape
             mem_cfg = ttnn.DRAM_MEMORY_CONFIG
@@ -230,15 +230,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             selected_experts = ttnn.reshape(
                 selected_experts, (1, batch_size, sequence_length, self.top_k), memory_config=ttnn.DRAM_MEMORY_CONFIG
             )
-
-        # with Profiler().trace_with_timer("prepare-all-to-all", level=4):
-        #     all_to_all_combine_output_tensors = ttnn.zeros(
-        #         (self.top_k, batch_size, sequence_length, hidden_dim),
-        #         dtype=ttnn.bfloat16,
-        #         layout=ttnn.ROW_MAJOR_LAYOUT,
-        #         device=self.mesh_device,
-        #         memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        #     )
 
         with Profiler().trace_with_timer("repeat-hidden", level=4):
             hidden_states = ttnn.reshape(
@@ -340,7 +331,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             mem_cfg = ttnn.DRAM_MEMORY_CONFIG
         elif mode == InferenceMode.DECODE:
             _, sequence_length, batch_size, hidden_dim = hidden_states.shape
-            mem_cfg = ttnn.L1_MEMORY_CONFIG  # FIXME: Use L1 for decode mode
+            mem_cfg = ttnn.L1_MEMORY_CONFIG
 
         with Profiler().trace_with_timer("reshape", level=4):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
@@ -429,36 +420,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             final_output = ttnn.view(moe_output, shape=(1, 1, T, H))
             final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
-            """
-            for cluster_axis in [0, 1]:
-                if self.mesh_device.shape[cluster_axis] == 1:
-                    continue
-                final_output = ttnn.experimental.reduce_scatter_minimal_async(
-                    final_output,
-                    persistent_output_buffers=None,
-                    dim=3,
-                    multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(cluster_axis),
-                    barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(cluster_axis),
-                    cluster_axis=cluster_axis,
-                    num_links=self.num_links,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    topology=ttnn.Topology.Linear,
-                    chunks_per_sync=10,
-                    num_workers_per_link=2,
-                    num_buffers_per_channel=2,
-                )
-                final_output = ttnn.experimental.all_gather_async(
-                    final_output,
-                    3,
-                    cluster_axis=cluster_axis,
-                    mesh_device=self.mesh_device,
-                    topology=ttnn.Topology.Linear,
-                    multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(cluster_axis),
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    num_links=self.num_links,
-                )
-            """
             final_output = ttnn.experimental.reduce_scatter_minimal_async(
                 final_output,
                 persistent_output_buffers=None,
@@ -511,9 +472,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 num_links=self.num_links,
             )
 
-        # Reshape to original shape
         with Profiler().trace_with_timer("reshape", level=4):
-            # final_output = ttnn.view(final_output, (T, H))
             final_output = ttnn.typecast(final_output, ttnn.bfloat16)
 
             if mode == InferenceMode.PREFILL:

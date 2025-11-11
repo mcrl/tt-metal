@@ -41,15 +41,11 @@ operation::ProgramWithCallbacks batched_paged_fill_cache_multi_core(
     const uint32_t Wt = head_dim / TILE_WIDTH;
     const uint32_t block_size_t = block_size / TILE_HEIGHT;
 
-    // Work distribution is per single batch (num_heads * input_seq_len_t)
-    // Each core processes this amount of work for ALL batches
     uint32_t num_blocks_of_work = num_heads * input_seq_len_t;
     uint32_t num_blocks_of_work_per_head = input_seq_len_t;
     
-    // Total tiles per batch in the input tensor (for calculating offsets between batches)
     uint32_t tiles_per_batch_total = num_blocks_of_work * Wt;
 
-    // Pagetable-specific parameters
     uint32_t page_table_stick_size_B = page_table_tensor.buffer()->aligned_page_size();
     TT_FATAL(
         page_table_stick_size_B % 32 == 0,
@@ -172,9 +168,9 @@ operation::ProgramWithCallbacks batched_paged_fill_cache_multi_core(
         const std::vector<Tensor>& input_tensors,
         const std::vector<std::optional<const Tensor>>& optional_input_tensors,
         const std::vector<Tensor>& output_tensors) {
-            auto dst_addr = input_tensors.at(0).buffer()->address();         // cache_tensor
-            auto src_addr = input_tensors.at(1).buffer()->address();         // input_tensor
-            auto page_table_addr = input_tensors.at(2).buffer()->address();  // page_table_tensor
+            auto dst_addr = input_tensors.at(0).buffer()->address();
+            auto src_addr = input_tensors.at(1).buffer()->address();
+            auto page_table_addr = input_tensors.at(2).buffer()->address();
 
             const auto op_specific = static_cast<const PagedUpdateCacheDeviceOperation*>(operation);
             uint32_t batch_size = op_specific->batch_size;
@@ -213,4 +209,4 @@ operation::ProgramWithCallbacks batched_paged_fill_cache_multi_core(
     return {.program = std::move(program), .override_runtime_arguments_callback = override_runtime_args_callback};
 }
 
-}  // namespace ttnn::operations::experimental::paged_cache::detail
+}

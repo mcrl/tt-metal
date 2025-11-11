@@ -1,8 +1,6 @@
 #pragma once
 
-// Wormhole-specific offset from logical to virtual coordinates
 constexpr uint32_t WH_LOGICAL_TO_VIRTUALL_OFFSET = 18;
-// Grid dimensions (8x8 compute grid)
 constexpr uint32_t GRID_SIZE = 8;
 
 void logical_to_virtual(uint32_t logical_x, uint32_t logical_y,
@@ -31,8 +29,6 @@ void get_virtual_coord(uint32_t *virtual_x, uint32_t *virtual_y) {
 
 
 // Generic broadcast function for rectangular (including 1D) multicast
-// Broadcasts L1 data from sender to a rectangular region
-// Automatically uses loopback if sender is in destination range
 FORCE_INLINE void broadcast(uint32_t l1_addr, uint32_t nbytes,
                             uint32_t sender_x, uint32_t sender_y, uint32_t x0,
                             uint32_t x1, uint32_t y0, uint32_t y1,
@@ -110,5 +106,4 @@ FORCE_INLINE void broadcast(uint32_t l1_addr, uint32_t nbytes,
         // Wait for sender to signal data is ready
         noc_semaphore_wait(receiver_sem_ptr, VALID);
     }
-    // Else: Core is neither sender nor receiver - do nothing
 }

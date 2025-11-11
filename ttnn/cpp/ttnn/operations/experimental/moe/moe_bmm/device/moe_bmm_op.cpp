@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "moe_bmm_op.hpp"
 #include "moe_bmm_program_factory.hpp"
 
@@ -148,7 +144,7 @@ operation::ProgramWithCallbacks MoEBMM::create_program(
             max_tokens,
             h_in,
             h_out);
-    } else {  // "optimized" is default
+    } else {
         return moe_bmm_multi_core_optimized(
             input,
             weights,
@@ -161,4 +157,4 @@ operation::ProgramWithCallbacks MoEBMM::create_program(
     }
 }
 
-}  // namespace ttnn::operations::experimental::moe
+}

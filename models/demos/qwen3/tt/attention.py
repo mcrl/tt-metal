@@ -72,8 +72,6 @@ class Qwen3MoeAttention(nn.Module):
         self.dp = mesh_device.shape[0]
         self.tp = mesh_device.shape[1]
 
-        # self.submeshes = mesh_device.create_submeshes(ttnn.MeshShape(mesh_device.shape[0] // self.dp, mesh_device.shape[1]))
-
         self.is_tt_setup = False
         self.hidden_size = config.hidden_size
         self.head_dim = config.head_dim
@@ -146,7 +144,7 @@ class Qwen3MoeAttention(nn.Module):
             if is_meta_tensor(self.k_norm.weight):
                 load_parameter_for_module(self.k_norm, "weight", f"{param_prefix}.k_norm.weight")
 
-        self.ccl = TT_CCL(self.mesh_device) # CCL1D(self.mesh_device)
+        self.ccl = TT_CCL(self.mesh_device)
 
         weight_shape = (self.hidden_size, -1)
 
@@ -204,19 +202,6 @@ class Qwen3MoeAttention(nn.Module):
 
         self.init_kv_cache()
 
-        weight = torch.zeros(1, self.num_devices, 32, 128) # 32 is batch size
-        for i in range(self.num_devices):
-            col = i // self.tp  # This determines which group of 32 to select
-            weight[:, i, :, col * 32 : (col + 1) * 32] = torch.eye(32)
-
-        self.slice_mat = ttnn.from_torch(
-            weight,
-            dtype=ttnn.bfloat8_b,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.mesh_device,
-            mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=1),
-        )
-
         # Create dp_degree tensor for extract_attention_input API
         # Each device gets its row index in the mesh (0 to dp-1)
         # Pattern: [0, 0, 0, 0, 1, 1, 1, 1] for dp=2, tp=4
@@ -231,7 +216,7 @@ class Qwen3MoeAttention(nn.Module):
             device=self.mesh_device,
             mesh_mapper=ttnn.ShardTensor2dMesh(
                 self.mesh_device,
-                dims=(0, None),  # Shard dim 0 across dp*tp devices
+                dims=(0, None),  # Shard dim 0 across dp * tp devices
                 mesh_shape=(self.num_devices, 1)  # Treat as 1D array
             ),
         )
@@ -249,7 +234,7 @@ class Qwen3MoeAttention(nn.Module):
         if lazy_loader is not None:
             from models.demos.qwen3.common.lazy_loader import clear_module_weights
             clear_module_weights(self)
-            print(f"✓ Layer {self.layer_idx} attention weights cleared from CPU RAM")
+            print(f"Layer {self.layer_idx} attention weights cleared from CPU RAM")
 
     
     def init_kv_cache(self):
@@ -283,7 +268,6 @@ class Qwen3MoeAttention(nn.Module):
         hidden_shape = (batch_size // self.dp, 1, sequence_length, -1)
 
         # Extract attention input for this device using new multi-core API
-        # Replaces: reshape → matmul(slice_mat) → reshape
         hidden_states = ttnn.extract_attention_input(
             hidden_states,
             self.dp_degree,
@@ -292,14 +276,8 @@ class Qwen3MoeAttention(nn.Module):
             memory_config=mem_cfg
         )
 
-        # OLD CODE (replaced by extract_attention_input API):
-        # hidden_states = ttnn.reshape(hidden_states, (batch_size, -1))
-        # hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
-        # hidden_states = ttnn.reshape(hidden_states, hidden_shape)
-
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
-            # ttnn.deallocate(hidden_states)
             qkv_states = ttnn.view(qkv_states, hidden_shape)
 
         with Profiler().trace_with_timer("qkv-split", level=4):
@@ -311,7 +289,6 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=mem_cfg
             )
             ttnn.deallocate(qkv_states)
-            # B n S H
 
         with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.PREFILL)
@@ -342,7 +319,6 @@ class Qwen3MoeAttention(nn.Module):
             query_states = ttnn.typecast(query_states, ttnn.bfloat8_b)
             key_states = ttnn.typecast(key_states, ttnn.bfloat8_b)
 
-        # Q, K, V: [B n S H]
         with Profiler().trace_with_timer("fill-cache", level=4):
             ttnn.experimental.batched_paged_fill_cache(self.cache_k, key_states, page_table, batch_size // self.dp)
             ttnn.experimental.batched_paged_fill_cache(self.cache_v, value_states, page_table, batch_size // self.dp)
@@ -360,7 +336,6 @@ class Qwen3MoeAttention(nn.Module):
         ttnn.deallocate(value_states)
 
         with Profiler().trace_with_timer("reshape", level=4):
-            # [B, n, S, h] -> [B, S, n * h]
             attn_out_cat = ttnn.experimental.nlp_concat_heads(attn_out, memory_config=mem_cfg)
             ttnn.deallocate(attn_out)
 
@@ -425,11 +400,9 @@ class Qwen3MoeAttention(nn.Module):
     ) -> ttnn.Tensor:
         mem_cfg = ttnn.L1_MEMORY_CONFIG
 
-        """Hidden state: [1, S=1, B, H]"""
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
 
         # Extract attention input for this device using new multi-core API
-        # Replaces: view → matmul(slice_mat) → view
         with Profiler().trace_with_timer("extract-attention-input", level=4):
             hidden_states = ttnn.extract_attention_input(
                 hidden_states,
@@ -439,15 +412,8 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=mem_cfg,
             )
 
-        # OLD CODE (replaced by extract_attention_input API):
-        # hidden_states = ttnn.view(hidden_states, (batch_size, hidden_size))
-        # hidden_states = ttnn.matmul(self.slice_mat, hidden_states, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
-        # hidden_states = ttnn.view(hidden_states, (1, 1, batch_size // self.dp, hidden_size))
-
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
-            # ttnn.deallocate(hidden_states)
-        """ QKV: [1, 1, B, H] """
 
         with Profiler().trace_with_timer("qkv-split", level=4):
             query_states_pre_rot, key_states_pre_rot, value_states = ttnn.experimental.nlp_create_qkv_heads_decode(
@@ -457,12 +423,10 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
             )
             ttnn.deallocate(qkv_states)
-        """ QKV: [S=1, B, n, H] """
 
         with Profiler().trace_with_timer("rmsnorm", level=4):
             query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.DECODE)
             key_states_pre_rot = self.k_norm(key_states_pre_rot, mode=InferenceMode.DECODE)
-        """ QKV: [1, B, n, H] """
 
         with Profiler().trace_with_timer("rope", level=4):
             query_states = ttnn.experimental.rotary_embedding_llama(
@@ -475,7 +439,6 @@ class Qwen3MoeAttention(nn.Module):
             )
             ttnn.deallocate(key_states_pre_rot)
 
-        """ Q: [S=1, B, n, H], K: [S=1, B, n, H], V: [S=1, B, n, H] """
         with Profiler().trace_with_timer("update-cache", level=4):
             ttnn.experimental.paged_update_cache(self.cache_k, key_states, update_idxs_tensor=start_pos, page_table=page_table)
             ttnn.experimental.paged_update_cache(self.cache_v, value_states, update_idxs_tensor=start_pos, page_table=page_table)
@@ -514,7 +477,6 @@ class Qwen3MoeAttention(nn.Module):
                 memory_config=mem_cfg,
             )
             ttnn.deallocate(attn_output_cat)
-        """ O: [1, 1, B, H] """
 
         with Profiler().trace_with_timer("all-reduce", level=4):
             _, _, B, H = linear_output.shape
@@ -557,7 +519,6 @@ class Qwen3MoeAttention(nn.Module):
             )
             linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))
             linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
-        """ O: [1, 1, B, H] """
 
         return linear_output
 

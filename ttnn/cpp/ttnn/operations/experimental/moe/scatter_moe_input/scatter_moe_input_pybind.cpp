@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "scatter_moe_input_pybind.hpp"
 #include "scatter_moe_input.hpp"
 #include <pybind11/pybind11.h>
@@ -14,7 +10,7 @@ void bind_scatter_moe_input(py::module& module) {
     const auto doc = R"doc(
 scatter_moe_input(input_hidden_state: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> ttnn.Tensor
 
-Rearranges input tokens based on expert assignments for MoE V2 pipeline.
+Rearranges input tokens based on expert assignments for MoE pipeline.
 
 This operation gathers tokens assigned to each local expert into contiguous memory,
 enabling efficient batched matrix multiplication in subsequent projection operations.
@@ -89,4 +85,4 @@ Example:
         });
 }
 
-}  // namespace ttnn::operations::experimental::scatter_moe_input::detail
+}

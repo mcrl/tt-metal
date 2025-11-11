@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 #include "debug/dprint.h"
@@ -20,14 +16,12 @@ void kernel_main() {
     uint32_t Nt = get_arg_val<uint32_t>(9);
     uint32_t Mt_max = get_arg_val<uint32_t>(10);
 
-    // Circular buffer indices
     constexpr uint32_t cb_in0 = 0;
     constexpr uint32_t cb_in1 = 1;
     constexpr uint32_t cb_num_routed = 2;
     constexpr uint32_t cb_num_rows = 3;
     constexpr uint32_t cb_out = 16;
 
-    // Create tensor accessors for DRAM buffers
     constexpr auto input_args = TensorAccessorArgs<0>();
     const auto input_accessor = TensorAccessor(input_args, input_addr, get_tile_size(cb_in0));
     
@@ -55,8 +49,6 @@ void kernel_main() {
 
     // Process each expert sequentially
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
-        // Read num_routed_tokens[expert_idx, 0]
-        // This is a single uint32 value
         cb_reserve_back(cb_num_routed, 1);
         uint32_t l1_write_addr_num_routed = get_write_ptr(cb_num_routed);
         noc_async_read(
@@ -65,7 +57,6 @@ void kernel_main() {
             sizeof(uint32_t));
         noc_async_read_barrier();
         
-        // Read the value from L1
         volatile tt_l1_ptr uint32_t* num_routed_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_write_addr_num_routed);
         uint32_t num_routed = num_routed_ptr[0];
 
@@ -78,7 +69,6 @@ void kernel_main() {
         cb_push_back(cb_num_rows, 1);
 
         // Calculate number of active tile rows for this expert
-        // Round up to nearest tile boundary (TILE_HEIGHT = 32)
         constexpr uint32_t TILE_HEIGHT = 32;
         uint32_t Mt = (num_routed + TILE_HEIGHT - 1) / TILE_HEIGHT;
 
@@ -87,11 +77,8 @@ void kernel_main() {
         uint32_t weights_expert_base = expert_idx * weights_expert_stride;
         uint32_t output_expert_base = expert_idx * output_expert_stride;
 
-        // Perform batched matmul for this expert
-        // Process ALL Mt rows to keep compute kernel synchronized
         for (uint32_t mt = 0; mt < Mt; mt++) {        
             for (uint32_t nt = 0; nt < Nt; nt++) {
-                // Inner loop over K dimension
                 for (uint32_t kt = 0; kt < Kt; kt++) {
                     // Read input tile at (expert, mt, kt)
                     uint32_t input_tile_idx = input_expert_base + mt * input_row_stride + kt;
@@ -101,7 +88,7 @@ void kernel_main() {
                     noc_async_read_barrier();
                     cb_push_back(cb_in0, 1);
 
-                    // Read weight tile at (expert, kt, nt) - always needed for compute sync
+                    // Read weight tile at (expert, kt, nt)
                     uint32_t weight_tile_idx = weights_expert_base + kt * weights_row_stride + nt;
                     cb_reserve_back(cb_in1, 1);
                     uint32_t l1_write_addr_in1 = get_write_ptr(cb_in1);

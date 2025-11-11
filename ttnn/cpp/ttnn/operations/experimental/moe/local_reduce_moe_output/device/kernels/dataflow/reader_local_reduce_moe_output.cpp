@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 
@@ -38,7 +34,6 @@
 #define MAX_EXPERTS_PER_DEVICE 16
 
 void kernel_main() {
-    // Runtime arguments
     uint32_t input_buffer_addr = get_arg_val<uint32_t>(0);
     uint32_t token_idx_map_addr = get_arg_val<uint32_t>(1);
     uint32_t weights_addr = get_arg_val<uint32_t>(2);
@@ -46,7 +41,6 @@ void kernel_main() {
     uint32_t start_token_idx = get_arg_val<uint32_t>(4);
     uint32_t end_token_idx = get_arg_val<uint32_t>(5);
 
-    // Circular buffer IDs (static)
     constexpr tt::CBIndex cb_id_input = tt::CBIndex::c_0;
     constexpr tt::CBIndex cb_id_token_idx = tt::CBIndex::c_1;
     constexpr tt::CBIndex cb_id_weights = tt::CBIndex::c_2;
@@ -54,7 +48,6 @@ void kernel_main() {
     constexpr tt::CBIndex cb_id_weight_scalar = tt::CBIndex::c_4;
     constexpr tt::CBIndex cb_id_output = tt::CBIndex::c_16;
 
-    // Compile-time arguments
     constexpr bool input_is_dram = (bool)get_compile_time_arg_val(0);
     constexpr bool token_idx_is_dram = (bool)get_compile_time_arg_val(1);
     constexpr bool weights_is_dram = (bool)get_compile_time_arg_val(2);
@@ -67,7 +60,6 @@ void kernel_main() {
     uint32_t hidden_dim_tiles = hidden_dim / 1024;
     constexpr uint32_t tile_size_bytes = 32 * 32 * sizeof(uint16_t);
 
-    // Create address generators
     const InterleavedAddrGen<input_is_dram> input_addrgen = {
         .bank_base_address = input_buffer_addr,
         .page_size = row_size_bytes
@@ -80,14 +72,14 @@ void kernel_main() {
 
     const InterleavedAddrGen<weights_is_dram> weights_addrgen = {
         .bank_base_address = weights_addr,
-        .page_size = max_tokens * sizeof(uint16_t)  // bfloat16
+        .page_size = max_tokens * sizeof(uint16_t)
     };
 
-    // num_routed_tokens is 1D tensor (E/D,) - all elements in one page
     const InterleavedAddrGen<num_routed_is_dram> num_routed_addrgen = {
         .bank_base_address = num_routed_tokens_addr,
-        .page_size = num_local_experts * sizeof(uint32_t)  // Full array in one page
+        .page_size = num_local_experts * sizeof(uint32_t)
     };
+
     // Helper function to convert bfloat16 to float
     auto bf16_to_float = [](uint16_t bf16) -> float {
         union {
@@ -98,13 +90,11 @@ void kernel_main() {
         return converter.f;
     };
 
-    // Read entire num_routed_tokens tensor once (1D tensor with all num_local_experts elements)
     cb_reserve_back(cb_id_num_routed, 1);
     volatile uint32_t* num_routed =
         reinterpret_cast<volatile uint32_t*>(get_write_ptr(cb_id_num_routed));
 
-    // Single read for entire 1D array from page 0
-    uint64_t num_routed_base_addr = get_noc_addr(0, num_routed_addrgen);  // Page 0
+    uint64_t num_routed_base_addr = get_noc_addr(0, num_routed_addrgen);
     noc_async_read(num_routed_base_addr,
                     (uint32_t)num_routed,
                     num_local_experts * sizeof(uint32_t));
@@ -126,7 +116,7 @@ void kernel_main() {
         cb_push_back(cb_id_token_idx, 1);
     }
 
-    volatile uint16_t* weights[MAX_EXPERTS_PER_DEVICE]; // handle bf16 with uint16_t
+    volatile uint16_t* weights[MAX_EXPERTS_PER_DEVICE];
     for (uint32_t expert_idx = 0; expert_idx < num_local_experts; expert_idx++) {
         cb_reserve_back(cb_id_weights, 1);
         uint64_t weights_noc_addr = get_noc_addr(expert_idx, weights_addrgen);
@@ -139,30 +129,26 @@ void kernel_main() {
         cb_push_back(cb_id_weights, 1);
     }
 
-    // Process each token assigned to this core
     for (uint32_t tidx = start_token_idx; tidx < end_token_idx; tidx++) {
-        // Now read hidden states for matching tokens
         for (uint32_t expert_idx = 0; expert_idx < num_local_experts; expert_idx++) {
             uint32_t t_e = num_routed[expert_idx];
 
             // Search for matching token in this expert
             for (uint32_t i = 0; i < t_e; i++) {
                 if (token_idx[expert_idx][i] == tidx) {
-                    /* Send weight scalar to compute kernel */
+                    // Send weight scalar to compute kernel
                     cb_reserve_back(cb_id_weight_scalar, 1);
                     uint32_t weight_scalar_addr = get_write_ptr(cb_id_weight_scalar);
                     uint16_t *weight_scalar_addr_bf16 = reinterpret_cast<uint16_t *>(weight_scalar_addr);
                     weight_scalar_addr_bf16[0] = weights[expert_idx][i];
                     cb_push_back(cb_id_weight_scalar, 1);
 
-                    /* Send input hidden state to compute kernel */
+                    // Send input hidden state to compute kernel
                     for (uint32_t h = 0; h < hidden_dim_tiles; h++) {
                         cb_reserve_back(cb_id_input, 1);
                         uint32_t hidden_addr = get_write_ptr(cb_id_input);
-                        // Read input_hidden_state[expert_idx, i, h*1024:(h+1)*1024]
                         uint32_t input_page_idx = expert_idx * max_tokens + i;
                         uint64_t input_row_noc_addr = get_noc_addr(input_page_idx, input_addrgen) + h * tile_size_bytes;
-                        // Print first 3 bfloat16 values of the input tile for debugging
                         noc_async_read(input_row_noc_addr, hidden_addr, tile_size_bytes);
                         noc_async_read_barrier();
                         cb_push_back(cb_id_input, 1);

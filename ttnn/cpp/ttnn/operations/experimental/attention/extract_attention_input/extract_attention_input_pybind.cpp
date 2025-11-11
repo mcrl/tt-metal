@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "extract_attention_input_pybind.hpp"
 #include "extract_attention_input.hpp"
 #include <pybind11/pybind11.h>
@@ -15,10 +11,6 @@ void bind_extract_attention_input(py::module& module) {
 extract_attention_input(hidden_state: ttnn.Tensor, dp_degree: ttnn.Tensor, mesh_device: ttnn.MeshDevice, *, output_dtype: ttnn.DataType = None, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> ttnn.Tensor
 
 Extracts batch chunks per device for attention input (unified prefill/decode operation).
-
-Automatically detects operation mode based on input tensor rank:
-- Rank 3: Prefill mode ([B, S, H] → [B//dp, 1, S, H])
-- Rank 4: Decode mode ([1, 1, B, H] → [1, 1, B//dp, H])
 
 Replaces matrix multiplication-based approach with dedicated operation that
 extracts consecutive batch chunks for each device along the data parallelism dimension.
@@ -113,4 +105,4 @@ Example:
         });
 }
 
-}  // namespace ttnn::operations::experimental::extract_attention_input::detail
+}

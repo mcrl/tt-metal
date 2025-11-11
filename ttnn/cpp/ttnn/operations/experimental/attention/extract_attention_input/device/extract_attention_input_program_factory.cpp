@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "extract_attention_input_program_factory.hpp"
 
 #include <fmt/format.h>
@@ -24,7 +20,6 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
 
     Program program = CreateProgram();
 
-    // Get input dimensions and detect mode
     const auto& input_shape = hidden_state.padded_shape();
     bool is_prefill = (input_shape.rank() == 3);
 
@@ -45,19 +40,15 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
         num_tile_rows_per_device = batch_per_device / 32;
     }
 
-    // Calculate tile dimensions (common for both modes)
     constexpr uint32_t TILE_SIZE = 32;
     uint32_t num_tile_cols = hidden_dim / TILE_SIZE;
     uint32_t tiles_per_device = num_tile_rows_per_device * num_tile_cols;
 
-    // Detect if format conversion is needed
     bool needs_format_conversion = (output_dtype != hidden_state.dtype());
 
-    // Calculate tile sizes for input and output formats
     tt::DataFormat input_data_format = tt_metal::datatype_to_dataformat_converter(hidden_state.dtype());
     uint32_t input_tile_size = tt_metal::detail::TileSize(input_data_format);
 
-    // Get buffer info
     auto input_buffer = hidden_state.buffer();
     auto dp_degree_buffer = dp_degree.buffer();
     auto output_buffer = output.buffer();
@@ -76,28 +67,25 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
     // Manual work distribution across cores
     uint32_t tiles_per_core = tiles_per_device / total_cores;
     uint32_t remainder_tiles = tiles_per_device % total_cores;
-    // First 'remainder_tiles' cores get (tiles_per_core + 1) tiles
-    // Remaining cores get tiles_per_core tiles
 
-    // Create circular buffers - 2 tiles for double buffering
-    // CB 0: Input buffer (bfloat16)
-    uint32_t num_input_tiles = 2;  // Double buffer for pipelining
+    // CB 0: Input buffer
+    uint32_t num_input_tiles = 2;
     CircularBufferConfig cb_in_config =
         CircularBufferConfig(num_input_tiles * input_tile_size, {{0, input_data_format}})
         .set_page_size(0, input_tile_size);
     auto cb_in = CreateCircularBuffer(program, all_cores, cb_in_config);
 
-    // CB 1: dp_degree buffer (uint32, single value)
+    // CB 1: dp_degree buffer
     CircularBufferConfig cb_dp_degree_config =
         CircularBufferConfig(sizeof(uint32_t), {{1, tt_metal::datatype_to_dataformat_converter(dp_degree.dtype())}})
         .set_page_size(1, sizeof(uint32_t));
     auto cb_dp_degree = CreateCircularBuffer(program, all_cores, cb_dp_degree_config);
 
-    // CB 16: Output buffer (only needed when format conversion is required)
+    // CB 16: Output buffer
     if (needs_format_conversion) {
         tt::DataFormat output_data_format = tt_metal::datatype_to_dataformat_converter(output_dtype);
         uint32_t output_tile_size = tt_metal::detail::TileSize(output_data_format);
-        uint32_t num_output_tiles = 2;  // Double buffer for pipelining
+        uint32_t num_output_tiles = 2;
         CircularBufferConfig cb_out_config =
             CircularBufferConfig(num_output_tiles * output_tile_size, {{16, output_data_format}})
             .set_page_size(16, output_tile_size);
@@ -120,25 +108,21 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
     tt::tt_metal::TensorAccessorArgs(*output_buffer).append_to(writer_compile_args);
     writer_compile_args.push_back((uint32_t)output_data_format);  // data format
 
-    // Create kernels
     auto reader_kernel = CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/experimental/attention/extract_attention_input/device/kernels/dataflow/reader_extract_attention_input.cpp",
         all_cores,
         ReaderDataMovementConfig(reader_compile_args));
 
-    // Conditionally create compute kernel for format conversion
-    KernelHandle compute_kernel = 0;  // Initialize to silence warning
+    KernelHandle compute_kernel = 0;
     if (needs_format_conversion) {
         // Define TYPECAST_LLK macro for format conversion
-        // This expands to: typecast_tile<input_format_enum, output_format_enum>
         std::map<std::string, std::string> compute_defines;
         compute_defines["TYPECAST_LLK"] = fmt::format(
             "typecast_tile<{0}u, {1}u>",
             static_cast<uint32_t>(input_data_format),
             static_cast<uint32_t>(tt_metal::datatype_to_dataformat_converter(output_dtype)));
 
-        // Note: num_tiles is now a runtime arg, no compile args needed
         std::vector<uint32_t> compute_compile_args = {};
 
         compute_kernel = CreateKernel(
@@ -162,7 +146,6 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
         WriterDataMovementConfig(writer_compile_args));
 
     // Set runtime args for each core
-    // Note: Each reader will read dp_degree and calculate global start offset on device
     uint32_t num_tiles_assigned = 0;
     for (uint32_t core_idx = 0; core_idx < total_cores; core_idx++) {
         CoreCoord core = {core_idx / num_cores_y, core_idx % num_cores_y};
@@ -170,14 +153,12 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
         // Calculate tiles for this core
         uint32_t num_tiles_for_core = tiles_per_core;
         if (core_idx < remainder_tiles) {
-            num_tiles_for_core += 1;  // First 'remainder' cores get +1 tile
+            num_tiles_for_core += 1;
         }
 
-        // Tile offset within device's assigned tiles
         uint32_t local_tile_offset = num_tiles_assigned;
         uint32_t output_start_tile_id = num_tiles_assigned;
 
-        // Reader runtime args: input_addr, dp_degree_addr, num_tiles, local_offset, tiles_per_device
         SetRuntimeArgs(program, reader_kernel, core, {
             input_buffer->address(),
             dp_degree_buffer->address(),
@@ -186,14 +167,12 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
             tiles_per_device
         });
 
-        // Writer runtime args: output_addr, num_tiles, start_tile_id
         SetRuntimeArgs(program, writer_kernel, core, {
             output_buffer->address(),
             num_tiles_for_core,
             output_start_tile_id
         });
 
-        // Compute runtime args (if format conversion): num_tiles
         if (needs_format_conversion) {
             SetRuntimeArgs(program, compute_kernel, core, {
                 num_tiles_for_core
@@ -231,4 +210,4 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
     return {std::move(program), override_runtime_args_callback};
 }
 
-}  // namespace ttnn::operations::experimental::attention::detail
+}

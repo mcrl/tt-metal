@@ -99,7 +99,6 @@ def sdpa_forward_decode(
             memory_config=ttnn.L1_MEMORY_CONFIG
         )
         attn_output = ttnn.to_memory_config(attn_output, memory_config=sdpa_out_mem_cfg)
-    """ Output O: [S=1, B, n, H]"""
 
     return attn_output
 
