@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import ttnn
+import os
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.ccl_1d import CCL1D
@@ -62,8 +63,10 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
         lazy_loader = get_lazy_loader()
+        
+        from models.demos.qwen3.common.lazy_loader import get_memory_usage_gb
 
-        if lazy_loader is not None:
+        if lazy_loader is not None and os.environ.get("GENERATE_MODEL_CACHE", "0") == "1":
             param_prefix = f"layers.{self.layer_idx}.mlp"
 
             if is_meta_tensor(self.gate.weight):
@@ -129,6 +132,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 mesh_mapper=ttnn.ShardTensorToMesh(self.mesh_device, dim=0),
             )
+            del device_expert_mapping_torch, device_expert_mappings
 
         gate_proj = []
         up_proj = []
@@ -183,9 +187,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         
         if lazy_loader is not None:
             from models.demos.qwen3.common.lazy_loader import clear_module_weights
-            
-            del self.gate
-            del self.experts
             
             clear_module_weights(self)
 

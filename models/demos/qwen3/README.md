@@ -46,5 +46,6 @@ export TT_MESHDEVICE_SHAPE=4,2 # mesh device shape
 export QWEN3_MODEL="" # folder that contains the model files
 export QWEN3_MODEL_DIR="" # parent directory that contains the QWEN3_MODEL folder
 
+python generate_model_cache.py # generate model cache
 python main.py --batch_size=128 --prompt_len=64 --gen_tokens=64
 ```

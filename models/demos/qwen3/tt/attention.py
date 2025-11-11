@@ -4,6 +4,7 @@ import math
 import torch
 from torch import nn
 
+import os
 import ttnn
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
@@ -123,10 +124,9 @@ class Qwen3MoeAttention(nn.Module):
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
         lazy_loader = get_lazy_loader()
 
-        if lazy_loader is not None:
+        param_prefix = f"layers.{self.layer_idx}.self_attn"
+        if lazy_loader is not None and os.environ.get("GENERATE_MODEL_CACHE", "0") == "1":
             # Load weights on-demand if still in meta state
-            param_prefix = f"layers.{self.layer_idx}.self_attn"
-
             if is_meta_tensor(self.q_proj.weight):
                 load_parameter_for_module(self.q_proj, "weight", f"{param_prefix}.q_proj.weight")
             if is_meta_tensor(self.k_proj.weight):
@@ -136,10 +136,10 @@ class Qwen3MoeAttention(nn.Module):
             if is_meta_tensor(self.o_proj.weight):
                 load_parameter_for_module(self.o_proj, "weight", f"{param_prefix}.o_proj.weight")
 
-            if is_meta_tensor(self.q_norm.weight):
-                load_parameter_for_module(self.q_norm, "weight", f"{param_prefix}.q_norm.weight")
-            if is_meta_tensor(self.k_norm.weight):
-                load_parameter_for_module(self.k_norm, "weight", f"{param_prefix}.k_norm.weight")
+        if is_meta_tensor(self.q_norm.weight):
+            load_parameter_for_module(self.q_norm, "weight", f"{param_prefix}.q_norm.weight")
+        if is_meta_tensor(self.k_norm.weight):
+            load_parameter_for_module(self.k_norm, "weight", f"{param_prefix}.k_norm.weight")
 
         self.ccl = TT_CCL(self.mesh_device)
 
