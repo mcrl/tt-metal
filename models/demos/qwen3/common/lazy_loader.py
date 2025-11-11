@@ -1,10 +1,3 @@
-"""
-Memory-efficient loader that uses safetensors mmap for lazy weight loading.
-
-This keeps models in meta state and loads weights on-demand during setup_tt(),
-using memory-mapped files for zero-copy access.
-"""
-
 from typing import Dict, Optional, Any
 from pathlib import Path
 import torch
@@ -40,16 +33,13 @@ class LazyWeightLoader:
         if not self.ckpt_paths:
             raise ValueError(f"No .safetensors files found in {ckpt_dir}")
         
-        # Keep mmap'd file handles open for zero-copy access
-        self.mmap_files = {}  # path -> file handle
+        self.mmap_files = {} 
         
-        # Build a map from parameter name to (checkpoint file, original key)
         self.param_to_file = {}
-        self.param_to_key = {}  # Store original key with "model." prefix if present
-        self.param_metadata = {}  # Store shape/dtype info
+        self.param_to_key = {}
+        self.param_metadata = {}
         
         for ckpt_path in self.ckpt_paths:
-            # Open with mmap for zero-copy access
             f = safe_open(ckpt_path, framework="pt", device="cpu")
             self.mmap_files[str(ckpt_path)] = f
             
@@ -58,15 +48,11 @@ class LazyWeightLoader:
                 self.param_to_file[clean_key] = str(ckpt_path)
                 self.param_to_key[clean_key] = key
                 
-                # Store metadata without loading the full tensor
                 tensor_slice = f.get_slice(key)
                 self.param_metadata[clean_key] = {
                     'shape': tensor_slice.get_shape(),
                     'dtype': str(tensor_slice.get_dtype())
                 }
-        
-        print(f"✓ Initialized lazy loader: {len(self.param_to_file)} parameters across {len(self.ckpt_paths)} files")
-        print(f"✓ Using memory-mapped access - minimal RAM usage until weights are loaded")
     
     def get_parameter(self, param_name: str, load_to_ram: bool = True) -> torch.Tensor:
         """
@@ -92,16 +78,12 @@ class LazyWeightLoader:
         original_key = self.param_to_key[param_name]
         
         try:
-            # Access via mmap
             f = self.mmap_files[ckpt_path]
             tensor = f.get_tensor(original_key)
             
             if load_to_ram:
-                # Clone to break mmap reference and load into RAM
-                # This is necessary before uploading to device
                 tensor = tensor.clone()
             
-            # Convert to bfloat16 if needed
             if tensor.dtype != torch.bfloat16:
                 tensor = tensor.to(dtype=torch.bfloat16)
             
@@ -172,12 +154,10 @@ def load_parameter_for_module(module: nn.Module, param_name: str, full_param_pat
         raise RuntimeError("Lazy loader not initialized. Call init_lazy_loader() first.")
     
     try:
-        # Load the weight
         print(f"  Loading parameter: {full_param_path}")
         weight = loader.get_parameter(full_param_path, load_to_ram=True)
         print(f"    ✓ Loaded {full_param_path}: shape={weight.shape}, dtype={weight.dtype}")
         
-        # Assign to module
         module._parameters[param_name] = nn.Parameter(weight, requires_grad=False)
     except Exception as e:
         print(f"    ✗ Failed to load {full_param_path}: {e}")
@@ -196,7 +176,6 @@ def load_parameters_for_module(module: nn.Module, param_prefix: str):
     if loader is None:
         raise RuntimeError("Lazy loader not initialized. Call init_lazy_loader() first.")
     
-    # Recursively load parameters
     def _load_params(mod: nn.Module, prefix: str):
         for param_name, parameter in mod._parameters.items():
             if parameter is None:
@@ -286,7 +265,7 @@ def materialize(model: nn.Module) -> None:
             _recurse(child)
 
     _recurse(model)
-    print("✓ Model materialized as meta tensors (zero RAM usage)")
+    print("Model materialized as meta tensors")
 
 
 @profile_trace("load-with-lazy-loader", level=1)
@@ -303,10 +282,8 @@ def load(ckpt_dir: str, model: nn.Module, lazy: bool = True, io_workers: int = 4
         blas_workers: Number of BLAS threads (only used if lazy=False)
     """
     if lazy:
-        # Initialize lazy loader - no weights loaded yet
         init_lazy_loader(ckpt_dir)
-        print("✓ Lazy loader initialized - weights will be loaded on-demand during setup_tt()")
+        print("Lazy loader initialized - weights will be loaded on-demand during setup_tt()")
     else:
-        # Old behavior - load everything to RAM
         from models.demos.qwen3.common.loader import load as old_load
         old_load(ckpt_dir, model, io_workers, blas_workers)

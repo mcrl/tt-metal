@@ -1,6 +1,3 @@
-# SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-# SPDX-License-Identifier: Apache-2.0
-
 import ttnn
 import pytest
 import torch
@@ -34,11 +31,9 @@ def reference_moe_bmm(input_tensor, weights, num_routed_tokens):
         else:
             num_tokens = num_routed_tokens[e].item()
         if num_tokens > 0:
-            # Only compute for active tokens
             active_input = input_tensor[e, :num_tokens, :]  # (num_tokens, H_in)
             expert_weight = weights[e, :, :]  # (H_in, H_out)
             
-            # Matmul: (num_tokens, H_in) @ (H_in, H_out) -> (num_tokens, H_out)
             output[e, :num_tokens, :] = active_input @ expert_weight
     
     return output
@@ -50,8 +45,6 @@ def pad_to_tile_size(size, tile_size=32):
 
 
 @pytest.mark.parametrize("config", [
-    # {"num_experts": 8, "max_tokens": 16, "h_in": 4, "h_out": 8},
-    # {"num_experts": 16, "max_tokens": 64, "h_in": 2048, "h_out": 768},
     {"num_experts": 128, "max_tokens": 2048, "h_in": 2048, "h_out": 768},
     {"num_experts": 128, "max_tokens": 64, "h_in": 2048, "h_out": 768},
     {"num_experts": 32, "max_tokens": 2048, "h_in": 4096, "h_out": 1536},
@@ -72,7 +65,6 @@ def test_moe_bmm(mesh_device, config):
     h_in = config["h_in"]
     h_out = config["h_out"]
     
-    # Pad dimensions to tile size (32x32)
     max_tokens_padded = pad_to_tile_size(max_tokens)
     h_in_padded = pad_to_tile_size(h_in)
     h_out_padded = pad_to_tile_size(h_out)
@@ -80,30 +72,22 @@ def test_moe_bmm(mesh_device, config):
     print(f"\nTest config: experts={num_experts}, tokens={max_tokens} (padded={max_tokens_padded}), "
           f"h_in={h_in} (padded={h_in_padded}), h_out={h_out} (padded={h_out_padded})")
     
-    # Create random inputs (padded for TILE layout)
     input_torch = torch.randn(num_experts, max_tokens_padded, h_in_padded, dtype=torch.bfloat16)
     weights_torch = torch.randn(num_experts, h_in_padded, h_out_padded, dtype=torch.bfloat16)
     
-    # Create varied num_routed_tokens (some experts with fewer tokens)
     num_routed = torch.zeros(num_experts, 1, dtype=torch.int32)
     for e in range(num_experts):
-        # Random token count between 1 and max_tokens
         num_routed[e, 0] = torch.randint(1, max_tokens + 1, (1,)).item()
 
-    # Store reference with 2D shape for PyTorch reference
     num_routed_2d = num_routed.clone()
     
     print(f"Token counts per expert: {num_routed.squeeze().tolist()}")
 
-    # Compute reference output (on non-padded dimensions conceptually)
     reference_output = reference_moe_bmm(input_torch, weights_torch, num_routed_2d)
-    
-    # Convert to TTNN tensors
-    # Input: (E/D, T, H_in) TILE_LAYOUT, sharded across devices
+
     num_devices = mesh_device.get_num_devices()
     experts_per_device = num_experts // num_devices
 
-    # Shard input across devices by expert dimension
     input_tt = ttnn.from_torch(
         input_torch,
         device=mesh_device,
@@ -113,7 +97,6 @@ def test_moe_bmm(mesh_device, config):
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
 
-    # Shard weights across devices by expert dimension
     weights_tt = ttnn.from_torch(
         weights_torch,
         device=mesh_device,
@@ -123,10 +106,8 @@ def test_moe_bmm(mesh_device, config):
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
     
-    # Reshape to 1D for compatibility with new API
     num_routed_1d = num_routed.squeeze()
 
-    # Shard num_routed_tokens across devices
     num_routed_tt = ttnn.from_torch(
         num_routed_1d,
         device=mesh_device,
@@ -136,7 +117,6 @@ def test_moe_bmm(mesh_device, config):
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
     
-    # Run moe_bmm operation (bfloat8_b inputs/weights -> bfloat8_b output)
     output_tt = ttnn.experimental.moe_bmm(
         input_tt,
         weights_tt,
@@ -144,13 +124,11 @@ def test_moe_bmm(mesh_device, config):
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
-    # Convert back to torch (bfloat8_b automatically converted to bfloat16)
     output_torch = ttnn.to_torch(
         output_tt,
         mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
     )
 
-    # Verify shapes
     print(f"Output shape (TT): {output_torch.shape}")
     print(f"Output shape (Ref): {reference_output.shape}")
     
@@ -161,13 +139,11 @@ def test_moe_bmm(mesh_device, config):
     assert output_torch.shape == expected_shape, \
         f"Shape mismatch: {output_torch.shape} vs expected {expected_shape}"
     
-    # Verify layout and dtype
     assert output_tt.layout == ttnn.TILE_LAYOUT, \
         f"Layout should be TILE, got {output_tt.layout}"
     assert output_tt.dtype == ttnn.bfloat8_b, \
         f"Dtype should be bfloat8_b, got {output_tt.dtype}"
     
-    # Compare outputs per expert (only active tokens)
     max_diff_overall = 0.0
     mean_diff_overall = 0.0
     num_comparisons = 0
@@ -175,7 +151,6 @@ def test_moe_bmm(mesh_device, config):
     for e in range(num_experts):
         num_tokens = num_routed[e, 0].item()
         if num_tokens > 0:
-            # Compare only active tokens
             ref = reference_output[e, :num_tokens, :]
             actual = output_torch[e, :num_tokens, :]
 
@@ -185,6 +160,5 @@ def test_moe_bmm(mesh_device, config):
 
 
 if __name__ == "__main__":
-    # For standalone testing without pytest
     print("To run tests, use: pytest test_moe_bmm.py -v")
 

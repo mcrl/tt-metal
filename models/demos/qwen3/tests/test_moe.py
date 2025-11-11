@@ -57,19 +57,17 @@ def test_moe_prefill(batch_size, seq_len, mesh_device):
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
-    # Load reference layer
+
     ref_layer = load_reference_layer(seq_len=seq_len)
     ref_mlp = ref_layer.mlp
-    # Create TT MoE
+
     config = create_test_config()
     layer_idx = 0
     start_pos = 0
     tt_mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device)
 
-    # Copy gate weights from reference
     tt_mlp.gate.weight.data = ref_mlp.gate.weight.data.clone()
 
-    # Copy expert weights from reference
     for i, tt_expert in enumerate(tt_mlp.experts):
         if i < len(ref_mlp.experts):
             ref_expert = ref_mlp.experts[i]
@@ -110,19 +108,17 @@ def test_moe_decode(batch_size, seq_len, mesh_device):
     torch.manual_seed(0)
 
     set_and_get_device_cache(mesh_device)
-    # Load reference layer
+
     ref_layer = load_reference_layer(seq_len=seq_len)
     ref_mlp = ref_layer.mlp
-    # Create TT MoE
+
     config = create_test_config()
     layer_idx = 0
     start_pos = 0
     tt_mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device)
 
-    # Copy gate weights from reference
     tt_mlp.gate.weight.data = ref_mlp.gate.weight.data.clone()
 
-    # Copy expert weights from reference
     for i, tt_expert in enumerate(tt_mlp.experts):
         if i < len(ref_mlp.experts):
             ref_expert = ref_mlp.experts[i]

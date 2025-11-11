@@ -2,9 +2,6 @@
 
 # SPDX-License-Identifier: Apache-2.0
 import os
-# Only import tt_lock if not running through tracy profiler
-if os.environ.get("TT_LOCK") != "1":
-    import tt_lock
 import pytest
 import torch
 import random

@@ -183,9 +183,6 @@ def main():
             if not port:
                 logger.error("No available port found")
                 sys.exit(1)
-            import tt_lock
-            os.environ["TT_LOCK"] = "1"
-
             logger.info(f"Using port {port}")
             doReport, captureProcess = run_report_setup(options.verbose, outputFolder, binaryFolder, port)
 

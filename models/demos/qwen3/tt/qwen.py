@@ -41,14 +41,12 @@ class Qwen3MoeDecoderLayer(nn.Module):
         if self.is_tt_setup:
             return
         
-        # Load layer norm weights if using lazy loading
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
         lazy_loader = get_lazy_loader()
         
         if lazy_loader is not None:
             param_prefix = f"layers.{self.layer_idx}"
             
-            # Load layernorm weights before calling their setup_tt()
             if is_meta_tensor(self.input_layernorm.weight):
                 load_parameter_for_module(self.input_layernorm, "weight", f"{param_prefix}.input_layernorm.weight")
             if is_meta_tensor(self.post_attention_layernorm.weight):
@@ -61,7 +59,6 @@ class Qwen3MoeDecoderLayer(nn.Module):
         
         self.is_tt_setup = True
         
-        # Force garbage collection after layer setup to free memory
         if lazy_loader is not None:
             import gc
             gc.collect()
@@ -165,10 +162,8 @@ class Qwen3MoeModel(nn.Module):
         if self.is_tt_setup:
             return
 
-        # Create cache prefix for this mesh configuration
         cache_prefix = get_model_cache_prefix(self.mesh_device)
 
-        # Load embeddings and model-level weights if needed
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor, get_memory_usage_gb
         lazy_loader = get_lazy_loader()
 
@@ -182,7 +177,6 @@ class Qwen3MoeModel(nn.Module):
             if is_meta_tensor(self.lm_head.weight):
                 load_parameter_for_module(self.lm_head, "weight", "lm_head.weight")
 
-        # Setup layers (will trigger lazy loading per layer)
         for layer_idx, layer in enumerate(self.layers):
             if lazy_loader is not None:
                 mem_before = get_memory_usage_gb()
@@ -194,7 +188,6 @@ class Qwen3MoeModel(nn.Module):
                 mem_after = get_memory_usage_gb()
                 print(f"  Memory: {mem_after:.2f} GB (delta: {mem_after - mem_before:+.2f} GB)")
 
-        # Upload embeddings to device
         self.embedding_weight = ttnn.as_tensor(
             self.embed_tokens.weight,
             device=self.mesh_device,
@@ -221,7 +214,6 @@ class Qwen3MoeModel(nn.Module):
 
         self.is_tt_setup = True
         
-        # Free CPU RAM after setup (if using lazy loader)
         if lazy_loader is not None:
             from models.demos.qwen3.common.lazy_loader import clear_module_weights
             clear_module_weights(self)

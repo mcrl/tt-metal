@@ -118,10 +118,8 @@ class Qwen3MoeAttention(nn.Module):
         if self.is_tt_setup:
             return
 
-        # Create cache prefix for this mesh configuration
         cache_prefix = get_model_cache_prefix(self.mesh_device)
 
-        # Load weights lazily if they're still in meta state
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
         lazy_loader = get_lazy_loader()
 
@@ -138,7 +136,6 @@ class Qwen3MoeAttention(nn.Module):
             if is_meta_tensor(self.o_proj.weight):
                 load_parameter_for_module(self.o_proj, "weight", f"{param_prefix}.o_proj.weight")
 
-            # Load RMSNorm weights before calling their setup_tt()
             if is_meta_tensor(self.q_norm.weight):
                 load_parameter_for_module(self.q_norm, "weight", f"{param_prefix}.q_norm.weight")
             if is_meta_tensor(self.k_norm.weight):
@@ -177,7 +174,6 @@ class Qwen3MoeAttention(nn.Module):
             layout=ttnn.TILE_LAYOUT,
             cache_file_name=ttnn_model_cache_path(f"{cache_prefix}decoder_{self.layer_idx}_qkv_proj"),
         )
-        # Free intermediate tensors
         del q_weight, k_weight, v_weight, qkv_list, wq, wk, wv
 
         self.q_norm.setup_tt()
@@ -197,14 +193,11 @@ class Qwen3MoeAttention(nn.Module):
             cache_file_name=ttnn_model_cache_path(f"{cache_prefix}decoder_{self.layer_idx}_o_proj"),
         )
         
-        # Free intermediate tensor
         del o_weight
 
         self.init_kv_cache()
 
         # Create dp_degree tensor for extract_attention_input API
-        # Each device gets its row index in the mesh (0 to dp-1)
-        # Pattern: [0, 0, 0, 0, 1, 1, 1, 1] for dp=2, tp=4
         dp_degree_host = torch.tensor(
             [row for row in range(self.dp) for _ in range(self.tp)],
             dtype=torch.int32
@@ -216,8 +209,8 @@ class Qwen3MoeAttention(nn.Module):
             device=self.mesh_device,
             mesh_mapper=ttnn.ShardTensor2dMesh(
                 self.mesh_device,
-                dims=(0, None),  # Shard dim 0 across dp * tp devices
-                mesh_shape=(self.num_devices, 1)  # Treat as 1D array
+                dims=(0, None),
+                mesh_shape=(self.num_devices, 1)
             ),
         )
 
@@ -230,7 +223,6 @@ class Qwen3MoeAttention(nn.Module):
 
         self.is_tt_setup = True
         
-        # Free CPU RAM after uploading to device (if using lazy loader)
         if lazy_loader is not None:
             from models.demos.qwen3.common.lazy_loader import clear_module_weights
             clear_module_weights(self)
@@ -261,8 +253,6 @@ class Qwen3MoeAttention(nn.Module):
     def forward_prefill(
         self, hidden_states: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
-        """Prefill starts. Hidden stats: [1, B, S, H]"""
-
         batch_size, sequence_length, hidden_size = hidden_states.shape
         mem_cfg = ttnn.L1_MEMORY_CONFIG if sequence_length == 1 else ttnn.DRAM_MEMORY_CONFIG
         hidden_shape = (batch_size // self.dp, 1, sequence_length, -1)
@@ -402,7 +392,6 @@ class Qwen3MoeAttention(nn.Module):
 
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
 
-        # Extract attention input for this device using new multi-core API
         with Profiler().trace_with_timer("extract-attention-input", level=4):
             hidden_states = ttnn.extract_attention_input(
                 hidden_states,

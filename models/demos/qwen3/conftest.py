@@ -1,5 +1,3 @@
-# SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC.
-# SPDX-License-Identifier: Apache-2.0
 import os
 from pathlib import Path
 import warnings
@@ -10,7 +8,6 @@ from transformers import AutoConfig
 
 import ttnn
 
-# from models.demos.qwen3.tt.ccl_1d import CCL1D
 from models.demos.qwen3.utils.device import create_mesh_device
 
 # Silence noisy deprecation warnings from third-party packages (Pydantic V2 migration)
@@ -43,20 +40,16 @@ def mesh_device(request, device_params):
     device_ids = ttnn.get_device_ids()
     request.node.pci_ids = [ttnn.GetPCIeDeviceID(i) for i in device_ids]
 
-    # Use centralized create_mesh_device function
     mesh_device = create_mesh_device(device_params)
-    # submeshes = mesh_device.create_submeshes(ttnn.MeshShape(2, 8))
 
     logger.debug(f"multidevice with {mesh_device.get_num_devices()} devices is created with shape {mesh_device.shape}")
     yield mesh_device
 
-    # Cleanup
     for submesh in mesh_device.get_submeshes():
         ttnn.close_mesh_device(submesh)
 
     ttnn.close_mesh_device(mesh_device)
 
-    # Reset fabric config if it was set
     if device_params and "fabric_config" in device_params:
         ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
 

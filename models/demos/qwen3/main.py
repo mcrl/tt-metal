@@ -1,4 +1,3 @@
-import tt_lock
 import fire
 from typing import Optional, Dict
 import os

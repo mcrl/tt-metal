@@ -18,7 +18,6 @@ from utils.memory_state import print_memory_state
 
 from models.tt_transformers.tt.rope import RotarySetup
 
-
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
     probs_sum = torch.cumsum(probs_sort, dim=-1)
@@ -47,7 +46,6 @@ class Qwen3MoETT:
 
         self.config = Qwen3MoeConfig.from_dict(data)
 
-        # FIXME: ad-hoc for reducing KV cache memory
         self.config.max_batch_size = 32
         self.config.max_seq_len = 512
 
@@ -93,7 +91,6 @@ class Qwen3MoETT:
 
         enable_persistent_kernel_cache()
         
-        # Trace variables for decode mode
         self.trace_id_decode = None
         self.trace_inputs_decode = None
         self.trace_output_decode = None
@@ -204,17 +201,13 @@ class Qwen3MoETT:
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
         )
         
-        # Get initial rotation matrices and extract their specs for persistent allocation
         position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
         rot_mats_initial = self.rope.get_rot_mats(position_idxs)
         trans_mat = self.rope.transformation_mat
         
-        # Store the specs of rotation matrices so we can verify updates match
         self.trace_rot_cos_spec = rot_mats_initial[0].shape
         self.trace_rot_sin_spec = rot_mats_initial[1].shape
         
-        # Allocate persistent rotation matrix buffers with same config
-        # Note: get_rot_mats() returns sharded tensors, we need to match that
         self.trace_rot_mats_persistent = rot_mats_initial
         
         # Compile run
@@ -229,17 +222,14 @@ class Qwen3MoETT:
         ttnn.synchronize_device(self.mesh_device)
         logger.info("Done compiling model for trace")
         
-        # Warmup runs - need to update rotation matrices each time
+        # Warmup runs
         for i in range(3):
-            # Get fresh rotation matrices for this position
             position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
             rot_mats_warmup = self.rope.get_rot_mats(position_idxs)
             
-            # Deallocate old rotation matrices
             self.trace_rot_mats_persistent[0].deallocate()
             self.trace_rot_mats_persistent[1].deallocate()
             
-            # Use new rotation matrices
             self.trace_rot_mats_persistent = rot_mats_warmup
             
             logits_tt = self.model(
@@ -252,12 +242,9 @@ class Qwen3MoETT:
             )
         ttnn.synchronize_device(self.mesh_device)
         
-        # Capture trace with current rotation matrices
-        # Get fresh rotation matrices for capture
         position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
         rot_mats_capture = self.rope.get_rot_mats(position_idxs)
         
-        # Deallocate old and use capture matrices
         self.trace_rot_mats_persistent[0].deallocate()
         self.trace_rot_mats_persistent[1].deallocate()
         self.trace_rot_mats_persistent = rot_mats_capture
@@ -307,23 +294,17 @@ class Qwen3MoETT:
             cq_id=0
         )
         
-        # CRITICAL: Update rotation matrices for the current position
-        # Get new rotation matrices for current position
         position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
         rot_mats_new = self.rope.get_rot_mats(position_idxs)
         
-        # Verify shapes match what was captured
         assert rot_mats_new[0].shape == self.trace_rot_cos_spec, \
             f"Rotation cos matrix shape mismatch: {rot_mats_new[0].shape} vs {self.trace_rot_cos_spec}"
         assert rot_mats_new[1].shape == self.trace_rot_sin_spec, \
             f"Rotation sin matrix shape mismatch: {rot_mats_new[1].shape} vs {self.trace_rot_sin_spec}"
         
-        # Deallocate old rotation matrices
         self.trace_rot_mats_persistent[0].deallocate()
         self.trace_rot_mats_persistent[1].deallocate()
         
-        # Update to use new rotation matrices at the same memory locations
-        # Note: Since we deallocated, the new tensors should allocate at the same addresses
         self.trace_rot_mats_persistent = rot_mats_new
         
         # Execute trace
@@ -339,7 +320,6 @@ class Qwen3MoETT:
 
         batch_size = len(prompt_tokens)
         bsz_per_device = batch_size // self.dp_degree
-        # assert batch_size <= self.config.max_batch_size
 
         permutation = torch.randperm(self.config.max_num_blocks, device="cpu")
         reverse_permutation = torch.argsort(permutation)
@@ -370,17 +350,14 @@ class Qwen3MoETT:
 
         ttnn.synchronize_device(self.mesh_device)
 
-        # Check if trace is enabled
         use_trace = os.environ.get("TT_TRACE", "1") == "1"
         if use_trace:
             logger.warning("Trace ENABLED")
 
         with Profiler().trace_with_timer("Warmup", level=0):
-            # Warmup: Run prefill once, then decode once
             logger.info("Warmup: Running prefill...")
             curr_pos = min_prompt_len
             
-            # Prefill warmup
             ids = ttnn.from_torch(
                 tokens[:, 0:curr_pos],
                 device=self.mesh_device,
@@ -404,11 +381,9 @@ class Qwen3MoETT:
             ttnn.synchronize_device(self.mesh_device)
             logger.info("Warmup: Prefill complete")
             
-            # Decode warmup - run 1 token decode to compile
             logger.info("Warmup: Running decode (1 token)...")
             prev_pos = min_prompt_len
             
-            # Use dummy token for decode warmup
             ids_decode = ttnn.from_torch(
                 tokens[:, prev_pos:prev_pos+1],
                 device=self.mesh_device,
@@ -434,7 +409,6 @@ class Qwen3MoETT:
             ttnn.synchronize_device(self.mesh_device)
             logger.info("Warmup: Decode compilation complete")
             
-            # If trace enabled, capture decode trace during warmup
             if use_trace:
                 logger.info("Capturing decode trace during warmup...")
                 self._capture_trace_decode(tokens, prev_pos, page_table_tt, bsz_per_device)
@@ -451,7 +425,7 @@ class Qwen3MoETT:
                 print(f"curr_pos: {curr_pos}")
                 iter_start_time = time.time()
                 mode = "prefill" if prev_pos == 0 else "decode"
-                page_table = page_table_tt # if mode == "prefill" else page_table_tt_decode
+                page_table = page_table_tt
 
                 if mode == "prefill":
                     ids = ttnn.from_torch(
@@ -474,12 +448,9 @@ class Qwen3MoETT:
                     trans_mat = self.rope.transformation_mat_prefill
                     logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
                 else:
-                    # Decode phase - use trace if it was captured during warmup
                     if use_trace and self.trace_id_decode is not None:
-                        # Use captured trace for decode iterations
                         logits_tt = self._execute_trace_decode(tokens, prev_pos, page_table, bsz_per_device)
                     else:
-                        # Fallback to non-trace execution
                         ids = ttnn.from_torch(
                             tokens[:, prev_pos:curr_pos],
                             device=self.mesh_device,
@@ -508,16 +479,8 @@ class Qwen3MoETT:
                         dtype=torch.int32,
                         mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=1),
                     )[:, 0]
-                    # Record iteration time after sampling completes
                     iter_times.append(time.time() - iter_start_time)
 
-                    """
-                    if temperature > 0:
-                        probs = torch.softmax(torch.div(logits[:, -1, :], temperature), dim=-1)
-                        next_tokens = sample_top_p(probs, top_p).reshape(-1)
-                    else:
-                        next_tokens = torch.argmax(logits[:, -1, :], dim=-1)
-                    """
                     next_tokens = torch.where(
                         condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
                     )
@@ -528,7 +491,6 @@ class Qwen3MoETT:
                         torch.logical_and(torch.logical_not(input_text_mask[:, curr_pos]), torch.eq(next_tokens, eos_id)),
                     )
                     prev_pos = curr_pos
-                    # print_memory_state(self.mesh_device)
                     if all(eos_reached):
                         break
 
