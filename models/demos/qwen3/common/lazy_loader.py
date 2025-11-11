@@ -154,13 +154,11 @@ def load_parameter_for_module(module: nn.Module, param_name: str, full_param_pat
         raise RuntimeError("Lazy loader not initialized. Call init_lazy_loader() first.")
     
     try:
-        print(f"  Loading parameter: {full_param_path}")
         weight = loader.get_parameter(full_param_path, load_to_ram=True)
-        print(f"    ✓ Loaded {full_param_path}: shape={weight.shape}, dtype={weight.dtype}")
-        
         module._parameters[param_name] = nn.Parameter(weight, requires_grad=False)
+        
     except Exception as e:
-        print(f"    ✗ Failed to load {full_param_path}: {e}")
+        print(f"Failed to load {full_param_path}: {e}")
         raise
 
 

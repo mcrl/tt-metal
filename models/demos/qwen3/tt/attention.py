@@ -228,7 +228,6 @@ class Qwen3MoeAttention(nn.Module):
             clear_module_weights(self)
             print(f"Layer {self.layer_idx} attention weights cleared from CPU RAM")
 
-    
     def init_kv_cache(self):
         cache_k = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
         cache_v = torch.zeros(self.cache_shape, dtype=torch.bfloat16)

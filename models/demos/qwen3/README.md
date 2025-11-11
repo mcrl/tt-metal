@@ -20,24 +20,31 @@ export PYTHONPATH=${pwd}:${pwd}/ttnn
 $ cd models/demos/qwen3
 
 # Attention tests
-$ pytest tests/test_attn.py -v
+$ pytest tests/test_attn.py
 
 # MoE tests
-$ pytest tests/test_moe.py -v
-
-# MoE operation tests
-$ pytest tests/test_moe_mapping.py -v
-$ pytest tests/test_moe_routing_tensors.py -v
+$ pytest tests/test_moe.py
 ```
 
 ### Performance Tests
 
 ```bash
 # Attention performance
-$ python -m tracy -r -p -v -m pytest tests/test_attn_perf.py::test_attn_prefill
-$ python -m tracy -r -p -v -m pytest tests/test_attn_perf.py::test_attn_decode
+$ ./run.sh attn_prefill
+$ ./run.sh attn_decode
 
 # MoE performance
-$ python -m tracy -r -p -v -m pytest tests/test_moe_perf.py::test_moe_prefill
-$ python -m tracy -r -p -v -m pytest tests/test_moe_perf.py::test_moe_decode
+$ ./run.sh moe_prefill
+$ ./run.sh moe_decode
+```
+
+### Run Models
+```bash
+export TT_TRACE=1 # enable trace on decode
+export TT_ENABLE_MATERIALIZE=1 # dynamic load
+export TT_MESHDEVICE_SHAPE=4,2 # mesh device shape
+export QWEN3_MODEL="" # folder that contains the model files
+export QWEN3_MODEL_DIR="" # parent directory that contains the QWEN3_MODEL folder
+
+python main.py --batch_size=128 --prompt_len=64 --gen_tokens=64
 ```

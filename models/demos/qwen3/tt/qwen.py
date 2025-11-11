@@ -4,9 +4,6 @@ from typing import Tuple
 
 import ttnn
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
-from models.demos.qwen3.tt.rope import (
-    precompute_freqs_cis_v2 as precompute_freqs_cis_tt_v2,
-)
 
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
 from models.demos.qwen3.tt.attention import Qwen3MoeAttention
@@ -185,6 +182,8 @@ class Qwen3MoeModel(nn.Module):
             layer.setup_tt()
 
             if lazy_loader is not None:
+                import gc
+                gc.collect()
                 mem_after = get_memory_usage_gb()
                 print(f"  Memory: {mem_after:.2f} GB (delta: {mem_after - mem_before:+.2f} GB)")
 
