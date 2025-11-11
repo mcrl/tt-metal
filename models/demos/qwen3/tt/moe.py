@@ -63,7 +63,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
         lazy_loader = get_lazy_loader()
 
-        if lazy_loader is not None and self.layer_idx > 90: # for RAM, other layers are already cached
+        if lazy_loader is not None:
             param_prefix = f"layers.{self.layer_idx}.mlp"
 
             if is_meta_tensor(self.gate.weight):
@@ -183,9 +183,13 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         
         if lazy_loader is not None:
             from models.demos.qwen3.common.lazy_loader import clear_module_weights
+            
+            del self.gate
+            del self.experts
+            
             clear_module_weights(self)
-            print(f"Layer {self.layer_idx} MoE weights cleared from CPU RAM")
 
+            print(f"Layer {self.layer_idx} MoE weights cleared from CPU RAM")
 
     @profile_trace("Qwen3MoeSparseMoeBlock", level=3)
     def forward_tt(self, hidden_states: ttnn.Tensor, mode: InferenceMode = InferenceMode.PREFILL) -> ttnn.Tensor:
