@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "compute_kernel_api.h"
 #include "compute_kernel_api/eltwise_binary.h"
 #include "compute_kernel_api/tile_move_copy.h"
@@ -31,16 +27,12 @@
  * - num_local_experts: Number of experts on this device
  * - max_tokens: Maximum tokens per expert
  * - max_tokens_per_core: Maximum tokens per core
- *
- * Note: This kernel operates on row-major data (not tiles), performing
- * element-wise operations using manual bfloat16 arithmetic.
  */
 
 #define MAX_EXPERTS_PER_DEVICE 16
 
 namespace NAMESPACE {
 void MAIN {
-    // Circular buffer IDs (static)
     constexpr tt::CBIndex cb_id_input = tt::CBIndex::c_0;
     constexpr tt::CBIndex cb_id_token_idx = tt::CBIndex::c_1;
     constexpr tt::CBIndex cb_id_weights = tt::CBIndex::c_2;
@@ -50,13 +42,11 @@ void MAIN {
     constexpr tt::CBIndex cb_id_input_tile = tt::CBIndex::c_6;  // Tilized input (TILE format)
     constexpr tt::CBIndex cb_id_output = tt::CBIndex::c_16;
 
-    // Compile-time arguments
     constexpr uint32_t hidden_dim = get_compile_time_arg_val(0);
     constexpr uint32_t num_local_experts = get_compile_time_arg_val(1);
     constexpr uint32_t max_tokens = get_compile_time_arg_val(2);
     constexpr uint32_t max_tokens_per_core = get_compile_time_arg_val(3);
 
-    // Runtime arguments
     uint32_t num_tokens_per_core = get_arg_val<uint32_t>(0);
     uint32_t start_token_idx = get_arg_val<uint32_t>(1);
 
@@ -98,14 +88,11 @@ void MAIN {
         cb_wait_front(cb_id_token_idx, 1);
         tensix_sync();
         cb_get_tile(cb_id_token_idx, 0, &token_idx[expert_idx]);
-        // The first 4 entries have metadata, so we look at the 5th entry
-        // for our value pushed from the reader.
         token_idx[expert_idx] += 4;
         cb_release_tile(cb_id_token_idx);
         cb_pop_front(cb_id_token_idx, 1);
     }
 
-    // Init APIs
     init_bcast<EltwiseBinaryType::ELWMUL, BroadcastType::SCALAR>(
         cb_id_input, cb_id_weight_scalar, cb_id_output
     );
@@ -115,13 +102,11 @@ void MAIN {
     for (uint32_t tidx = start_token_idx; tidx < end_token_idx; tidx++) {
         tile_regs_acquire();
 
-        // Accumulate contributions from all experts
         for (uint32_t expert_idx = 0; expert_idx < num_local_experts; expert_idx++) {
             uint32_t t_e = num_routed[expert_idx];
 
             for (uint32_t i = 0; i < t_e; i++) {
                 if (token_idx[expert_idx][i] == tidx) {
-                    // Wait for and read hidden state
                     cb_wait_front(cb_id_weight_scalar, 1);
                     cb_wait_front(cb_id_input, hidden_dim_tiles);
                     for (uint32_t h = 0; h < hidden_dim_tiles; h++) {
@@ -149,4 +134,4 @@ void MAIN {
         cb_push_back(cb_id_output, hidden_dim_tiles);
     }
 }
-}  // namespace NAMESPACE
+}

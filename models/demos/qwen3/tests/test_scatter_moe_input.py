@@ -204,7 +204,7 @@ def test_scatter_moe_input(mesh_device, num_tokens, top_k, num_experts, hidden_d
 
         # Note: Padding region [t_e, num_tokens) is not initialized and not checked
 
-    print("✓ Test passed!")
+    print("Test passed!")
 
 
 if __name__ == "__main__":

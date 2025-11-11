@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #pragma once
 
 #include "ttnn/tensor/tensor.hpp"
@@ -18,7 +14,7 @@ using tt::tt_metal::TensorLayout;
 struct ExtractAttentionInput {
     MemoryConfig output_mem_config;
     DataType output_dtype;
-    uint32_t dp;  // Data parallelism degree
+    uint32_t dp;
 
     void validate_with_output_tensors(
         const std::vector<Tensor>& input_tensors,
@@ -35,4 +31,4 @@ struct ExtractAttentionInput {
         std::vector<Tensor>& output_tensors) const;
 };
 
-}  // namespace ttnn::operations::experimental::attention
+}

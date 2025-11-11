@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 
@@ -44,18 +40,15 @@
  */
 
 void kernel_main() {
-    // Runtime arguments
     uint32_t input_buffer_addr = get_arg_val<uint32_t>(0);
     uint32_t token_idx_map_addr = get_arg_val<uint32_t>(1);
     uint32_t weights_addr = get_arg_val<uint32_t>(2);
     uint32_t num_routed_tokens_addr = get_arg_val<uint32_t>(3);
     uint32_t output_buffer_addr = get_arg_val<uint32_t>(4);
 
-    // Token range for this core (always provided as runtime args 5 and 6)
     uint32_t start_token_idx = get_arg_val<uint32_t>(5);
     uint32_t end_token_idx = get_arg_val<uint32_t>(6);
 
-    // Compile-time arguments
     constexpr uint32_t cb_id_input = get_compile_time_arg_val(0);
     constexpr uint32_t cb_id_output = get_compile_time_arg_val(1);
     constexpr uint32_t cb_id_weight = get_compile_time_arg_val(2);
@@ -70,7 +63,6 @@ void kernel_main() {
     constexpr uint32_t max_tokens = get_compile_time_arg_val(11);
     constexpr uint32_t row_size_bytes = get_compile_time_arg_val(12);
 
-    // Create address generators
     const InterleavedAddrGen<input_is_dram> input_addrgen = {
         .bank_base_address = input_buffer_addr,
         .page_size = row_size_bytes
@@ -83,7 +75,7 @@ void kernel_main() {
 
     const InterleavedAddrGen<weights_is_dram> weights_addrgen = {
         .bank_base_address = weights_addr,
-        .page_size = max_tokens * sizeof(uint16_t)  // bfloat16
+        .page_size = max_tokens * sizeof(uint16_t)
     };
 
     const InterleavedAddrGen<num_routed_is_dram> num_routed_addrgen = {
@@ -96,21 +88,18 @@ void kernel_main() {
         .page_size = row_size_bytes
     };
 
-    // Token-stationary approach: process only assigned token range
+    // Token-stationary
     for (uint32_t token_idx = start_token_idx; token_idx < end_token_idx; token_idx++) {
-        // Initialize accumulator to zero in L1
         cb_reserve_back(cb_id_output, 1);
         uint32_t accumulator_l1_addr = get_write_ptr(cb_id_output);
 
         volatile tt_l1_ptr uint16_t* accumulator_ptr =
             reinterpret_cast<volatile tt_l1_ptr uint16_t*>(accumulator_l1_addr);
 
-        // Zero-initialize accumulator
         for (uint32_t h = 0; h < hidden_dim; h++) {
-            accumulator_ptr[h] = 0;  // bfloat16 zero
+            accumulator_ptr[h] = 0;
         }
 
-        // Accumulate contributions from all experts
         for (uint32_t expert_idx = 0; expert_idx < num_local_experts; expert_idx++) {
             // Read num_routed_tokens[expert_idx]
             cb_reserve_back(cb_id_weight, 1);
@@ -147,11 +136,9 @@ void kernel_main() {
             // Search for matching token
             for (uint32_t i = 0; i < t_e; i++) {
                 if (token_idx_map_ptr[i] == token_idx) {
-                    // Found a match: read hidden state and accumulate
                     cb_reserve_back(cb_id_input, 1);
                     uint32_t hidden_l1_addr = get_write_ptr(cb_id_input);
 
-                    // Read input_hidden_state[expert_idx, i, :]
                     uint32_t input_page_idx = expert_idx * max_tokens + i;
                     uint64_t input_row_noc_addr = get_noc_addr(input_page_idx, input_addrgen);
                     noc_async_read(input_row_noc_addr, hidden_l1_addr, row_size_bytes);
@@ -160,11 +147,8 @@ void kernel_main() {
                     volatile tt_l1_ptr uint16_t* hidden_ptr =
                         reinterpret_cast<volatile tt_l1_ptr uint16_t*>(hidden_l1_addr);
 
-                    // Get weight (bfloat16)
                     uint16_t weight_bf16 = weights_row_ptr[i];
 
-                    // Convert weight to float for accumulation
-                    // bfloat16 to float: shift left by 16 bits
                     union {
                         uint32_t u;
                         float f;
@@ -172,9 +156,7 @@ void kernel_main() {
                     weight_converter.u = ((uint32_t)weight_bf16) << 16;
                     float weight = weight_converter.f;
 
-                    // Accumulate: accumulator[:] += hidden[:] * weight
                     for (uint32_t h = 0; h < hidden_dim; h++) {
-                        // Convert bfloat16 to float
                         union {
                             uint32_t u;
                             float f;
@@ -183,10 +165,8 @@ void kernel_main() {
                         hidden_converter.u = ((uint32_t)hidden_ptr[h]) << 16;
                         accum_converter.u = ((uint32_t)accumulator_ptr[h]) << 16;
 
-                        // Accumulate in float
                         float result = accum_converter.f + hidden_converter.f * weight;
 
-                        // Convert back to bfloat16
                         union {
                             uint32_t u;
                             float f;
@@ -197,13 +177,10 @@ void kernel_main() {
 
                     cb_pop_front(cb_id_input, 1);
 
-                    // Each token appears at most once per expert, so break
                     break;
                 }
             }
-
-            // Free buffers for this expert
-            cb_pop_front(cb_id_weight, 1);  // token_idx_map
+            cb_pop_front(cb_id_weight, 1);
         }
 
         // Write accumulated result to output[token_idx, :]

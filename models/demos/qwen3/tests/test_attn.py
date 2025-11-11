@@ -9,13 +9,9 @@ import ttnn
 from transformers import AutoConfig
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 
-# from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeDecoderLayer
-# from models.demos.qwen3.reference.rope import precompute_freqs_cis
-
 from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeRotaryEmbedding
 
 from models.demos.qwen3.tt.attention import Qwen3MoeAttention
-# from models.demos.qwen3.tt.rope import precompute_freqs_cis_v2
 
 from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 from models.demos.qwen3.utils.timer import set_and_get_device_cache

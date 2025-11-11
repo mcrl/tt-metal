@@ -181,7 +181,7 @@ def test_moe_bmm(mesh_device, config):
 
             print(f"Expert {e} (tokens={num_tokens}):") 
             compare_tensor_pcc(ref, actual, assert_mode=True)
-    print("\n✓ Test passed!")
+    print("Test passed!")
 
 
 if __name__ == "__main__":

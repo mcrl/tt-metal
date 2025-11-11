@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #pragma once
 
 #include "ttnn/tensor/tensor.hpp"
@@ -16,4 +12,4 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     const Tensor& num_routed_tokens,
     Tensor& output);
 
-}  // namespace ttnn::operations::experimental::moe::detail
+}

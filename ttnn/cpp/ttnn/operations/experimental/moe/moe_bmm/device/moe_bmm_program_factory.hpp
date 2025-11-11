@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #pragma once
 
 #include "ttnn/tensor/tensor.hpp"
@@ -42,4 +38,4 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
     uint32_t h_in,
     uint32_t h_out);
 
-}  // namespace ttnn::operations::experimental::moe
+}

@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "prepare_moe_routing_tensors_pybind.hpp"
 #include "prepare_moe_routing_tensors.hpp"
 
@@ -33,7 +29,7 @@ Keyword Args:
 
 Returns:
     Tuple of four device-local tensors:
-    * :attr:`num_routed_tokens`: (E/D, 1) uint32 2D tensor - count of tokens routed to each LOCAL expert (uses 2D shape for per-element pages)
+    * :attr:`num_routed_tokens`: (E/D, 1) uint32 2D tensor - count of tokens routed to each LOCAL expert
     * :attr:`routed_tokens`: (E/D, max_tokens) uint32 2D tensor - token indices for each LOCAL expert (padded)
     * :attr:`routed_token_weights`: (E/D, max_tokens) bfloat16 2D tensor - routing weights for each LOCAL expert (padded)
     * :attr:`token_idx_map`: (E/D, max_tokens) uint32 2D tensor - mapping from expert-local token index to global token index
@@ -81,4 +77,4 @@ Note:
         });
 }
 
-}  // namespace ttnn::operations::experimental::moe::detail
+}

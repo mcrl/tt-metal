@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "scatter_moe_input_op.hpp"
 #include "scatter_moe_input_program_factory.hpp"
 
@@ -134,4 +130,4 @@ operation::ProgramWithCallbacks ScatterMoeInput::create_program(
         input_hidden_state, num_routed_tokens, routed_tokens, output);
 }
 
-}  // namespace ttnn::operations::experimental::moe
+}

@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "device/scatter_moe_input_op.hpp"
 #include "ttnn/operations/experimental/moe/scatter_moe_input/scatter_moe_input.hpp"
 
@@ -27,4 +23,4 @@ ttnn::Tensor ScatterMoeInputOperation::invoke(
     ).at(0);
 }
 
-}  // namespace ttnn::operations::experimental
+}

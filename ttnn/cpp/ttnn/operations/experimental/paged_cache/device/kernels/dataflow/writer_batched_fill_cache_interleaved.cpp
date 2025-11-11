@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 
@@ -53,10 +49,6 @@ void kernel_main() {
     const auto out_gen = TensorAccessor(s0_args, dst_addr, tile_bytes);
     const auto page_table_gen = TensorAccessor(page_table_args, page_table_addr, page_table_stick_size);
 
-    // Process each batch
-    // For batched_paged_fill_cache: input shape is [batch_size, num_heads, seq_len, head_dim]
-    // Each batch processes the same rows (same num_heads * seq_len_t structure)
-    // but uses different page_table[batch_idx]
     for (uint32_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
         // Read page table for current batch
         cb_reserve_back(cb_id_page_table, 1);
@@ -75,11 +67,9 @@ void kernel_main() {
                 virtual_seq_tile_id_to_physical_tile_id<num_heads, block_size_t, Wt>(seq_tile_id, cur_head, page_table_ptr);
 
             if (physical_tile_id == SKIP_PAGE_TABLE_ENTRY) {
-                // Block should be skipped. Consume the input tiles from the CB and discard.
                 cb_wait_front(cb_id_in, Wt);
                 cb_pop_front(cb_id_in, Wt);
             } else {
-                // Valid block, proceed with writing.
                 cb_wait_front(cb_id_in, Wt);
                 uint32_t l1_read_addr = get_read_ptr(cb_id_in);
                 for (uint32_t w = 0; w < Wt; ++w) {

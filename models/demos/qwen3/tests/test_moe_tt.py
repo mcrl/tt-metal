@@ -92,11 +92,8 @@ def test_tt_mlp_matches_reference(batch_size, seq_len, mesh_device):
         mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
-    output_tt = tt_mlp.forward_v1(hidden_states_tt)
-    # After allreduce in forward_v2, output is replicated across all devices
-    # Convert to ROW_MAJOR before converting to torch
+    output_tt = tt_mlp.forward_tt(hidden_states_tt)
     output_tt = ttnn.to_layout(output_tt, ttnn.ROW_MAJOR_LAYOUT)
-    # Use ConcatMeshToTensor and slice to get first replica
     tt_output = ttnn.to_torch(output_tt, dtype=torch.bfloat16, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))[:batch_size, :, :]
 
     compare_tensor_pcc(ref_output, tt_output)

@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "extract_attention_input_op.hpp"
 #include "extract_attention_input_program_factory.hpp"
 
@@ -160,4 +156,4 @@ tt::tt_metal::operation::ProgramWithCallbacks ExtractAttentionInput::create_prog
         hidden_state, dp_degree, output, dp, output_dtype);
 }
 
-}  // namespace ttnn::operations::experimental::attention
+}

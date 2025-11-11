@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "prepare_moe_routing_tensors_program_factory.hpp"
 
 #include <tt-metalium/work_split.hpp>
@@ -34,13 +30,10 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
 
     IDevice* device = selected_experts.device();
 
-    // Calculate core grid for multi-core expert parallelism
-    // Each core processes one local expert
     auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
     uint32_t num_cores = num_local_experts;
     CoreRangeSet all_cores = num_cores_to_corerangeset(num_cores, compute_with_storage_grid_size, true);
 
-    // Circular buffer indices
     const uint32_t cb_experts = CBIndex::c_0;
     const uint32_t cb_weights = CBIndex::c_1;
     const uint32_t cb_device_mapping = CBIndex::c_2;
@@ -50,7 +43,6 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     const uint32_t cb_tokenidx_map = CBIndex::c_19;
     const uint32_t cb_scratch = CBIndex::c_24;
 
-    // Data formats
     tt::DataFormat experts_data_format = tt_metal::datatype_to_dataformat_converter(selected_experts.dtype());
     tt::DataFormat weights_data_format = tt_metal::datatype_to_dataformat_converter(routing_weights.dtype());
     tt::DataFormat mapping_data_format = tt_metal::datatype_to_dataformat_converter(device_expert_mapping.dtype());
@@ -59,26 +51,18 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     tt::DataFormat routed_weights_data_format = tt_metal::datatype_to_dataformat_converter(DataType::BFLOAT16);
     tt::DataFormat tokenidx_map_data_format = tt_metal::datatype_to_dataformat_converter(DataType::UINT32);
 
-    // Buffer sizes (per-core, each core processes one expert)
     const uint32_t experts_row_bytes = top_k * sizeof(uint32_t);
     const uint32_t weights_row_bytes = top_k * sizeof(uint16_t);
-    const uint32_t mapping_bytes = sizeof(int32_t);  // Single expert mapping per core
-    /* 
-    Conditions for local SRAM → remote DRAM write
-    noc_async_write(local_sram_addr, remote_dram_addr, nbytes)
-    - local_sram_addr % 16 == remote_dram_addr % 16
-    - local_sram_addr % 2 == remote_dram_addr % 2 == nbytes % 2 == 0
-    */
+    const uint32_t mapping_bytes = sizeof(int32_t);
+
     const uint32_t num_routed_bytes = 4 * sizeof(uint32_t);
     const uint32_t routed_tokens_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
     const uint32_t routed_weights_row_bytes = max_tokens_per_expert * sizeof(uint16_t);
     const uint32_t tokenidx_map_row_bytes = max_tokens_per_expert * sizeof(uint32_t);
 
-    // Scratch buffer for collecting tokens for single expert (per-core)
-    // Size: max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t))
+    // Scratch buffer for collecting tokens for single expert
     const uint32_t scratch_bytes = max_tokens_per_expert * (sizeof(uint32_t) + sizeof(uint16_t));
 
-    // Create circular buffers (shared across all cores)
     tt_metal::CircularBufferConfig experts_cb_config =
         tt_metal::CircularBufferConfig(experts_row_bytes, {{cb_experts, experts_data_format}})
             .set_page_size(cb_experts, experts_row_bytes);
@@ -114,16 +98,14 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
             .set_page_size(cb_tokenidx_map, tokenidx_map_row_bytes);
     CreateCircularBuffer(program, all_cores, tokenidx_map_cb_config);
 
-    // Scratch buffer for intermediate data (per core)
+    // Scratch buffer for intermediate data
     tt_metal::CircularBufferConfig scratch_cb_config =
         tt_metal::CircularBufferConfig(scratch_bytes, {{cb_scratch, num_routed_data_format}})
             .set_page_size(cb_scratch, scratch_bytes);
     CreateCircularBuffer(program, all_cores, scratch_cb_config);
 
-    // Compile-time arguments for TensorAccessor (same for all cores)
     std::vector<uint32_t> compile_time_args = {};
 
-    // Add TensorAccessor compile-time args for all buffers
     TensorAccessorArgs(*selected_experts.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*routing_weights.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*device_expert_mapping.buffer()).append_to(compile_time_args);
@@ -132,7 +114,6 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     TensorAccessorArgs(*routed_token_weights.buffer()).append_to(compile_time_args);
     TensorAccessorArgs(*token_idx_map.buffer()).append_to(compile_time_args);
 
-    // Create kernel (shared across all cores)
     auto kernel = CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/experimental/moe/prepare_moe_routing_tensors/device/kernels/dataflow/reader_writer_moe_routing.cpp",
@@ -142,10 +123,8 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
             .noc = NOC::RISCV_0_default,
             .compile_args = compile_time_args});
 
-    // Convert CoreRangeSet to vector of CoreCoords
     auto cores = corerange_to_cores(all_cores, std::nullopt, true);
 
-    // Set runtime args per core (each core gets its local_expert_id)
     for (uint32_t core_idx = 0; core_idx < cores.size(); core_idx++) {
         const CoreCoord& core = cores[core_idx];
         uint32_t local_expert_id = core_idx;
@@ -163,7 +142,7 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
             num_experts,
             num_local_experts,
             max_tokens_per_expert,
-            local_expert_id  // NEW: Each core's assigned expert
+            local_expert_id
         };
 
         SetRuntimeArgs(program, kernel, core, runtime_args);
@@ -183,7 +162,6 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
         const auto& routed_token_weights = output_tensors[2];
         const auto& token_idx_map = output_tensors[3];
 
-        // Update runtime args for all cores
         for (const auto& core : cores) {
             auto& runtime_args = GetRuntimeArgs(program, kernel, core);
             runtime_args[0] = selected_experts.buffer()->address();
@@ -199,4 +177,4 @@ operation::ProgramWithCallbacks prepare_moe_routing_tensors_multi_core(
     return {std::move(program), override_runtime_arguments_callback};
 }
 
-}  // namespace ttnn::operations::experimental::moe
+}

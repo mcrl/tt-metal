@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 
@@ -20,15 +16,9 @@ void kernel_main() {
     const uint32_t tile_bytes = get_tile_size(cb_id_in);
 
     const auto s = TensorAccessor(src_args, src_addr, tile_bytes);
-
-    // Read tiles for all batches
-    // Input tensor shape: [batch_size, num_heads, input_seq_len, head_dim]
-    // tiles_per_batch_total = total tiles in one batch = num_heads * input_seq_len_t * Wt
     
     for (uint32_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
         // For each batch, calculate the starting tile_id
-        // start_tile_id is the offset for this core's work within batch 0
-        // For other batches, add batch_idx * tiles_per_batch_total
         uint32_t tile_id = start_tile_id + (batch_idx * tiles_per_batch_total);
         
         for (uint32_t row_num = 0; row_num < num_rows; ++row_num) {

@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "local_reduce_moe_output_pybind.hpp"
 #include "local_reduce_moe_output.hpp"
 #include <pybind11/pybind11.h>
@@ -16,7 +12,7 @@ local_reduce_moe_output(input_hidden_state: ttnn.Tensor, token_idx_map: ttnn.Ten
 
 Performs intra-device reduction by gathering expert outputs back to token order and applying routing weights.
 
-This operation is part of the MoE V2 pipeline and performs the final accumulation step,
+This operation is part of the MoE pipeline and performs the final accumulation step,
 converting from expert-organized output to token-organized output.
 
 For each global token index t in [0, T):
@@ -103,4 +99,4 @@ Example:
         });
 }
 
-}  // namespace ttnn::operations::experimental::detail
+}

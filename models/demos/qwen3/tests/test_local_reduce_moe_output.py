@@ -294,7 +294,7 @@ def test_local_reduce_moe_output_basic(device, num_local_experts, num_tokens, hi
     logger.info(f"  Mean absolute error: {mean_abs_error:.6f}")
 
     assert pcc > 0.99, f"PCC too low: {pcc:.6f}"
-    logger.info("  ✓ Basic test passed!")
+    logger.info("Basic test passed!")
 
 
 if __name__ == "__main__":

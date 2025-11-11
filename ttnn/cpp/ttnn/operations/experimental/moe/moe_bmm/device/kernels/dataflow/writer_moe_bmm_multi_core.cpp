@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include <stdint.h>
 #include "dataflow_api.h"
 #include "debug/dprint.h"
@@ -9,22 +5,18 @@
 #include "moe_bmm_dataflow.hpp"
 
 void kernel_main() {
-    // Runtime arguments
     uint32_t output_addr = get_arg_val<uint32_t>(0);
     uint32_t num_experts = get_arg_val<uint32_t>(1);
     uint32_t Nt = get_arg_val<uint32_t>(2);
     uint32_t Mt_max = get_arg_val<uint32_t>(3);
 
-    // Circular buffer indices
     constexpr uint32_t cb_num_routed = 3;
     constexpr uint32_t cb_out = 16;
     constexpr uint8_t noc = noc_index;
 
-    // Get core coordinates from NOC
     uint32_t core_x = (uint32_t)my_x[noc] - WH_LOGICAL_TO_VIRTUALL_OFFSET;
     uint32_t core_y = (uint32_t)my_y[noc] - WH_LOGICAL_TO_VIRTUALL_OFFSET;
 
-    // Create tensor accessor for output DRAM buffer
     constexpr auto output_args = TensorAccessorArgs<0>();
     const auto output_accessor = TensorAccessor(output_args, output_addr, get_tile_size(cb_out));
 
@@ -34,6 +26,7 @@ void kernel_main() {
 
     uint32_t num_tiled[num_experts];  // Number of token tiles per expert
     uint32_t total_tiles = 0;
+
     // Access num_routed_tokens from shared CB (populated by reader)
     cb_wait_front(cb_num_routed, 1);
     volatile tt_l1_ptr uint32_t* num_routed_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(cb_num_routed));
@@ -48,7 +41,7 @@ void kernel_main() {
     uint32_t num_output_tiles_total = total_tiles * Nt;
 
     // Calculate work for this core dynamically
-    constexpr uint32_t NUM_CORES = 64;  // 8x8 grid
+    constexpr uint32_t NUM_CORES = 64;
     uint32_t core_id = core_y * 8 + core_x;
     uint32_t work_per_core = num_output_tiles_total / NUM_CORES;
     uint32_t remainder = num_output_tiles_total % NUM_CORES;
@@ -63,8 +56,6 @@ void kernel_main() {
     }
 
     // Calculate the cumulative tile offset for each expert
-    // Note: expert_tile_offsets[e] is the starting global tile ID for expert e
-    // expert_tile_offsets[e+1] is the ending global tile ID (exclusive) for expert e
     uint32_t expert_tile_offsets[num_experts + 1];  // Need num_experts + 1 entries
     expert_tile_offsets[0] = 0;
     for (uint32_t expert_idx = 0; expert_idx < num_experts; expert_idx++) {
@@ -76,8 +67,7 @@ void kernel_main() {
         uint32_t global_output_tile_id = work_offset + work_idx;
         
         // Find which expert this tile belongs to
-        // Handle empty experts (those with 0 tiles) correctly
-        uint32_t expert_idx = num_experts - 1;  // Default to last expert
+        uint32_t expert_idx = num_experts - 1;
         for (uint32_t e = 0; e < num_experts; e++) {
             if (global_output_tile_id < expert_tile_offsets[e + 1]) {
                 expert_idx = e;

@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #pragma once
 
 #include "ttnn/run_operation.hpp"
@@ -21,10 +17,10 @@ struct LocalReduceMoeOutputOperation {
         const std::optional<MemoryConfig>& memory_config = std::nullopt);
 };
 
-}  // namespace operations::experimental
+}
 
 constexpr auto local_reduce_moe_output = ttnn::register_operation<
     "ttnn::local_reduce_moe_output",
     ttnn::operations::experimental::LocalReduceMoeOutputOperation>();
 
-}  // namespace ttnn
+}

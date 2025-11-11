@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
 #include "device/moe_bmm_op.hpp"
 #include "ttnn/operations/experimental/moe/moe_bmm/moe_bmm.hpp"
 
@@ -29,4 +25,4 @@ ttnn::Tensor MoEBMMOperation::invoke(
     ).at(0);
 }
 
-}  // namespace ttnn::operations::experimental
+}
