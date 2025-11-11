@@ -51,9 +51,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 @pytest.mark.parametrize(
     "bsz_per_device,seq_len",
     [
-        # (8, 64),
         (32, 128),
-        # (2, 64),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -271,8 +269,6 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
     "bsz_per_device,seq_len,num_decode_tokens",
     [
         (32, 128, 4),
-        # (32, 128, 5),
-        # (32, 128, 10),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -347,7 +343,6 @@ def test_attn_prefill_and_decode(bsz_per_device, seq_len, num_decode_tokens, mes
     
     hidden_states_prefill = hidden_states_full[:, :seq_len, :]
 
-    # TT prefill
     rot_mats_prefill = rope.cos_matrix, rope.sin_matrix
     trans_mat_prefill = rope.transformation_mat_prefill
 
@@ -395,10 +390,8 @@ def test_attn_prefill_and_decode(bsz_per_device, seq_len, num_decode_tokens, mes
         start_pos_decode = seq_len + decode_step
         print(f"\nDecode step {decode_step + 1}/{num_decode_tokens} (start_pos={start_pos_decode})")
         
-        # Use the decode token input from full sequence
         hidden_states_decode = hidden_states_full[:, start_pos_decode:start_pos_decode + 1, :]
 
-        # TT decode
         position_idxs = torch.full((bsz_per_device,), start_pos_decode, dtype=torch.long)
         rot_mats_decode = rope.get_rot_mats(position_idxs)
         trans_mat_decode = rope.transformation_mat

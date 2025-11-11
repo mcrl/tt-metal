@@ -58,22 +58,17 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
     def setup_tt(self):
         if self.is_tt_setup:
             return
-
-        # Create cache prefix for this mesh configuration
         cache_prefix = get_model_cache_prefix(self.mesh_device)
 
-        # Load weights lazily if they're still in meta state
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
         lazy_loader = get_lazy_loader()
 
         if lazy_loader is not None and self.layer_idx > 90: # for RAM, other layers are already cached
             param_prefix = f"layers.{self.layer_idx}.mlp"
 
-            # Load gate weight
             if is_meta_tensor(self.gate.weight):
                 load_parameter_for_module(self.gate, "weight", f"{param_prefix}.gate.weight")
 
-            # Load expert weights
             for expert_idx in range(self.num_experts):
                 expert = self.experts[expert_idx]
                 expert_prefix = f"{param_prefix}.experts.{expert_idx}"
@@ -115,8 +110,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 layout=ttnn.ROW_MAJOR_LAYOUT,
             )
 
-        # Create device-expert mapping (uniform partitioning)
-        # Each device gets contiguous range of experts
         with Profiler().trace_with_timer("device-expert-mapping", level=4):
             device_expert_mappings = []
             for device_id in range(self.num_devices):
@@ -182,18 +175,16 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 cache_file_name=ttnn_model_cache_path(f"{cache_prefix}down_proj_{self.layer_idx}"),
             )
             
-            # Free intermediate tensors
             del gate_proj, up_proj, down_proj
         
         self.num_links = 3 if self.num_devices == 32 else 1
             
         self.is_tt_setup = True
         
-        # Free CPU RAM after uploading to device (if using lazy loader)
         if lazy_loader is not None:
             from models.demos.qwen3.common.lazy_loader import clear_module_weights
             clear_module_weights(self)
-            print(f"✓ Layer {self.layer_idx} MoE weights cleared from CPU RAM")
+            print(f"Layer {self.layer_idx} MoE weights cleared from CPU RAM")
 
 
     @profile_trace("Qwen3MoeSparseMoeBlock", level=3)
@@ -353,24 +344,18 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 )
             routing_weights = ttnn.typecast(routing_weights, ttnn.bfloat8_b)
 
-        # Convert selected_experts to UINT32 and ROW_MAJOR for routing tensor preparation
         with Profiler().trace_with_timer("typecast-selected-experts", level=4):
-            # typecast requires TILE layout
             selected_experts = ttnn.typecast(selected_experts, ttnn.uint32, memory_config=mem_cfg)
-            # Convert to ROW_MAJOR after typecast
             selected_experts = ttnn.to_layout(selected_experts, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
 
-        # Convert routing_weights to ROW_MAJOR
         with Profiler().trace_with_timer("to-layout-routing-weights", level=4):
             routing_weights = ttnn.to_layout(routing_weights, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
 
-        # Step 1: Prepare routing tensors with device-expert mapping
         with Profiler().trace_with_timer("prepare-routing-tensors", level=4):
             num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
                 selected_experts, routing_weights, self.device_expert_mapping, self.num_experts
             )
 
-        # Step 2: Scatter MoE input
         with Profiler().trace_with_timer("scatter-moe-input", level=4):
             hidden_states = ttnn.to_layout(hidden_states, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
             scattered_hidden_states = ttnn.scatter_moe_input(hidden_states, num_routed, routed_tokens)
@@ -378,32 +363,24 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         with Profiler().trace_with_timer("to-layout", level=4):
             scattered_hidden_states = ttnn.to_layout(scattered_hidden_states, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
-        # Prepare expert weights - squeeze first dimension from (1, E/D, H, H') to (E/D, H, H')
         with Profiler().trace_with_timer("prepare-expert-weights", level=4):
             gate_proj = ttnn.squeeze(self.gate_proj, dim=0)
             up_proj = ttnn.squeeze(self.up_proj, dim=0)
             down_proj = ttnn.squeeze(self.down_proj, dim=0)
 
-        # Step 3: Gate & Up Projection (batched matmul for all experts)
         with Profiler().trace_with_timer("gate-projection", level=4):
             gate_output = ttnn.experimental.moe_bmm(scattered_hidden_states, gate_proj, num_routed, mode="optimized")
 
         with Profiler().trace_with_timer("up-projection", level=4):
             up_output = ttnn.experimental.moe_bmm(scattered_hidden_states, up_proj, num_routed, mode="optimized")
 
-        # Step 3: SiLU(gate) * up
         with Profiler().trace_with_timer("silu-multiply", level=4):
-            # Apply SiLU to gate_output: silu(x) = x * sigmoid(x)
             gate_silu = ttnn.silu(gate_output, memory_config=mem_cfg)
-
-            # Elementwise multiply
             combined_activations = ttnn.multiply(gate_silu, up_output, memory_config=mem_cfg)
 
-        # Step 4: Down Projection with routing weights and accumulation
         with Profiler().trace_with_timer("down-projection", level=4):
             moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed, mode="optimized")
 
-        # Step 5: Local Reduce
         with Profiler().trace_with_timer("local reduce", level=4):
             moe_output = ttnn.to_layout(moe_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
             moe_output = ttnn.local_reduce_moe_output(
@@ -414,7 +391,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 memory_config=mem_cfg,
             )
 
-        # Step 5: Allreduce across devices (sum partial outputs from all devices)
         with Profiler().trace_with_timer("allreduce", level=4):
             T, H = moe_output.shape
             final_output = ttnn.view(moe_output, shape=(1, 1, T, H))

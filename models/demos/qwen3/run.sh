@@ -33,7 +33,7 @@ case $mode in
         test_cmd="tests/test_moe_perf.py::test_moe_decode"
         ;;
     *)
-        echo "❌ Invalid argument: $mode"
+        echo "Invalid argument: $mode"
         echo "Valid options: attn_prefill, attn_decode, moe_prefill, moe_decode"
         exit 1
         ;;

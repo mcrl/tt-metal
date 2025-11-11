@@ -4,9 +4,7 @@ from loguru import logger
 from tests.scripts.common import get_updated_device_params
 import ttnn
 
-# Flag to track if we've already printed the device info
 _printed_device_info = False
-
 
 def parse_mesh_shape_from_env() -> Optional[ttnn.MeshShape]:
     """Parse mesh shape from TT_MESHDEVICE_SHAPE environment variable.
@@ -53,7 +51,6 @@ def create_mesh_device(device_params: Optional[Dict] = None):
     updated_device_params = get_updated_device_params(params)
     device_ids = ttnn.get_device_ids()
 
-    # Determine mesh shape: env var takes priority, then auto-detect
     env_mesh_shape = parse_mesh_shape_from_env()
     if env_mesh_shape:
         default_mesh_shape = env_mesh_shape
@@ -67,7 +64,6 @@ def create_mesh_device(device_params: Optional[Dict] = None):
     updated_device_params.setdefault("mesh_shape", default_mesh_shape)
     mesh_device = ttnn.open_mesh_device(**updated_device_params)
 
-    # Print device info only once (first call)
     if not _printed_device_info:
         _printed_device_info = True
         mesh_shape = mesh_device.shape

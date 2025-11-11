@@ -24,7 +24,6 @@ class Qwen3MoeRMSNorm(nn.Module):
         if self.is_tt_setup:
             return
 
-        # Check if weight is still meta - parent should have loaded it
         from models.demos.qwen3.common.lazy_loader import get_lazy_loader, is_meta_tensor
         lazy_loader = get_lazy_loader()
         

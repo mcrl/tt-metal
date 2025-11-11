@@ -50,9 +50,7 @@ def load_reference_layer(layer_idx=0):
 @pytest.mark.parametrize(
     "bsz_per_device,seq_len",
     [
-        # (8, 64),
         (32, 128),
-        # (2, 64),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)

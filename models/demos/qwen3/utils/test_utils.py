@@ -1,7 +1,3 @@
-# SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC.
-
-# SPDX-License-Identifier: Apache-2.0
-
 import json
 import os
 from itertools import product
@@ -17,8 +13,8 @@ from models.utility_functions import comp_pcc
 
 def load_state_dict(model_path: Path, module_path: str):
     if not not module_path:
-        module_path += "."  # So that the later matches include the separating dot
-
+        module_path += "."
+        
     weight_paths = json.load(open(model_path / "model.safetensors.index.json", "r"))["weight_map"]
     per_safetensor_weights = {}
 

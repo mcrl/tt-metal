@@ -1,6 +1,3 @@
-# SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
-# SPDX-License-Identifier: Apache-2.0
-
 import ttnn
 import pytest
 import torch
@@ -25,25 +22,21 @@ def reference_prepare_moe_routing_tensors(selected_experts, routing_weights, dev
     num_local_experts = device_expert_mapping.shape[0]
     max_tokens_per_expert = num_tokens
 
-    # Build reverse mapping: global_expert_id -> local_expert_id
     global_to_local = {}
     for local_idx in range(num_local_experts):
         global_idx = device_expert_mapping[local_idx].item()
         global_to_local[global_idx] = local_idx
 
-    # Initialize outputs (device-local)
     num_routed_tokens = torch.zeros(num_local_experts, dtype=torch.int32)
     routed_tokens = torch.full((num_local_experts, max_tokens_per_expert), -1, dtype=torch.int32)
     routed_token_weights = torch.zeros((num_local_experts, max_tokens_per_expert), dtype=torch.bfloat16)
     tokenidx_expertlocal_to_global = torch.full((num_local_experts, max_tokens_per_expert), -1, dtype=torch.int32)
 
-    # Build routing (filter by device mapping)
     for token_idx in range(num_tokens):
         for k in range(top_k):
             global_expert_idx = selected_experts[token_idx, k].item()
             weight = routing_weights[token_idx, k]
 
-            # Check if this expert is on this device
             if global_expert_idx in global_to_local:
                 local_expert_idx = global_to_local[global_expert_idx]
                 count = num_routed_tokens[local_expert_idx].item()
@@ -59,34 +52,26 @@ def reference_prepare_moe_routing_tensors(selected_experts, routing_weights, dev
 @pytest.mark.parametrize("num_tokens", [32, 128])
 @pytest.mark.parametrize("top_k", [4, 8])
 @pytest.mark.parametrize("num_experts", [8, 32, 128])
-# @pytest.mark.parametrize("num_tokens", [32])
-# @pytest.mark.parametrize("top_k", [4])
-# @pytest.mark.parametrize("num_experts", [32])
 def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts):
     """
     Test prepare_moe_routing_tensors on mesh_device.
     """
     import random
 
-    # Skip test if top_k > num_experts
     if top_k > num_experts:
         pytest.skip(f"top_k ({top_k}) cannot exceed num_experts ({num_experts})")
 
     random.seed(42)
     torch.manual_seed(42)
 
-    # Create test data with no duplicate expert selection per token
     selected_experts_np = torch.zeros((num_tokens, top_k), dtype=torch.int32)
     for t in range(num_tokens):
-        # Select top_k unique experts for each token
         experts = torch.randperm(num_experts)[:top_k]
         selected_experts_np[t] = experts
 
     routing_weights_np = torch.rand(num_tokens, top_k, dtype=torch.bfloat16)
-    # Normalize weights per token
     routing_weights_np = routing_weights_np / routing_weights_np.sum(dim=1, keepdim=True)
 
-    # Create device-expert mapping (uniform partitioning across devices)
     num_devices = mesh_device.get_num_devices()
     experts_per_device = num_experts // num_devices
     device_expert_mappings = []
@@ -98,10 +83,8 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
         )
         device_expert_mappings.append(mapping)
 
-    # Stack mappings (D, E/D) then shard across devices
     device_expert_mapping_np = torch.stack(device_expert_mappings, dim=0)
 
-    # Get reference outputs for ALL devices
     ref_num_routed_all = []
     ref_routed_tokens_all = []
     ref_routed_weights_all = []
@@ -116,7 +99,6 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
         ref_routed_weights_all.append(ref_routed_weights)
         ref_tokenidx_map_all.append(ref_tokenidx_map)
 
-    # Upload to mesh_device
     selected_experts = ttnn.from_torch(
         selected_experts_np,
         device=mesh_device,
@@ -144,12 +126,10 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
 
-    # Call the operation
     num_routed, routed_tokens, routed_weights, tokenidx_map = ttnn.prepare_moe_routing_tensors(
         selected_experts, routing_weights, device_expert_mapping_tt, num_experts
     )
 
-    # Verify output shapes (device-local: E/D per device)
     assert len(num_routed.shape) == 1, f"Expected 1D tensor, got shape {num_routed.shape}"
     assert num_routed.shape[0] == experts_per_device  # 1D tensor (E/D,)
     assert routed_tokens.shape[0] == experts_per_device  # Device-local size (E/D)
@@ -157,18 +137,11 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
     assert routed_weights.shape == routed_tokens.shape
     assert tokenidx_map.shape == routed_tokens.shape  # Same shape as routed_tokens
 
-    # Convert to PyTorch for verification (sharded outputs)
     num_routed_torch = ttnn.to_torch(num_routed, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
     routed_tokens_torch = ttnn.to_torch(routed_tokens, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
     routed_weights_torch = ttnn.to_torch(routed_weights, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
     tokenidx_map_torch = ttnn.to_torch(tokenidx_map, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
 
-    # num_routed_torch is already 1D (E,) after concatenating across devices
-
-    # Each device has different output (sharded by experts)
-    # Verify ALL devices' outputs
-
-    # Verify num_routed_tokens for all devices
     for device_idx in range(num_devices):
         start = device_idx * experts_per_device
         end = (device_idx + 1) * experts_per_device
@@ -177,7 +150,6 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
         assert torch.equal(num_routed_torch_device, ref_num_routed_device), \
             f"Device {device_idx}: num_routed_tokens mismatch:\nExpected:\n{ref_num_routed_device}\nGot:\n{num_routed_torch_device}"
 
-    # Verify routed_tokens and routed_weights for all devices
     for device_idx in range(num_devices):
         start = device_idx * experts_per_device
         end = (device_idx + 1) * experts_per_device
@@ -192,43 +164,35 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
         ref_routed_weights = ref_routed_weights_all[device_idx]
         ref_tokenidx_map = ref_tokenidx_map_all[device_idx]
 
-        # Verify each expert on this device
         for local_expert_idx in range(experts_per_device):
             count = ref_num_routed[local_expert_idx].item()
 
             if count > 0:
-                # Check valid tokens (up to count)
                 actual_tokens = routed_tokens_torch_device[local_expert_idx, :count]
                 expected_tokens = ref_routed_tokens[local_expert_idx, :count]
 
-                # Sort tokens for comparison (order may differ)
                 actual_sorted = torch.sort(actual_tokens)[0]
                 expected_sorted = torch.sort(expected_tokens)[0]
 
                 assert torch.equal(actual_sorted, expected_sorted), \
                     f"Device {device_idx}, Local expert {local_expert_idx} token mismatch:\nExpected:\n{expected_sorted}\nGot:\n{actual_sorted}"
 
-                # Verify tokenidx_expertlocal_to_global mapping
                 actual_tokenidx_map = tokenidx_map_torch_device[local_expert_idx, :count]
                 expected_tokenidx_map = ref_tokenidx_map[local_expert_idx, :count]
 
-                # The mapping should be the same as routed_tokens (maps expert-local index to global token index)
                 assert torch.equal(actual_tokenidx_map, actual_tokens), \
                     f"Device {device_idx}, Local expert {local_expert_idx} tokenidx mapping should match routed_tokens:\nMapping:\n{actual_tokenidx_map}\nTokens:\n{actual_tokens}"
 
-                # Also verify against reference (after sorting)
                 actual_tokenidx_sorted = torch.sort(actual_tokenidx_map)[0]
                 expected_tokenidx_sorted = torch.sort(expected_tokenidx_map)[0]
                 assert torch.equal(actual_tokenidx_sorted, expected_tokenidx_sorted), \
                     f"Device {device_idx}, Local expert {local_expert_idx} tokenidx mapping mismatch:\nExpected:\n{expected_tokenidx_sorted}\nGot:\n{actual_tokenidx_sorted}"
 
-                # Check weights correspond to correct tokens
                 global_expert_idx = device_expert_mappings[device_idx][local_expert_idx].item()
                 for i in range(count):
                     token_idx = actual_tokens[i].item()
                     weight = routed_weights_torch_device[local_expert_idx, i]
 
-                    # Find this token in the original selection
                     for t_idx in range(num_tokens):
                         for k in range(top_k):
                             if selected_experts_np[t_idx, k] == global_expert_idx and t_idx == token_idx:
@@ -237,10 +201,8 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
                                     f"Device {device_idx}, Weight mismatch for local expert {local_expert_idx} (global {global_expert_idx}), token {token_idx}"
                                 break
 
-            # Check padding (tokens beyond count should be invalid)
             if count < num_tokens:
                 padding_tokens = routed_tokens_torch_device[local_expert_idx, count:]
-                # Invalid tokens are marked as 0xFFFFFFFF (or -1 in signed int)
                 assert torch.all((padding_tokens == -1) | (padding_tokens == 0xFFFFFFFF)), \
                     f"Device {device_idx}, Local expert {local_expert_idx} padding not properly set"
 

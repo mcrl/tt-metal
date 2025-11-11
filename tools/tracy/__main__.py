@@ -203,9 +203,6 @@ def main():
             if not port:
                 logger.error("No available port found")
                 sys.exit(1)
-            import tt_lock
-            os.environ["TT_LOCK"] = "1"
-
             logger.info(f"Using port {port}")
             os.environ["TTNN_OP_PROFILER"] = "1"
             os.environ["TT_METAL_PROFILER_TRACE_TRACKING"] = "1"
