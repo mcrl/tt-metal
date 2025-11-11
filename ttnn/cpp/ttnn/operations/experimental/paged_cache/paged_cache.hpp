@@ -49,6 +49,16 @@ struct PagedFillCacheOperation {
         std::optional<const std::set<ttnn::MeshCoordinate>> mesh_coords);
 };
 
+struct BatchedPagedFillCacheOperation {
+    static ttnn::Tensor invoke(
+        const Tensor& cache_tensor,
+        const Tensor& input_tensor,
+        const Tensor& page_table,
+        uint32_t batch_size,
+        std::optional<const ttnn::DeviceComputeKernelConfig> compute_kernel_config,
+        std::optional<const std::set<ttnn::MeshCoordinate>> mesh_coords);
+};
+
 }  // namespace operations::experimental::paged_cache
 
 namespace experimental {
@@ -64,6 +74,10 @@ constexpr auto paged_fused_update_cache = ttnn::register_operation<
 constexpr auto paged_fill_cache = ttnn::register_operation<
     "ttnn::experimental::paged_fill_cache",
     ttnn::operations::experimental::paged_cache::PagedFillCacheOperation>();
+
+constexpr auto batched_paged_fill_cache = ttnn::register_operation<
+    "ttnn::experimental::batched_paged_fill_cache",
+    ttnn::operations::experimental::paged_cache::BatchedPagedFillCacheOperation>();
 
 }  // namespace experimental
 

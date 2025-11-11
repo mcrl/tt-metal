@@ -11,7 +11,7 @@ def torch_local_reduce_moe_output(
     input_hidden_state: torch.Tensor,  # (E/D, T, H)
     token_idx_map: torch.Tensor,  # (E/D, T)
     routed_token_weights: torch.Tensor,  # (E/D, T)
-    num_routed_tokens: torch.Tensor,  # (E/D, 1)
+    num_routed_tokens: torch.Tensor,  # (E/D,) 1D or (E/D, 1) 2D
     num_tokens: int,
 ) -> torch.Tensor:
     """
@@ -34,7 +34,10 @@ def torch_local_reduce_moe_output(
     for t in range(num_tokens):
         # Accumulate contributions from all experts
         for e in range(num_local_experts):
-            t_e = num_routed_tokens[e, 0].item()
+            if num_routed_tokens.ndim == 2:
+                t_e = num_routed_tokens[e, 0].item()
+            else:
+                t_e = num_routed_tokens[e].item()
 
             # For each expert-local position
             for i in range(t_e):
@@ -57,10 +60,10 @@ def torch_local_reduce_moe_output(
         # (4, 32, 128, 2),   # Small test case
         # (8, 64, 256, 4),   # Medium test case
         # (16, 128, 512, 4),  # Larger test case
-        # (4, 4, 1024, 2),  # Larger test case
-        # (16, 512, 2048, 1),  # Larger test case
+        (4, 4, 1024, 2),  # Larger test case
+        (16, 512, 2048, 1),  # Larger test case
         (16, 128, 2048, 8),  # (real case)
-        # (16, 1024, 2048, 8),  # (real case)
+        (16, 1024, 2048, 8),  # (real case)
     ],
 )
 def test_local_reduce_moe_output(device, num_local_experts, num_tokens, hidden_dim, top_k):
@@ -150,8 +153,11 @@ def test_local_reduce_moe_output(device, num_local_experts, num_tokens, hidden_d
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
+    # Reshape to 1D for compatibility with new API
+    num_routed_tokens_1d = num_routed_tokens.squeeze()
+
     num_routed_tokens_tt = ttnn.from_torch(
-        num_routed_tokens,
+        num_routed_tokens_1d,
         dtype=ttnn.uint32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=device,
@@ -257,7 +263,10 @@ def test_local_reduce_moe_output_basic(device, num_local_experts, num_tokens, hi
                                        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
     routed_token_weights_tt = ttnn.from_torch(routed_token_weights, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT,
                                               device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    num_routed_tokens_tt = ttnn.from_torch(num_routed_tokens, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT,
+
+    # Squeeze to 1D for compatibility with new API
+    num_routed_tokens_1d = num_routed_tokens.squeeze()
+    num_routed_tokens_tt = ttnn.from_torch(num_routed_tokens_1d, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT,
                                            device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
     # Run TTNN operation

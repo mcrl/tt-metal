@@ -14,27 +14,28 @@ namespace NAMESPACE {
  *
  * This kernel performs batched matrix multiplication for multiple experts in a multi-core setup.
  * Each core processes a subset of output tiles assigned by the work distribution logic.
+ * Core coordinates are obtained internally via get_relative_logical_x/y().
  *
  * Compile-time arguments:
  *   - Kt: Number of tiles in K dimension (reduction dimension)
  *   - Nt: Number of tiles in N dimension (output columns)
  *
  * Runtime arguments:
- *   - total_token_tiles: Total number of token tiles
- *   - core_x: X coordinate of this core
- *   - core_y: Y coordinate of this core
+ *   - None (core coordinates obtained internally)
  *
  * Circular buffers:
  *   - cb_in0: Input tiles from input tensor
  *   - cb_in1: Weight tiles from weights tensor
+ *   - cb_num_tiles: Total number of output tiles (from reader)
  *   - cb_out: Output tiles
  */
 void MAIN {
     const uint32_t Kt = get_compile_time_arg_val(0);
     const uint32_t Nt = get_compile_time_arg_val(1);
-    
-    const uint32_t core_x = get_arg_val<uint32_t>(0);
-    const uint32_t core_y = get_arg_val<uint32_t>(1);
+
+    // Get core coordinates from relative logical position
+    const uint32_t core_x = get_relative_logical_x();
+    const uint32_t core_y = get_relative_logical_y();
 
     constexpr tt::CBIndex cb_in0 = tt::CBIndex::c_0;
     constexpr tt::CBIndex cb_in1 = tt::CBIndex::c_1;
@@ -42,7 +43,6 @@ void MAIN {
     constexpr tt::CBIndex cb_out = tt::CBIndex::c_16;
 
     volatile uint32_t* num_tiles_addr_ptr;
-
     cb_wait_front(cb_num_tiles, 1);
     tensix_sync();
     cb_get_tile(cb_num_tiles, 0, &num_tiles_addr_ptr);
@@ -68,34 +68,35 @@ void MAIN {
     // Process work_per_core output tiles
     // The dataflow kernel provides tiles in the order: expert0 tiles, expert1 tiles, etc.
     // For each output tile, it provides Kt pairs of (input, weight) tiles
-    
+
     for (uint32_t tile_idx = 0; tile_idx < work_per_core; tile_idx++) {
         // Acquire destination registers and zero them for accumulation
         tile_regs_acquire();
-        
+
         // Accumulate over K dimension
         for (uint32_t kt = 0; kt < Kt; kt++) {
             // Wait for input tiles
             cb_wait_front(cb_in0, 1);
             cb_wait_front(cb_in1, 1);
-            
+
             // Perform tile matrix multiplication and accumulate
             matmul_tiles(cb_in0, cb_in1, 0, 0, 0, false);
-            
+
             // Pop input tiles
             cb_pop_front(cb_in0, 1);
             cb_pop_front(cb_in1, 1);
         }
-        
+
         // Commit and wait for FPU operations to complete
         tile_regs_commit();
         tile_regs_wait();
-        
+
         // Reserve output buffer and pack result
         cb_reserve_back(cb_out, 1);
+        PACK((pack_reconfig_data_format(cb_out)));
         pack_tile(0, cb_out);
         cb_push_back(cb_out, 1);
-        
+
         // Release destination registers
         tile_regs_release();
     }

@@ -31,7 +31,7 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_multi_core(
     uint32_t hidden_dim = input_shape[-1];
 
     const auto& num_routed_shape = num_routed_tokens.padded_shape();
-    uint32_t num_local_experts = num_routed_shape[-2];
+    uint32_t num_local_experts = num_routed_shape[-1];  // 1D tensor (E/D)
 
     // Get buffers
     auto input_buffer = input_hidden_state.buffer();
@@ -73,10 +73,21 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_multi_core(
             .set_page_size(cb_id_output, aligned_row_size_bytes);
     CreateCircularBuffer(program, all_cores, cb_output_config);
 
+    // CB 2: Buffer for num_routed_tokens (read entire 1D tensor once)
+    uint32_t cb_id_num_routed = tt::CBIndex::c_2;
+    uint32_t num_routed_bytes = num_local_experts * sizeof(uint32_t);
+    uint32_t aligned_num_routed_bytes = round_up_to_mul32(num_routed_bytes);
+    DataFormat num_routed_data_format = datatype_to_dataformat_converter(DataType::UINT32);
+    CircularBufferConfig cb_num_routed_config =
+        CircularBufferConfig(aligned_num_routed_bytes, {{cb_id_num_routed, num_routed_data_format}})
+            .set_page_size(cb_id_num_routed, aligned_num_routed_bytes);
+    CreateCircularBuffer(program, all_cores, cb_num_routed_config);
+
     // Compile-time arguments
     std::vector<uint32_t> compile_time_args = {
         cb_id_input,
         cb_id_output,
+        cb_id_num_routed,
         (uint32_t)input_is_dram,
         (uint32_t)num_routed_is_dram,
         (uint32_t)routed_tokens_is_dram,

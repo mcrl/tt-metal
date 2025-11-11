@@ -7,6 +7,7 @@
 #include "ttnn/run_operation.hpp"
 #include "ttnn/decorators.hpp"
 #include "ttnn/operations/core/core.hpp"
+#include <string>
 
 // moe_bmm Operation
 //
@@ -50,7 +51,8 @@ struct MoEBMMOperation {
         const Tensor& input,
         const Tensor& weights,
         const Tensor& num_routed_tokens,
-        const std::optional<MemoryConfig>& memory_config = std::nullopt);
+        const std::optional<MemoryConfig>& memory_config = std::nullopt,
+        const std::string& mode = "optimized");
 };
 
 }  // namespace operations::experimental

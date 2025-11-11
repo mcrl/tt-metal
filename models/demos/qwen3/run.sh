@@ -1,5 +1,7 @@
 #!/bin/bash
 
+unset TT_METAL_DPRINT_CORES
+
 export TTNN_CONFIG_OVERRIDES='{
     "enable_fast_runtime_mode": true,
     "enable_logging": false,

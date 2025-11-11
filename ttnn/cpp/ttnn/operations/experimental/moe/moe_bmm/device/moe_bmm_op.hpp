@@ -15,6 +15,7 @@ using namespace tt::tt_metal;
 
 struct MoEBMM {
     const MemoryConfig output_mem_config;
+    const std::string mode;
 
     void validate(const std::vector<Tensor>& input_tensors) const;
 

@@ -6,6 +6,7 @@
 #include "moe_bmm_program_factory.hpp"
 
 #include "ttnn/operations/core/core.hpp"
+#include <iostream>
 
 namespace ttnn::operations::experimental::moe {
 
@@ -22,8 +23,8 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
     TT_FATAL(num_routed_tokens.storage_type() == StorageType::DEVICE, "num_routed_tokens must be on device");
 
     // Validate dtypes
-    // TT_FATAL(input.dtype() == DataType::BFLOAT16, "input must be BFLOAT16");
-    // TT_FATAL(weights.dtype() == DataType::BFLOAT16, "weights must be BFLOAT16");
+    TT_FATAL(input.dtype() == DataType::BFLOAT8_B, "input must be BFLOAT8_B");
+    TT_FATAL(weights.dtype() == DataType::BFLOAT8_B, "weights must be BFLOAT8_B");
     TT_FATAL(num_routed_tokens.dtype() == DataType::UINT32, "num_routed_tokens must be UINT32");
 
     // Validate layouts
@@ -43,7 +44,7 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
 
     TT_FATAL(input_shape.rank() == 3, "input must be 3D (E/D, T, H_in)");
     TT_FATAL(weights_shape.rank() == 3, "weights must be 3D (E/D, H_in, H_out)");
-    TT_FATAL(num_routed_shape.rank() == 2, "num_routed_tokens must be 2D (E/D, 1)");
+    TT_FATAL(num_routed_shape.rank() == 1, "num_routed_tokens must be 1D (E/D)");
 
     // Validate num_experts consistency
     TT_FATAL(input_shape[0] == weights_shape[0],
@@ -57,11 +58,6 @@ void MoEBMM::validate(const std::vector<Tensor>& input_tensors) const {
     TT_FATAL(input_shape[2] == weights_shape[1],
         "input dim [2] ({}) must match weights dim [1] ({})",
         input_shape[2], weights_shape[1]);
-
-    // Validate num_routed_tokens shape
-    TT_FATAL(num_routed_shape[1] == 1,
-        "num_routed_tokens dim [1] must be 1, got {}",
-        num_routed_shape[1]);
 
     // Validate TILE alignment for input and weights
     TT_FATAL(input_shape[1] % tt::constants::TILE_HEIGHT == 0,
@@ -96,7 +92,7 @@ std::vector<TensorSpec> MoEBMM::compute_output_specs(
 
     auto output_spec = TensorSpec(
         output_shape,
-        TensorLayout(DataType::BFLOAT16, PageConfig(Layout::TILE), output_mem_config));
+        TensorLayout(DataType::BFLOAT8_B, PageConfig(Layout::TILE), output_mem_config));
 
     return {output_spec};
 }
@@ -129,15 +125,40 @@ operation::ProgramWithCallbacks MoEBMM::create_program(
     const uint32_t h_in = input_shape[2];
     const uint32_t h_out = weights_shape[2];
 
-    return moe_bmm_multi_core(
-        input,
-        weights,
-        num_routed_tokens,
-        output,
-        num_experts,
-        max_tokens,
-        h_in,
-        h_out);
+    // Select implementation based on mode parameter
+    // std::cout << "[MoE BMM] Using implementation: " << mode << std::endl;
+
+    if (mode == "single_core") {
+        return moe_bmm_single_core(
+            input,
+            weights,
+            num_routed_tokens,
+            output,
+            num_experts,
+            max_tokens,
+            h_in,
+            h_out);
+    } else if (mode == "multi_core") {
+        return moe_bmm_multi_core(
+            input,
+            weights,
+            num_routed_tokens,
+            output,
+            num_experts,
+            max_tokens,
+            h_in,
+            h_out);
+    } else {  // "optimized" is default
+        return moe_bmm_multi_core_optimized(
+            input,
+            weights,
+            num_routed_tokens,
+            output,
+            num_experts,
+            max_tokens,
+            h_in,
+            h_out);
+    }
 }
 
 }  // namespace ttnn::operations::experimental::moe
