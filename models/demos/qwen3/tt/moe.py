@@ -327,7 +327,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             mem_cfg = ttnn.DRAM_MEMORY_CONFIG
         elif mode == InferenceMode.DECODE:
             _, sequence_length, batch_size, hidden_dim = hidden_states.shape
-            mem_cfg = ttnn.L1_MEMORY_CONFIG
+            mem_cfg = ttnn.L1_MEMORY_CONFIG if batch_size <= 128 else ttnn.DRAM_MEMORY_CONFIG
 
         with Profiler().trace_with_timer("reshape", level=4):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
@@ -338,6 +338,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("softmax-topk-div", level=4):
             routing_weights = ttnn.softmax(router_logits, memory_config=mem_cfg)
+            ttnn.deallocate(router_logits)
+
             routing_weights, selected_experts = ttnn.topk(
                 routing_weights, self.top_k, largest=True, memory_config=mem_cfg,
             )
@@ -360,6 +362,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             num_routed, routed_tokens, routed_weights, token_idx_map = ttnn.prepare_moe_routing_tensors(
                 selected_experts, routing_weights, self.device_expert_mapping, self.num_experts
             )
+            ttnn.deallocate(routing_weights)
+            ttnn.deallocate(selected_experts)
 
         with Profiler().trace_with_timer("scatter-moe-input", level=4):
             hidden_states = ttnn.to_layout(hidden_states, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
@@ -381,10 +385,15 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("silu-multiply", level=4):
             gate_silu = ttnn.silu(gate_output, memory_config=mem_cfg)
+            ttnn.deallocate(gate_output)
+
             combined_activations = ttnn.multiply(gate_silu, up_output, memory_config=mem_cfg)
+            ttnn.deallocate(gate_silu)
+            ttnn.deallocate(up_output)
 
         with Profiler().trace_with_timer("down-projection", level=4):
             moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed, mode="optimized")
+            ttnn.deallocate(combined_activations)
 
         with Profiler().trace_with_timer("local reduce", level=4):
             moe_output = ttnn.to_layout(moe_output, ttnn.ROW_MAJOR_LAYOUT, memory_config=mem_cfg)
@@ -398,11 +407,11 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("allreduce", level=4):
             T, H = moe_output.shape
-            final_output = ttnn.view(moe_output, shape=(1, 1, T, H))
-            final_output = ttnn.to_layout(final_output, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
+            moe_output = ttnn.view(moe_output, shape=(1, 1, T, H))
+            moe_output = ttnn.to_layout(moe_output, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
-            final_output = ttnn.experimental.reduce_scatter_minimal_async(
-                final_output,
+            moe_output = ttnn.experimental.reduce_scatter_minimal_async(
+                moe_output,
                 persistent_output_buffers=None,
                 dim=3,
                 multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
@@ -417,8 +426,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 num_buffers_per_channel=2,
             )
             if self.mesh_device.shape[0] > 1:
-                final_output = ttnn.experimental.reduce_scatter_minimal_async(
-                    final_output,
+                moe_output = ttnn.experimental.reduce_scatter_minimal_async(
+                    moe_output,
                     persistent_output_buffers=None,
                     dim=3,
                     multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(0),
@@ -432,8 +441,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     num_workers_per_link=2,
                     num_buffers_per_channel=2,
                 )
-                final_output = ttnn.experimental.all_gather_async(
-                    final_output,
+                moe_output = ttnn.experimental.all_gather_async(
+                    moe_output,
                     3,
                     cluster_axis=0,
                     mesh_device=self.mesh_device,
@@ -442,8 +451,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     memory_config=ttnn.DRAM_MEMORY_CONFIG,
                     num_links=self.num_links,
                 )
-            final_output = ttnn.experimental.all_gather_async(
-                final_output,
+            moe_output = ttnn.experimental.all_gather_async(
+                moe_output,
                 3,
                 cluster_axis=1,
                 mesh_device=self.mesh_device,
@@ -454,19 +463,19 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             )
 
         with Profiler().trace_with_timer("reshape", level=4):
-            final_output = ttnn.typecast(final_output, ttnn.bfloat16)
+            moe_output = ttnn.typecast(moe_output, ttnn.bfloat16)
 
             if mode == InferenceMode.PREFILL:
-                final_hidden_states = ttnn.view(
-                    final_output,
+                moe_output = ttnn.view(
+                    moe_output,
                     (batch_size, sequence_length, hidden_dim),
                 )
             elif mode == InferenceMode.DECODE:
-                final_hidden_states = ttnn.view(
-                    final_output,
+                moe_output = ttnn.view(
+                    moe_output,
                     (1, 1, batch_size, hidden_dim),
                 )
 
-        return final_hidden_states
+        return moe_output
 
 __all__ = ["Qwen3MoeMLP", "Qwen3MoeSparseMoeBlock"]
