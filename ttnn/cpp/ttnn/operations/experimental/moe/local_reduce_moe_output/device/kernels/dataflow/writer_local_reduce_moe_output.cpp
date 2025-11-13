@@ -68,9 +68,11 @@ void kernel_main() {
     constexpr bool output_is_dram = (bool)get_compile_time_arg_val(0);
     constexpr uint32_t row_size_bytes = get_compile_time_arg_val(1);
 
-    constexpr uint32_t tile_size = 32 * 32;
-    constexpr uint32_t hidden_dim_tiles = row_size_bytes / (tile_size * sizeof(uint16_t));
-    constexpr uint32_t tile_size_bytes = tile_size * sizeof(uint16_t);
+    constexpr uint32_t tile_size = 1024;  // Elements per tile
+    constexpr uint32_t tile_size_bytes = tile_size * sizeof(uint16_t);  // 2048 bytes
+    constexpr uint32_t hidden_dim = row_size_bytes / sizeof(uint16_t);
+    constexpr uint32_t hidden_dim_tiles = (hidden_dim + tile_size - 1) / tile_size;  // Ceiling division
+    constexpr uint32_t last_tile_elements = (hidden_dim % tile_size == 0) ? tile_size : (hidden_dim % tile_size);
 
     const InterleavedAddrGen<output_is_dram> output_addrgen = {
         .bank_base_address = output_buffer_addr,
@@ -82,14 +84,20 @@ void kernel_main() {
     uint16_t* row_major_buffer = reinterpret_cast<uint16_t*>(temp_addr);
 
     for (uint32_t token_idx = start_token_idx; token_idx < end_token_idx; token_idx++) {
-        uint64_t output_row_noc_addr = get_noc_addr(token_idx, output_addrgen);
-
         cb_wait_front(cb_id_output, hidden_dim_tiles);
+
         for (uint32_t h = 0; h < hidden_dim_tiles; h++) {
             uint32_t output_l1_addr = get_read_ptr(cb_id_output);
+
+            // Calculate how many elements to write for this tile
+            uint32_t elements_in_tile = (h == hidden_dim_tiles - 1) ? last_tile_elements : tile_size;
+            uint32_t bytes_to_write = elements_in_tile * sizeof(uint16_t);
+
+            // Write to DRAM
             uint64_t output_tile_noc_addr = get_noc_addr(token_idx, output_addrgen) + h * tile_size_bytes;
-            noc_async_write(output_l1_addr, output_tile_noc_addr, tile_size_bytes);
+            noc_async_write(output_l1_addr, output_tile_noc_addr, bytes_to_write);
             noc_async_write_barrier();
+
             cb_pop_front(cb_id_output, 1);
         }
     }

@@ -50,7 +50,8 @@ void MAIN {
     uint32_t num_tokens_per_core = get_arg_val<uint32_t>(0);
     uint32_t start_token_idx = get_arg_val<uint32_t>(1);
 
-    constexpr uint32_t hidden_dim_tiles = hidden_dim / 1024;
+    constexpr uint32_t tile_size = 1024;  // Elements per tile
+    constexpr uint32_t hidden_dim_tiles = (hidden_dim + tile_size - 1) / tile_size;  // Ceiling division
 
     // Helper function to convert bfloat16 to float
     auto bf16_to_float = [](uint16_t bf16) -> float {

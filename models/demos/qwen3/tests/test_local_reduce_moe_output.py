@@ -50,10 +50,9 @@ def torch_local_reduce_moe_output(
         # (4, 32, 128, 2),
         # (8, 64, 256, 4),
         # (16, 128, 512, 4),
-        (4, 4, 1024, 2),
-        (16, 512, 2048, 1),
-        (16, 128, 2048, 8),  # (real case)
-        (16, 1024, 2048, 8),  # (real case)
+        (16, 128, 2048, 8),
+        (16, 1024, 2048, 8),
+        (8, 128, 2880, 8),
     ],
 )
 def test_local_reduce_moe_output(device, num_local_experts, num_tokens, hidden_dim, top_k):

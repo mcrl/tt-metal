@@ -16,7 +16,7 @@ void LocalReduceMoeOutput::validate_with_output_tensors(
     TT_FATAL(input_shape.rank() == 3, "input_hidden_state must be 3D (E/D, T, H), got rank {}", input_shape.rank());
     TT_FATAL(input_hidden_state.dtype() == DataType::BFLOAT16, "input_hidden_state must be bfloat16");
     TT_FATAL(input_hidden_state.layout() == Layout::ROW_MAJOR, "input_hidden_state must be ROW_MAJOR layout");
-    TT_FATAL(input_shape[-1] % 1024 == 0, "hidden_dim must be divisible by 1024");
+    // TT_FATAL(input_shape[-1] % 1024 == 0, "hidden_dim must be divisible by 1024");
 
     uint32_t num_local_experts = input_shape[-3];
     uint32_t num_tokens = input_shape[-2];
