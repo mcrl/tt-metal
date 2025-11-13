@@ -57,8 +57,10 @@ void kernel_main() {
     constexpr uint32_t max_tokens = get_compile_time_arg_val(6);
     constexpr uint32_t row_size_bytes = get_compile_time_arg_val(7);
 
-    uint32_t hidden_dim_tiles = hidden_dim / 1024;
-    constexpr uint32_t tile_size_bytes = 32 * 32 * sizeof(uint16_t);
+    constexpr uint32_t tile_size = 1024;  // Elements per tile
+    constexpr uint32_t tile_size_bytes = tile_size * sizeof(uint16_t);  // 2048 bytes
+    constexpr uint32_t hidden_dim_tiles = (hidden_dim + tile_size - 1) / tile_size;  // Ceiling division
+    constexpr uint32_t last_tile_elements = (hidden_dim % tile_size == 0) ? tile_size : (hidden_dim % tile_size);
 
     const InterleavedAddrGen<input_is_dram> input_addrgen = {
         .bank_base_address = input_buffer_addr,
@@ -144,13 +146,20 @@ void kernel_main() {
                     cb_push_back(cb_id_weight_scalar, 1);
 
                     // Send input hidden state to compute kernel
+                    uint32_t input_page_idx = expert_idx * max_tokens + i;
                     for (uint32_t h = 0; h < hidden_dim_tiles; h++) {
                         cb_reserve_back(cb_id_input, 1);
                         uint32_t hidden_addr = get_write_ptr(cb_id_input);
-                        uint32_t input_page_idx = expert_idx * max_tokens + i;
+
+                        // Calculate how many elements to read for this tile
+                        uint32_t elements_in_tile = (h == hidden_dim_tiles - 1) ? last_tile_elements : tile_size;
+                        uint32_t bytes_to_read = elements_in_tile * sizeof(uint16_t);
+
+                        // Read from DRAM
                         uint64_t input_row_noc_addr = get_noc_addr(input_page_idx, input_addrgen) + h * tile_size_bytes;
-                        noc_async_read(input_row_noc_addr, hidden_addr, tile_size_bytes);
+                        noc_async_read(input_row_noc_addr, hidden_addr, bytes_to_read);
                         noc_async_read_barrier();
+
                         cb_push_back(cb_id_input, 1);
                     }
                     break;

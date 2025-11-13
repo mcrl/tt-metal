@@ -58,13 +58,13 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     constexpr uint32_t OUTPUT_CB_NUM_ROWS = 2;
 
     const uint32_t row_size_bytes = hidden_dim * input_element_size;
-    const uint32_t aligned_row_size_bytes = round_up_to_mul32(row_size_bytes);
+    const uint32_t padded_row_size_bytes = (hidden_dim + 1023) / 1024 * 1024 * input_element_size;
     const uint32_t tile_size_bytes = 32 * 32 * sizeof(uint16_t);
 
     // CB 0: Input hidden state row buffer
     constexpr uint32_t cb_id_input = tt::CBIndex::c_0;
     const CircularBufferConfig cb_input_config =
-        CircularBufferConfig(aligned_row_size_bytes * INPUT_CB_NUM_ROWS, {{cb_id_input, input_cb_data_format}})
+        CircularBufferConfig(padded_row_size_bytes * INPUT_CB_NUM_ROWS, {{cb_id_input, input_cb_data_format}})
             .set_page_size(cb_id_input, tile_size_bytes);
     CreateCircularBuffer(program, all_cores, cb_input_config);
 
@@ -132,7 +132,7 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
     // CB 16: Output buffer
     constexpr uint32_t cb_id_output = tt::CBIndex::c_16;
     const CircularBufferConfig cb_output_config =
-        CircularBufferConfig(aligned_row_size_bytes * OUTPUT_CB_NUM_ROWS, {{cb_id_output, input_cb_data_format}})
+        CircularBufferConfig(padded_row_size_bytes * OUTPUT_CB_NUM_ROWS, {{cb_id_output, input_cb_data_format}})
             .set_page_size(cb_id_output, tile_size_bytes);
     CreateCircularBuffer(program, all_cores, cb_output_config);
 
