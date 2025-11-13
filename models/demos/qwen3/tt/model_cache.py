@@ -16,7 +16,7 @@ def _cache_root() -> Path:
 
     Uses ${HOME}/.cache/ttnn-weights.
     """
-    return Path.home() / ".cache" / "ttnn-weights"
+    return Path.home() / ".cache" / ("ttnn-weights" + get_model_base_name())
 
 
 def get_model_name() -> str:
@@ -31,7 +31,7 @@ def get_model_name() -> str:
     """
     model_name = os.getenv("QWEN3_MODEL", "Qwen3-30B-A3B")
 
-    valid_models = ["Qwen3-30B-A3B", "Qwen3-235B-A22B", "qwen3-235b"]
+    valid_models = ["Qwen3-30B-A3B", "Qwen3-235B-A22B", "qwen3-235b", "gpt-oss-120b", "gpt-oss-20b", "DeepSeek-R1"]
     if model_name not in valid_models:
         raise ValueError(
             f"Invalid QWEN3_MODEL: {model_name}. "
@@ -39,6 +39,23 @@ def get_model_name() -> str:
         )
 
     return model_name
+
+
+def get_model_base_name() -> str:
+    """Get the base model name without size or suffix.
+
+    Returns:
+        Base model name (e.g., "qwen3" or "gpt-oss" or "DeepSeek-R1")
+    """
+    model_name = get_model_name().lower()
+    if "qwen3" in model_name:
+        return ""
+    elif "gpt-oss" in model_name:
+        return "-gpt-oss"
+    elif "deepseek-r1" in model_name:
+        return "-deepseek"
+    else:
+        raise ValueError(f"Unknown base model in: {model_name}")
 
 
 def get_model_short_name() -> str:
@@ -49,10 +66,16 @@ def get_model_short_name() -> str:
     """
     model_name = get_model_name().lower()
     # Extract model size: "Qwen3-30B-A3B" -> "30b"
-    if "30b" in model_name:
+    if "20b" in model_name:
+        return "20b"
+    elif "30b" in model_name:
         return "30b"
+    elif "120b" in model_name:
+        return "120b"
     elif "235b" in model_name:
         return "235b"
+    elif "r1" in model_name:
+        return "671b"
     else:
         raise ValueError(f"Unknown model size in: {model_name}")
 
