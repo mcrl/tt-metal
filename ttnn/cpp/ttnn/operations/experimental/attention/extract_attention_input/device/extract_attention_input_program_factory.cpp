@@ -2,7 +2,6 @@
 
 #include <fmt/format.h>
 #include <tt-metalium/host_api.hpp>
-#include <tt-metalium/util.hpp>
 #include <tt-metalium/work_split.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 
@@ -47,14 +46,12 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
     bool needs_format_conversion = (output_dtype != hidden_state.dtype());
 
     tt::DataFormat input_data_format = tt_metal::datatype_to_dataformat_converter(hidden_state.dtype());
-    uint32_t input_tile_size = tt_metal::detail::TileSize(input_data_format);
+    uint32_t input_tile_size = tile_size(input_data_format);
 
     auto input_buffer = hidden_state.buffer();
     auto dp_degree_buffer = dp_degree.buffer();
     auto output_buffer = output.buffer();
-    bool input_is_dram = input_buffer->buffer_type() == BufferType::DRAM;
     bool dp_degree_is_dram = dp_degree_buffer->buffer_type() == BufferType::DRAM;
-    bool output_is_dram = output_buffer->buffer_type() == BufferType::DRAM;
 
     // Multi-core configuration: 8x8 grid (64 cores)
     constexpr uint32_t num_cores_x = 8;
@@ -73,23 +70,23 @@ operation::ProgramWithCallbacks extract_attention_input_single_core(
     CircularBufferConfig cb_in_config =
         CircularBufferConfig(num_input_tiles * input_tile_size, {{0, input_data_format}})
         .set_page_size(0, input_tile_size);
-    auto cb_in = CreateCircularBuffer(program, all_cores, cb_in_config);
+    CreateCircularBuffer(program, all_cores, cb_in_config);
 
     // CB 1: dp_degree buffer
     CircularBufferConfig cb_dp_degree_config =
         CircularBufferConfig(sizeof(uint32_t), {{1, tt_metal::datatype_to_dataformat_converter(dp_degree.dtype())}})
         .set_page_size(1, sizeof(uint32_t));
-    auto cb_dp_degree = CreateCircularBuffer(program, all_cores, cb_dp_degree_config);
+    CreateCircularBuffer(program, all_cores, cb_dp_degree_config);
 
     // CB 16: Output buffer
     if (needs_format_conversion) {
         tt::DataFormat output_data_format = tt_metal::datatype_to_dataformat_converter(output_dtype);
-        uint32_t output_tile_size = tt_metal::detail::TileSize(output_data_format);
+        uint32_t output_tile_size = tile_size(output_data_format);
         uint32_t num_output_tiles = 2;
         CircularBufferConfig cb_out_config =
             CircularBufferConfig(num_output_tiles * output_tile_size, {{16, output_data_format}})
             .set_page_size(16, output_tile_size);
-        auto cb_out = CreateCircularBuffer(program, all_cores, cb_out_config);
+        CreateCircularBuffer(program, all_cores, cb_out_config);
     }
 
     // Compile-time args for reader (TensorAccessor args + dp_degree buffer type)

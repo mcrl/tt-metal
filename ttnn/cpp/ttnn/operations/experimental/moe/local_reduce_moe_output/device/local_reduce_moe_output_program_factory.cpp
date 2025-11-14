@@ -4,7 +4,6 @@
 #include <tt-metalium/constants.hpp>
 #include <tt-metalium/core_coord.hpp>
 #include <tt-metalium/host_api.hpp>
-#include <tt-metalium/util.hpp>
 #include <tt-metalium/work_split.hpp>
 #include "ttnn/operation.hpp"
 #include "ttnn/operations/math.hpp"
@@ -43,9 +42,6 @@ tt::tt_metal::operation::ProgramWithCallbacks local_reduce_moe_output(
 
     const tt::DataFormat input_cb_data_format = datatype_to_dataformat_converter(input_hidden_state.dtype());
     const uint32_t input_element_size = input_hidden_state.element_size();
-
-    const tt::DataFormat weights_cb_data_format = datatype_to_dataformat_converter(routed_token_weights.dtype());
-    const uint32_t weights_element_size = routed_token_weights.element_size();
 
     const auto device = input_hidden_state.device();
     const auto grid_size = device->compute_with_storage_grid_size();

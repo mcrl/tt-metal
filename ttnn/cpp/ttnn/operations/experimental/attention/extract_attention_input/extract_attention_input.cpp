@@ -4,7 +4,6 @@
 namespace ttnn::operations::experimental {
 
 ttnn::Tensor ExtractAttentionInputOperation::invoke(
-    QueueId queue_id,
     const Tensor& hidden_state,
     const Tensor& dp_degree,
     const MeshDevice& mesh_device,
@@ -29,8 +28,7 @@ ttnn::Tensor ExtractAttentionInputOperation::invoke(
         },
         {hidden_state, dp_degree},
         {},
-        {},
-        queue_id
+        {}
     ).at(0);
 }
 

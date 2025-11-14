@@ -9,7 +9,6 @@ namespace operations::experimental {
 
 struct LocalReduceMoeOutputOperation {
     static ttnn::Tensor invoke(
-        QueueId queue_id,
         const Tensor& input_hidden_state,
         const Tensor& token_idx_map,
         const Tensor& routed_token_weights,

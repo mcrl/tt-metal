@@ -28,7 +28,6 @@ namespace operations::experimental {
 
 struct PrepareMoeRoutingTensorsOperation {
     static std::vector<ttnn::Tensor> invoke(
-        QueueId queue_id,
         const Tensor& selected_experts,
         const Tensor& routing_weights,
         const Tensor& device_expert_mapping,

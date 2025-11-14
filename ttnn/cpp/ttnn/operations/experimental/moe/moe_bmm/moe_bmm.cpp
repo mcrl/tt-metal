@@ -4,7 +4,6 @@
 namespace ttnn::operations::experimental {
 
 ttnn::Tensor MoEBMMOperation::invoke(
-    QueueId queue_id,
     const Tensor& input,
     const Tensor& weights,
     const Tensor& num_routed_tokens,
@@ -20,8 +19,7 @@ ttnn::Tensor MoEBMMOperation::invoke(
         },
         {input, weights, num_routed_tokens},
         {},
-        {},
-        queue_id
+        {}
     ).at(0);
 }
 

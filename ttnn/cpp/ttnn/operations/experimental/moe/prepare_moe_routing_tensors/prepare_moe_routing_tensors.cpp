@@ -4,7 +4,6 @@
 namespace ttnn::operations::experimental {
 
 std::vector<ttnn::Tensor> PrepareMoeRoutingTensorsOperation::invoke(
-    QueueId queue_id,
     const Tensor& selected_experts,
     const Tensor& routing_weights,
     const Tensor& device_expert_mapping,
@@ -20,8 +19,7 @@ std::vector<ttnn::Tensor> PrepareMoeRoutingTensorsOperation::invoke(
         },
         {selected_experts, routing_weights, device_expert_mapping},
         {},
-        {},
-        queue_id
+        {}
     );
 }
 

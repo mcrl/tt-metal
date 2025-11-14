@@ -33,7 +33,6 @@ namespace operations::experimental {
 
 struct MoEBMMOperation {
     static ttnn::Tensor invoke(
-        QueueId queue_id,
         const Tensor& input,
         const Tensor& weights,
         const Tensor& num_routed_tokens,

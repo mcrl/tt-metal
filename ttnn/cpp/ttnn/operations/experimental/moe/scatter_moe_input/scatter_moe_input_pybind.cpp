@@ -8,7 +8,7 @@ namespace py = pybind11;
 
 void bind_scatter_moe_input(py::module& module) {
     const auto doc = R"doc(
-scatter_moe_input(input_hidden_state: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> ttnn.Tensor
+scatter_moe_input(input_hidden_state: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None) -> ttnn.Tensor
 
 Rearranges input tokens based on expert assignments for MoE pipeline.
 
@@ -36,7 +36,6 @@ Args:
 
 Keyword Args:
     * :attr:`memory_config`: Memory configuration for output tensor (default: same as input)
-    * :attr:`queue_id`: Command queue ID (default: 0)
 
 Returns:
     (E/D, T, H) bfloat16 tensor, ROW_MAJOR layout
@@ -72,16 +71,14 @@ Example:
                const ttnn::Tensor& input_hidden_state,
                const ttnn::Tensor& num_routed_tokens,
                const ttnn::Tensor& routed_tokens,
-               const std::optional<MemoryConfig>& memory_config,
-               QueueId queue_id) {
-                return self(queue_id, input_hidden_state, num_routed_tokens, routed_tokens, memory_config);
+               const std::optional<MemoryConfig>& memory_config) {
+                return self(input_hidden_state, num_routed_tokens, routed_tokens, memory_config);
             },
             py::arg("input_hidden_state").noconvert(),
             py::arg("num_routed_tokens").noconvert(),
             py::arg("routed_tokens").noconvert(),
             py::kw_only(),
             py::arg("memory_config") = std::nullopt,
-            py::arg("queue_id") = DefaultQueueId,
         });
 }
 

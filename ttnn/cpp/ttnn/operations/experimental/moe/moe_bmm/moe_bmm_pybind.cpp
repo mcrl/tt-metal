@@ -8,7 +8,7 @@ namespace py = pybind11;
 
 void bind_moe_bmm(py::module& module) {
     const auto doc = R"doc(
-moe_bmm(input: ttnn.Tensor, weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, mode: str = "optimized", queue_id: int = 0) -> ttnn.Tensor
+moe_bmm(input: ttnn.Tensor, weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, mode: str = "optimized") -> ttnn.Tensor
 
 Performs batched matrix multiplication for Mixture-of-Experts (MoE) processing.
 
@@ -29,7 +29,6 @@ Args:
 Keyword Args:
     * :attr:`memory_config`: Memory configuration for output tensor
     * :attr:`mode`: Implementation mode - "single_core", "multi_core", or "optimized" (default)
-    * :attr:`queue_id`: Command queue ID
 
 Returns:
     (E/D, T, H_out) bfloat16 tensor containing batched matmul outputs (zero-padded after active tokens)
@@ -53,7 +52,6 @@ Example:
     ...     num_routed,
     ...     memory_config=ttnn.DRAM_MEMORY_CONFIG,
     ...     mode="optimized",
-    ...     queue_id=0
     >>> )
     >>> # output shape: (E/D, T, H_out) TILE_LAYOUT
 
@@ -70,9 +68,8 @@ Example:
                const ttnn::Tensor& weights,
                const ttnn::Tensor& num_routed_tokens,
                const std::optional<MemoryConfig>& memory_config,
-               const std::string& mode,
-               QueueId queue_id) {
-                return self(queue_id, input, weights, num_routed_tokens, memory_config, mode);
+               const std::string& mode) {
+                return self(input, weights, num_routed_tokens, memory_config, mode);
             },
             py::arg("input").noconvert(),
             py::arg("weights").noconvert(),
@@ -80,7 +77,6 @@ Example:
             py::kw_only(),
             py::arg("memory_config") = std::nullopt,
             py::arg("mode") = "optimized",
-            py::arg("queue_id") = DefaultQueueId,
         });
 }
 

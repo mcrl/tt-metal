@@ -29,7 +29,6 @@ void ScatterMoeInput::validate_with_output_tensors(
         input_shape.rank());
 
     uint32_t num_tokens = input_shape[-2];
-    uint32_t hidden_dim = input_shape[-1];
 
     // Validate num_routed_tokens: (E/D) 1D uint32, ROW_MAJOR
     TT_FATAL(

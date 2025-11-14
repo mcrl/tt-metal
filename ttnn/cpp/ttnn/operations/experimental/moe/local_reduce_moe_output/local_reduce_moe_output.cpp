@@ -4,7 +4,6 @@
 namespace ttnn::operations::experimental {
 
 ttnn::Tensor LocalReduceMoeOutputOperation::invoke(
-    QueueId queue_id,
     const Tensor& input_hidden_state,
     const Tensor& token_idx_map,
     const Tensor& routed_token_weights,
@@ -19,8 +18,7 @@ ttnn::Tensor LocalReduceMoeOutputOperation::invoke(
         },
         {input_hidden_state, token_idx_map, routed_token_weights, num_routed_tokens},
         {},
-        {},
-        queue_id
+        {}
     ).at(0);
 }
 

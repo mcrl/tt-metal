@@ -9,7 +9,6 @@ namespace operations::experimental {
 
 struct ExtractAttentionInputOperation {
     static ttnn::Tensor invoke(
-        QueueId queue_id,
         const Tensor& hidden_state,
         const Tensor& dp_degree,
         const MeshDevice& mesh_device,

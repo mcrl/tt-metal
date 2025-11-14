@@ -10,7 +10,7 @@ namespace py = pybind11;
 
 void bind_prepare_moe_routing_tensors(py::module& module) {
     const auto doc = R"doc(
-prepare_moe_routing_tensors(selected_experts: ttnn.Tensor, routing_weights: ttnn.Tensor, device_expert_mapping: ttnn.Tensor, num_experts: int, *, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> Tuple[ttnn.Tensor, ttnn.Tensor, ttnn.Tensor, ttnn.Tensor]
+prepare_moe_routing_tensors(selected_experts: ttnn.Tensor, routing_weights: ttnn.Tensor, device_expert_mapping: ttnn.Tensor, num_experts: int, *, memory_config: ttnn.MemoryConfig = None) -> Tuple[ttnn.Tensor, ttnn.Tensor, ttnn.Tensor, ttnn.Tensor]
 
 Converts sparse MoE expert selection into device-local routing tensors for expert-parallel computation.
 
@@ -25,7 +25,6 @@ Args:
 
 Keyword Args:
     * :attr:`memory_config`: Memory configuration for output tensors (default: same as input)
-    * :attr:`queue_id`: Command queue ID (default: 0)
 
 Returns:
     Tuple of four device-local tensors:
@@ -63,9 +62,8 @@ Note:
                const ttnn::Tensor& routing_weights,
                const ttnn::Tensor& device_expert_mapping,
                uint32_t num_experts,
-               const std::optional<MemoryConfig>& memory_config,
-               QueueId queue_id) {
-                return self(queue_id, selected_experts, routing_weights, device_expert_mapping, num_experts, memory_config);
+               const std::optional<MemoryConfig>& memory_config) {
+                return self(selected_experts, routing_weights, device_expert_mapping, num_experts, memory_config);
             },
             py::arg("selected_experts").noconvert(),
             py::arg("routing_weights").noconvert(),
@@ -73,7 +71,6 @@ Note:
             py::arg("num_experts"),
             py::kw_only(),
             py::arg("memory_config") = std::nullopt,
-            py::arg("queue_id") = DefaultQueueId,
         });
 }
 

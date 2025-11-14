@@ -32,7 +32,6 @@ namespace operations::experimental {
 
 struct ScatterMoeInputOperation {
     static ttnn::Tensor invoke(
-        QueueId queue_id,
         const Tensor& input_hidden_state,
         const Tensor& num_routed_tokens,
         const Tensor& routed_tokens,

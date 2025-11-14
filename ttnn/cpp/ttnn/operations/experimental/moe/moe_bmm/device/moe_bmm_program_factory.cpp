@@ -22,7 +22,6 @@ operation::ProgramWithCallbacks moe_bmm_single_core(
 
     Program program{};
 
-    IDevice* device = input.device();
     CoreCoord core = {0, 0};
 
     uint32_t Kt = h_in / tt::constants::TILE_WIDTH;      // Number of tiles in K dimension
@@ -41,9 +40,9 @@ operation::ProgramWithCallbacks moe_bmm_single_core(
     tt::DataFormat num_rows_data_format = tt_metal::datatype_to_dataformat_converter(num_routed_tokens.dtype());
     tt::DataFormat output_data_format = tt_metal::datatype_to_dataformat_converter(output.dtype());
 
-    uint32_t input_tile_size = tt_metal::detail::TileSize(input_data_format);
-    uint32_t weights_tile_size = tt_metal::detail::TileSize(weights_data_format);
-    uint32_t output_tile_size = tt_metal::detail::TileSize(output_data_format);
+    uint32_t input_tile_size = tile_size(input_data_format);
+    uint32_t weights_tile_size = tile_size(weights_data_format);
+    uint32_t output_tile_size = tile_size(output_data_format);
     uint32_t num_routed_element_size = sizeof(uint32_t);
 
     // cb_in0: Input tiles
@@ -157,14 +156,9 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
 
     Program program{};
 
-    IDevice* device = input.device();
-
     uint32_t Kt = h_in / tt::constants::TILE_WIDTH;      // Number of tiles in K dimension
     uint32_t Nt = h_out / tt::constants::TILE_WIDTH;     // Number of tiles in N dimension (output columns)
     uint32_t Mt_max = max_tokens / tt::constants::TILE_HEIGHT;  // Maximum number of tiles in M dimension (tokens)
-
-    // Get the compute grid and split work across cores
-    auto core_grid = device->compute_with_storage_grid_size();
 
     CoreRangeSet all_cores;
     all_cores = CoreRangeSet(CoreRange({0, 0}, {8 - 1, 8 - 1}));
@@ -179,9 +173,9 @@ operation::ProgramWithCallbacks moe_bmm_multi_core(
     tt::DataFormat weights_data_format = tt_metal::datatype_to_dataformat_converter(weights.dtype());
     tt::DataFormat output_data_format = tt_metal::datatype_to_dataformat_converter(output.dtype());
 
-    uint32_t input_tile_size = tt_metal::detail::TileSize(input_data_format);
-    uint32_t weights_tile_size = tt_metal::detail::TileSize(weights_data_format);
-    uint32_t output_tile_size = tt_metal::detail::TileSize(output_data_format);
+    uint32_t input_tile_size = tile_size(input_data_format);
+    uint32_t weights_tile_size = tile_size(weights_data_format);
+    uint32_t output_tile_size = tile_size(output_data_format);
 
     CircularBufferConfig cb_in0_config =
         CircularBufferConfig(2 * input_tile_size, {{cb_in0, input_data_format}})
@@ -325,14 +319,10 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
     Program program{};
 
     const uint32_t TILE_SIZE = 32;
-    IDevice* device = input.device();
 
     uint32_t Kt = h_in / TILE_SIZE;      // Number of tiles in K dimension
     uint32_t Nt = h_out / TILE_SIZE;     // Number of tiles in N dimension (output columns)
     uint32_t Mt_max = max_tokens / TILE_SIZE;  // Maximum number of tiles in M dimension (tokens)
-
-    // Get the compute grid and split work across cores
-    auto core_grid = device->compute_with_storage_grid_size();
 
     uint32_t PH = 8, PW = 8;
     uint32_t ph, pw;
@@ -377,9 +367,9 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
 
     TT_FATAL(Nt % BNt == 0, "Nt ({}) must be divisible by BNt ({})", Nt, BNt);
 
-    uint32_t input_tile_size = tt_metal::detail::TileSize(input_data_format);
-    uint32_t weights_tile_size = tt_metal::detail::TileSize(weights_data_format);
-    uint32_t output_tile_size = tt_metal::detail::TileSize(output_data_format);
+    uint32_t input_tile_size = tile_size(input_data_format);
+    uint32_t weights_tile_size = tile_size(weights_data_format);
+    uint32_t output_tile_size = tile_size(output_data_format);
 
     CircularBufferConfig cb_input_config =
         CircularBufferConfig(pipeline_factor * BMt * BKt * input_tile_size, {{cb_input, input_data_format}})
@@ -406,7 +396,7 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
             .set_page_size(cb_out, output_tile_size);
     CreateCircularBuffer(program, all_cores, cb_out_config);
 
-    uint32_t intermediate_tile_size = tt_metal::detail::TileSize(tt::DataFormat::Float16_b);
+    uint32_t intermediate_tile_size = tile_size(tt::DataFormat::Float16_b);
     CircularBufferConfig cb_out_buffer_config =
         CircularBufferConfig(pipeline_factor * BMt * BNt * intermediate_tile_size, {{cb_out_buffer, tt::DataFormat::Float16_b}})
             .set_page_size(cb_out_buffer, intermediate_tile_size);
@@ -453,9 +443,6 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
             .fp32_dest_acc_en = false,
             .math_approx_mode = false,
             .compile_args = compute_compile_time_args});
-
-
-    uint32_t col_nblocks = Nt / BNt / PW;
 
     for (uint32_t x = 0; x < PH; x++) {
         for (uint32_t y = 0; y < PW; y++) {

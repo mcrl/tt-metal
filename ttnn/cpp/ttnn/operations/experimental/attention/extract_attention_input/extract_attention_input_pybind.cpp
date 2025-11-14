@@ -8,7 +8,7 @@ namespace py = pybind11;
 
 void bind_extract_attention_input(py::module& module) {
     const auto doc = R"doc(
-extract_attention_input(hidden_state: ttnn.Tensor, dp_degree: ttnn.Tensor, mesh_device: ttnn.MeshDevice, *, output_dtype: ttnn.DataType = None, memory_config: ttnn.MemoryConfig = None, queue_id: int = 0) -> ttnn.Tensor
+extract_attention_input(hidden_state: ttnn.Tensor, dp_degree: ttnn.Tensor, mesh_device: ttnn.MeshDevice, *, output_dtype: ttnn.DataType = None, memory_config: ttnn.MemoryConfig = None) -> ttnn.Tensor
 
 Extracts batch chunks per device for attention input (unified prefill/decode operation).
 
@@ -34,7 +34,6 @@ Keyword Args:
     * :attr:`output_dtype`: DataType (default: same as input)
         Output data type (BFLOAT16 or BFLOAT8_B)
     * :attr:`memory_config`: Memory configuration for output tensor (default: same as input)
-    * :attr:`queue_id`: Command queue ID (default: 0)
 
 Returns:
     Extracted batch chunk for this device with optional dtype conversion:
@@ -91,9 +90,8 @@ Example:
                const ttnn::Tensor& dp_degree,
                const MeshDevice& mesh_device,
                const std::optional<DataType>& output_dtype,
-               const std::optional<MemoryConfig>& memory_config,
-               QueueId queue_id) {
-                return self(queue_id, hidden_state, dp_degree, mesh_device, output_dtype, memory_config);
+               const std::optional<MemoryConfig>& memory_config) {
+                return self(hidden_state, dp_degree, mesh_device, output_dtype, memory_config);
             },
             py::arg("hidden_state").noconvert(),
             py::arg("dp_degree").noconvert(),
@@ -101,7 +99,6 @@ Example:
             py::kw_only(),
             py::arg("output_dtype") = std::nullopt,
             py::arg("memory_config") = std::nullopt,
-            py::arg("queue_id") = DefaultQueueId,
         });
 }
 

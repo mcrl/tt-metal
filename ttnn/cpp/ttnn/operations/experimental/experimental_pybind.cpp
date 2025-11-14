@@ -48,6 +48,9 @@
 #include "ttnn/operations/experimental/unary_backward/gelu_backward/gelu_backward_pybind.hpp"
 #include "ttnn/operations/experimental/padded_slice/padded_slice_pybind.hpp"
 #include "ttnn/operations/experimental/where/where_pybind.hpp"
+#include "ttnn/operations/experimental/test/hang_device/hang_device_operation_pybind.hpp"
+#include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors_pybind.hpp"
+#include "ttnn/operations/experimental/minimal_matmul/minimal_matmul_pybind.hpp"
 #include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors_pybind.hpp"
 #include "ttnn/operations/experimental/moe/scatter_moe_input/scatter_moe_input_pybind.hpp"
 #include "ttnn/operations/experimental/moe/local_reduce_moe_output/local_reduce_moe_output_pybind.hpp"
@@ -119,6 +122,8 @@ void py_module(py::module& module) {
     broadcast_to::detail::py_bind_broadcast_to(module);
 
     operations::experimental::ternary::detail::bind_where(module);
+
+    minimal_matmul::detail::py_bind_minimal_matmul(module);
 
     moe::detail::bind_prepare_moe_routing_tensors(module);
     scatter_moe_input::detail::bind_scatter_moe_input(module);

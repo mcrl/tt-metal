@@ -4,7 +4,6 @@
 namespace ttnn::operations::experimental {
 
 ttnn::Tensor ScatterMoeInputOperation::invoke(
-    QueueId queue_id,
     const Tensor& input_hidden_state,
     const Tensor& num_routed_tokens,
     const Tensor& routed_tokens,
@@ -18,8 +17,7 @@ ttnn::Tensor ScatterMoeInputOperation::invoke(
         },
         {input_hidden_state, num_routed_tokens, routed_tokens},
         {},
-        {},
-        queue_id
+        {}
     ).at(0);
 }
 
