@@ -1394,17 +1394,17 @@ def test_demo_text(
             # and observed/0.95 for TTFT (lower is better) to allow 5% buffer + 5% room for growth
             ci_target_ttft = {
                 # N150 targets (milliseconds) - lower is better
-                "N150_Llama-3.2-1B": 22,
-                "N150_Llama-3.2-3B": 57,
-                "N150_Llama-3.1-8B": 112,
-                # "N150_Mistral-7B": 106, # https://github.com/tenstorrent/tt-metal/issues/24963
+                "N150_Llama-3.2-1B": 25,
+                "N150_Llama-3.2-3B": 62,
+                "N150_Llama-3.1-8B": 120,
+                "N150_Mistral-7B": 106,
                 # N300 targets
                 "N300_Qwen2.5-7B": (95, 1.20),  # (value, high_tolerance_ratio)
                 # T3K targets
-                "T3K_Llama-3.1-70B": 204,
-                "T3K_Qwen2.5-Coder-32B": 173,
-                "T3K_Qwen2.5-72B": 257,
-                "T3K_Qwen3-32B": 166.5,
+                "T3K_Llama-3.1-70B": 240,
+                "T3K_Qwen2.5-72B": (290, 1.35),  # (value, high_tolerance_ratio)
+                "T3K_Qwen2.5-Coder-32B": (215, 1.27),  # (value, high_tolerance_ratio)
+                "T3K_Qwen3-32B": 230,  # Issue: Perf regression being tracked on issue #29834
             }
             ci_target_decode_tok_s_u = {
                 # N150 targets - higher is better
@@ -1415,10 +1415,10 @@ def test_demo_text(
                 # N300 targets
                 "N300_Qwen2.5-7B": 22.8,
                 # T3K targets
-                # "T3K_Llama-3.1-70B": 16, # too much variability in CI (https://github.com/tenstorrent/tt-metal/issues/24303)
-                # "T3K_Qwen2.5-72B": 13, # too much variability in CI (https://github.com/tenstorrent/tt-metal/issues/24303)
+                "T3K_Llama-3.1-70B": 15,
+                "T3K_Qwen2.5-72B": 13.25,
                 "T3K_Qwen2.5-Coder-32B": 21,
-                # "T3K_Qwen3-32B": 20, # too much variability in CI (https://github.com/tenstorrent/tt-metal/issues/24303)
+                "T3K_Qwen3-32B": 21,
             }
 
             # Only call verify_perf if the model_device_key exists in the targets

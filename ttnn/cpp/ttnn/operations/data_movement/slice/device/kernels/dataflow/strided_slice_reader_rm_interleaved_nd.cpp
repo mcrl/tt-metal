@@ -8,7 +8,8 @@
 void kernel_main() {
     constexpr uint32_t page_size = get_compile_time_arg_val(0);
     constexpr uint32_t dims = get_compile_time_arg_val(1);
-    constexpr auto src_args = TensorAccessorArgs<2>();
+    constexpr uint32_t element_size = get_compile_time_arg_val(2);
+    constexpr auto src_args = TensorAccessorArgs<3>();
 
     const uint32_t src_addr = get_arg_val<uint32_t>(0);
 

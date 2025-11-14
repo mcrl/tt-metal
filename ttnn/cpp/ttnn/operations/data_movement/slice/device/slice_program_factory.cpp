@@ -210,9 +210,6 @@ operation::ProgramWithCallbacks slice_rm_multi_core(
     tt::tt_metal::Buffer* dst_buffer = output.buffer();
     TT_ASSERT(dst_buffer != nullptr, "Output buffer should be allocated on device!");
 
-    bool src0_is_dram = src0_buffer->buffer_type() == tt::tt_metal::BufferType::DRAM;
-    bool dst_is_dram = dst_buffer->buffer_type() == tt::tt_metal::BufferType::DRAM;
-
     constexpr uint32_t src0_cb_index = 0;
 
     const auto [cb_page_size, num_read_per_barrier, misalignment] =
@@ -356,7 +353,7 @@ operation::ProgramWithCallbacks slice_rm_strided_single_core_n_dims(
     tt::tt_metal::CreateCircularBuffer(program, core, cb_src0_config);
     tt::tt_metal::CreateCircularBuffer(program, core, cb_dst0_config);
 
-    std::vector<uint32_t> reader_compile_time_args = {page_size_input, input_shape.rank()};
+    std::vector<uint32_t> reader_compile_time_args = {page_size_input, input_shape.rank(), a.element_size()};
     TensorAccessorArgs(*a.buffer()).append_to(reader_compile_time_args);
     tt::tt_metal::KernelHandle unary_reader_kernel_id = tt::tt_metal::CreateKernel(
         program,

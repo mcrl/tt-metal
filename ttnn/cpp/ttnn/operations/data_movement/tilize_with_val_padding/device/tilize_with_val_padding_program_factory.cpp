@@ -594,7 +594,7 @@ operation::ProgramWithCallbacks tilize_with_val_padding_multi_core_interleaved(
                         // ex: bf16/uint16 -> log2(2 * 32) = 6, float32/int32/uint32 -> log2(4 * 32) = 7, etc.
     uint32_t elem_size = a.element_size();
 
-    std::vector<uint32_t> reader_compile_time_args = {shift_bits, unpadded_row_size_bytes};
+    std::vector<uint32_t> reader_compile_time_args = {shift_bits, unpadded_row_size_bytes, elem_size};
     TensorAccessorArgs(*src0_buffer).append_to(reader_compile_time_args);
     KernelHandle unary_reader_kernel_id = CreateKernel(
         program,

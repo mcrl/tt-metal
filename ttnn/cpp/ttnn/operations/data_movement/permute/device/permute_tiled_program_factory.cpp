@@ -378,16 +378,20 @@ PermuteDeviceOperation::MultiCoreTileRowInvariant::create(
         accumulated_outer_dims *= input_shape[i];
     }
 
-    std::vector<uint32_t> reader_compile_time_args = {
-        num_writes,
-        padding_val_packed,
-        (uint32_t)needs_padding,
-        (uint32_t)swap_hw,
-        input_shape[rank - 1],
-        input_shape[rank - 2],
-        accumulated_outer_dims,
-        tile_shape[1],
-        tile_shape[0]};
+    std::vector<uint32_t> reader_compile_time_args = {};
+
+    std::unordered_map<std::string, uint32_t> reader_named_compile_time_args = {
+        {"num_writes", num_writes},
+        {"padding_val_packed", padding_val_packed},
+        {"needs_padding", needs_padding},
+        {"swap_hw", swap_hw},
+        {"H", input_shape[rank - 1]},
+        {"W", input_shape[rank - 2]},
+        {"accumulated_outer_dims", accumulated_outer_dims},
+        {"tile_height", tile_shape[1]},
+        {"tile_width", tile_shape[0]},
+    };
+
     TensorAccessorArgs(*src_buffer).append_to(reader_compile_time_args);
 
     tt::tt_metal::KernelHandle unary_reader_kernel_id = tt::tt_metal::CreateKernel(
