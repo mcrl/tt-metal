@@ -10,6 +10,11 @@ class TT_CCL:
         self.mesh_device = mesh_device
         self.num_devices = mesh_device.shape[0] * mesh_device.shape[1]
 
+        if mesh_device.shape[0] == 2 or mesh_device.shape[1] == 2:
+            self.topology = ttnn.Topology.Linear
+        else:
+            self.topology = ttnn.Topology.Ring
+
         self.is_galaxy = self.num_devices == 32
 
         if self.is_galaxy:
@@ -51,7 +56,7 @@ class TT_CCL:
         self.barrier_semaphore_idx[semaphore_index] = (current_idx + 1) % self.num_cbs
         return self.barrier_semaphore_handles[semaphore_index][current_idx]
 
-    def ring_reduce_scatter(
+    def reduce_scatter(
         self,
         input_tensor_mesh,
         dim,
@@ -68,7 +73,7 @@ class TT_CCL:
             barrier_semaphore=self.get_and_cycle_barrier_semaphore_handle(cluster_axis),
             num_links=num_links,
             memory_config=memory_config,
-            topology=ttnn.Topology.Ring,
+            topology=self.topology,
             cluster_axis=cluster_axis,
             num_workers_per_link=1,
         )
@@ -76,7 +81,7 @@ class TT_CCL:
         self.gather_idx[cluster_axis] = (self.gather_idx[cluster_axis] + 1) % self.num_cbs
         return ttnn_tensor_out
 
-    def ring_all_gather(
+    def all_gather(
         self, 
         input_tensor_mesh,
         dim, 
@@ -93,7 +98,7 @@ class TT_CCL:
             num_links=num_links,
             barrier_semaphore=self.get_and_cycle_barrier_semaphore_handle(cluster_axis),
             memory_config=memory_config,
-            topology=ttnn.Topology.Ring,
+            topology=self.topology,
             cluster_axis=cluster_axis,
         )
         self.gather_idx[cluster_axis] = (self.gather_idx[cluster_axis] + 1) % self.num_cbs

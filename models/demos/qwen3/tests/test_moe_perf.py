@@ -15,7 +15,7 @@ from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
 from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
 from models.demos.qwen3.tt.model_cache import get_model_path
-
+from models.demos.qwen3.tt.ccl import TT_CCL
 
 def create_test_config():
     model_path = get_model_path()
@@ -68,7 +68,8 @@ def test_moe_prefill(batch_size, seq_len, mesh_device):
     config = create_test_config()
     layer_idx = 0
     start_pos = 0
-    tt_mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device)
+    ccl = TT_CCL(mesh_device)
+    tt_mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device, ccl)
 
     tt_mlp.gate.weight.data = ref_mlp.gate.weight.data.clone()
 
@@ -120,7 +121,8 @@ def test_moe_decode(batch_size, seq_len, mesh_device):
     config = create_test_config()
     layer_idx = 0
     start_pos = 0
-    tt_mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device)
+    ccl = TT_CCL(mesh_device)
+    tt_mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device, ccl)
 
     tt_mlp.gate.weight.data = ref_mlp.gate.weight.data.clone()
 

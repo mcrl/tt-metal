@@ -342,18 +342,18 @@ class Qwen3MoeAttention(nn.Module):
             B, _, S, H = linear_output.shape
             linear_output = ttnn.view(linear_output, (1, 1, B * S, H))
 
-            linear_output = self.ccl.ring_reduce_scatter(
+            linear_output = self.ccl.reduce_scatter(
                 linear_output,
                 dim=3,
                 cluster_axis=1,
             )
-            linear_output = self.ccl.ring_all_gather(
+            linear_output = self.ccl.all_gather(
                 linear_output,
                 dim=3,
                 cluster_axis=1,
             )
             if self.mesh_device.shape[0] > 1:
-                linear_output = self.ccl.ring_all_gather(
+                linear_output = self.ccl.all_gather(
                     linear_output,
                     dim=2,
                     cluster_axis=0,
@@ -449,24 +449,26 @@ class Qwen3MoeAttention(nn.Module):
         with Profiler().trace_with_timer("all-reduce", level=4):
             _, _, B, H = linear_output.shape
             linear_output = ttnn.view(linear_output, (1, 1, B, H))
-            linear_output = ttnn.to_memory_config(linear_output, mem_cfg)
 
-            linear_output = self.ccl.ring_reduce_scatter(
+            linear_output = self.ccl.reduce_scatter(
                 linear_output,
                 dim=3,
                 cluster_axis=1,
+                memory_config=mem_cfg
             )
-            linear_output = self.ccl.ring_all_gather(
+            linear_output = self.ccl.all_gather(
                 linear_output,
                 dim=3,
                 cluster_axis=1,
+                memory_config=mem_cfg
             )
 
             if self.mesh_device.shape[0] > 1:
-                linear_output = self.ccl.ring_all_gather(
+                linear_output = self.ccl.all_gather(
                     linear_output,
                     dim=2,
                     cluster_axis=0,
+                    memory_config=mem_cfg
                 )
             
             linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))

@@ -407,26 +407,30 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             moe_output = ttnn.view(moe_output, shape=(1, 1, T, H))
             moe_output = ttnn.to_layout(moe_output, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
-            moe_output = self.ccl.ring_reduce_scatter(
+            moe_output = self.ccl.reduce_scatter(
                 moe_output,
                 dim=3,
                 cluster_axis=1,
+                memory_config=mem_cfg,
             )
             if self.mesh_device.shape[0] > 1:
-                moe_output = self.ccl.ring_reduce_scatter(
+                moe_output = self.ccl.reduce_scatter(
                     moe_output,
                     dim=3,
                     cluster_axis=0,
+                    memory_config=mem_cfg,
                 )
-                moe_output = self.ccl.ring_all_gather(
+                moe_output = self.ccl.all_gather(
                     moe_output,
                     dim=3,
                     cluster_axis=0,
+                    memory_config=mem_cfg,
                 )
-            moe_output = self.ccl.ring_all_gather(
+            moe_output = self.ccl.all_gather(
                 moe_output,
                 dim=3,
                 cluster_axis=1,
+                memory_config=mem_cfg,
             )
 
         with Profiler().trace_with_timer("reshape", level=4):
