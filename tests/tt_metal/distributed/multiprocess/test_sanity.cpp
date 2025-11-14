@@ -22,76 +22,119 @@
 
 namespace tt::tt_metal::distributed {
 
-using tt_fabric::HostRankId;
-using tt_fabric::MeshId;
-using tt_fabric::MeshScope;
+using ::testing::ElementsAre;
+using ::tt::tt_fabric::MeshHostRankId;
+using ::tt::tt_fabric::MeshId;
 
-TEST(BigMeshDualRankTest2x4, DistributedContext) {
-    auto& dctx = MetalContext::instance().get_distributed_context();
-    auto world_size = dctx.size();
-    EXPECT_EQ(*world_size, 2);
+// Parameterized test fixture for mesh device validation
+class BigMeshDualRankMeshShapeSweepFixture : public MeshDeviceFixtureBase,
+                                             public testing::WithParamInterface<MeshShape> {
+public:
+    BigMeshDualRankMeshShapeSweepFixture() :
+        MeshDeviceFixtureBase(Config{
+            .mesh_shape = GetParam(),
+        }) {}
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    BigMeshDualRankMeshShapeSweep,
+    BigMeshDualRankMeshShapeSweepFixture,
+    ::testing::Values(
+        MeshShape(2, 4),
+        /* Issue #25355: Cannot create a MeshDevice with only one rank active.
+        MeshShape(1, 1),
+        MeshShape(1, 2),
+        MeshShape(2, 1),
+        MeshShape(2, 2),
+        */
+        MeshShape(1, 8),
+        MeshShape(8, 1)));
+
+using BigMeshDualRankTest2x4 = MeshDevice2x4Fixture;
+
+TEST(BigMeshDualRankTest, DistributedContext) {
+    auto& dctx = MetalContext::instance().global_distributed_context();
+    EXPECT_EQ(dctx.size(), multihost::Size(2));
 }
 
-TEST(BigMeshDualRankTest2x4, LocalRankBinding) {
-    auto& dctx = MetalContext::instance().get_distributed_context();
+TEST(BigMeshDualRankTest, LocalRankBinding) {
+    auto& global_context = MetalContext::instance().global_distributed_context();
     auto& control_plane = MetalContext::instance().get_control_plane();
 
-    tt_fabric::HostRankId local_rank_binding = control_plane.get_local_host_rank_id_binding();
-    if (*dctx.rank() == 0) {
-        EXPECT_EQ(*local_rank_binding, 0);
+    tt_fabric::MeshHostRankId local_rank_binding = control_plane.get_local_host_rank_id_binding();
+    if (global_context.rank() == multihost::Rank(0)) {
+        EXPECT_EQ(local_rank_binding, MeshHostRankId(0));
     } else {
-        EXPECT_EQ(*local_rank_binding, 1);
+        EXPECT_EQ(local_rank_binding, MeshHostRankId(1));
     }
+
+    const auto local_mesh_ids = control_plane.get_local_mesh_id_bindings();
+    ASSERT_THAT(local_mesh_ids, ElementsAre(MeshId(0)));
+
+    if (*global_context.rank() == 0) {
+        EXPECT_EQ(control_plane.get_local_mesh_offset(), MeshCoordinate(0, 0));
+    } else {
+        EXPECT_EQ(control_plane.get_local_mesh_offset(), MeshCoordinate(0, 2));
+    }
+
+    const auto mesh_subcontext = control_plane.get_distributed_context(MeshId(0));
+    ASSERT_NE(mesh_subcontext, nullptr);
+    EXPECT_EQ(mesh_subcontext->size(), multihost::Size(2));
+
+    std::array original_ranks = {0, 1};
+    std::array translated_ranks = {-1, -1};
+    mesh_subcontext->translate_ranks_to_other_ctx(
+        original_ranks,
+        tt::tt_metal::distributed::multihost::DistributedContext::get_current_world(),
+        translated_ranks);
+
+    EXPECT_THAT(translated_ranks, ElementsAre(0, 1));
+    EXPECT_NE(MetalContext::instance().global_distributed_context().id(), mesh_subcontext->id());
+
+    const auto local_subcontext = control_plane.get_host_local_context();
+    ASSERT_NE(local_subcontext, nullptr);
+    EXPECT_EQ(local_subcontext->rank(), multihost::Rank(0));
+    EXPECT_EQ(local_subcontext->size(), multihost::Size(1));
+    EXPECT_NE(MetalContext::instance().global_distributed_context().id(), local_subcontext->id());
 }
 
-TEST(BigMeshDualRankTest2x4, SystemMeshValidation) {
-    EXPECT_NO_THROW({
-        const auto& system_mesh = SystemMesh::instance();
-        EXPECT_EQ(system_mesh.shape(), MeshShape(2, 4));
-        EXPECT_EQ(system_mesh.local_shape(), MeshShape(2, 2));
-    });
-}
+TEST_P(BigMeshDualRankMeshShapeSweepFixture, MeshDeviceValidation) { EXPECT_EQ(mesh_device_->shape(), GetParam()); }
 
-TEST(BigMeshDualRankTest2x4, MeshDevice2x4Validation) {
-    auto mesh_device = MeshDevice::create(
-        MeshDeviceConfig(MeshShape(2, 4)),
-        DEFAULT_L1_SMALL_SIZE,
-        DEFAULT_TRACE_REGION_SIZE,
-        1,
-        tt::tt_metal::DispatchCoreType::WORKER);
-    EXPECT_EQ(mesh_device->shape(), MeshShape(2, 4));
-}
+TEST_F(BigMeshDualRankTest2x4, SystemMeshValidation) {
+    ASSERT_NO_THROW({ SystemMesh::instance(); });
 
-TEST(BigMeshDualRankTest2x4, SystemMeshShape) {
     const auto& system_mesh = SystemMesh::instance();
     EXPECT_EQ(system_mesh.local_shape(), MeshShape(2, 2));
-
-    auto& control_plane = MetalContext::instance().get_control_plane();
-    auto rank = control_plane.get_local_host_rank_id_binding();
 
     auto mapped_devices = system_mesh.get_mapped_devices(MeshShape(2, 4));
     const MeshContainer<MaybeRemote<int>> physical_device_ids(MeshShape(2, 4), std::move(mapped_devices.device_ids));
     const MeshContainer<tt::tt_fabric::FabricNodeId> fabric_node_ids(
         MeshShape(2, 4), std::move(mapped_devices.fabric_node_ids));
-    if (rank == HostRankId{0}) {
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(0, 0)).is_local());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(0, 1)).is_local());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(1, 0)).is_local());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(1, 1)).is_local());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(0, 2)).is_remote());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(0, 3)).is_remote());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(1, 2)).is_remote());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(1, 3)).is_remote());
-    } else {
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(0, 0)).is_remote());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(0, 1)).is_remote());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(1, 0)).is_remote());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(1, 1)).is_remote());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(0, 2)).is_local());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(0, 3)).is_local());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(1, 2)).is_local());
-        EXPECT_TRUE(physical_device_ids.at(MeshCoordinate(1, 3)).is_local());
+
+    // Generic local/remote validation
+    int local_count = 0;
+    int remote_count = 0;
+    int col_counts[4] = {0, 0, 0, 0};
+
+    for (uint32_t row = 0; row < 2; ++row) {
+        for (uint32_t col = 0; col < 4; ++col) {
+            MeshCoordinate coord(row, col);
+            const auto& dev = physical_device_ids.at(coord);
+            if (dev.is_local()) {
+                local_count++;
+                col_counts[col]++;
+            } else if (dev.is_remote()) {
+                remote_count++;
+            } else {
+                FAIL() << "Device at " << coord << " is neither local nor remote";
+            }
+        }
     }
+
+    EXPECT_EQ(local_count, 4);
+    EXPECT_EQ(remote_count, 4);
+
+    EXPECT_THAT(col_counts, ::testing::AnyOf(ElementsAre(2, 2, 0, 0), ElementsAre(0, 0, 2, 2)));
 
     // Check fabric node IDs are set for all devices, globally.
     EXPECT_EQ(fabric_node_ids.at(MeshCoordinate(0, 0)).chip_id, 0);

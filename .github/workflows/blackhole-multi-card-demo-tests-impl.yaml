@@ -90,8 +90,16 @@ jobs:
           build-artifact-name: ${{ inputs.build-artifact-name }}
           wheel-artifact-name: ${{ inputs.wheel-artifact-name }}
       - uses: tenstorrent/tt-metal/.github/actions/ensure-bh-links-online@main
+        timeout-minutes: 10
         with:
           runner-label: ${{ inputs.runner-label }}
+      - name: Download Llama model weights from LFC
+        if: ${{ inputs.extra-tag == 'pipeline-yyz2-lfc' && contains(matrix.test-group.name, 'llama') }}
+        timeout-minutes: 15
+        run: |
+          set -e
+          mkdir -p /localdev/blackhole_demos/huggingface_data/meta-llama
+          wget -r -nH -x --cut-dirs=5 -np --progress=dot:giga -R "index.html*" -P /localdev/blackhole_demos/huggingface_data/meta-llama http://yyz2-lfcache564.yyz2.tenstorrent.com/mldata/model_checkpoints/pytorch/huggingface/meta-llama/Llama-3.1-8B-Instruct/
       - name: Run demo regression tests
         timeout-minutes: 70
         run: |

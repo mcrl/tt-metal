@@ -24,8 +24,8 @@ on:
         type: string
 
   schedule:
-    # Create rc every day at EOD of PST Mon-Fri + night of Sunday to kick off
-    # releases for beginning of work week
+    # Create dev every day at EOD of PST Mon-Fri + night of Sunday to kick off
+    # dev testing and builds for beginning of work week
     - cron: "0 0 * * *"
 
 permissions:
@@ -65,26 +65,26 @@ jobs:
       - name: Get is-release-candidate and tag-type
         id: get-is-release-candidate-and-tag-type
         run: |
-          # A workflow dispatch on a tag is considered a release run for us.
-          isReleaseCandidate=${{ !(github.ref_type == 'tag' && github.event_name == 'workflow_dispatch') }}
-          echo "is-release-candidate=$isReleaseCandidate" >> "$GITHUB_OUTPUT"
-
-          # Set tag-type
-          echo "Determining tag-type for GITHUB_REF: ${GITHUB_REF}"
-          echo "isReleaseCandidate: $isReleaseCandidate"
-
-          if [[ "${GITHUB_REF}" == "refs/heads/stable" ]] || [[ "${GITHUB_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ ]]; then
-            echo "Matched stable branch or RC tag pattern"
-            if [[ "$isReleaseCandidate" == "true" ]]; then
-              echo "Setting tag-type=rc (release candidate)"
+          if [[ "$RELEASE_TYPE" != "" && "$RELEASE_TYPE" != "null" ]]; then
+            if [[ "$RELEASE_TYPE" != "dev" && "$RELEASE_TYPE" != "rc" && "$RELEASE_TYPE" != "prod" ]]; then
+              echo "Invalid release-type: $RELEASE_TYPE. Must be one of 'dev', 'rc', or 'prod'."
+              exit 1
+            fi
+            echo "Processing release-type: $RELEASE_TYPE"
+            if [[ "$RELEASE_TYPE" == "prod" ]]; then
+              echo "is-release-candidate=false" >> "$GITHUB_OUTPUT"
+              echo "tag-type=" >> "$GITHUB_OUTPUT"
+            elif [[ "$RELEASE_TYPE" == "rc" ]]; then
+              echo "is-release-candidate=true" >> "$GITHUB_OUTPUT"
               echo "tag-type=rc" >> "$GITHUB_OUTPUT"
             else
-              echo "Setting tag-type= (production release)"
-              echo "tag-type=" >> "$GITHUB_OUTPUT"
+              echo "is-release-candidate=true" >> "$GITHUB_OUTPUT"
+              echo "tag-type=dev" >> "$GITHUB_OUTPUT"
             fi
           else
-            echo "No stable/RC match - setting tag-type=dev (development build)"
-            echo "tag-type=dev" >> "$GITHUB_OUTPUT"
+            echo "ERROR: RELEASE_TYPE is empty or null - this should not happen!"
+            echo "This indicates a problem with the 'Set default release-type for cron job' step."
+            exit 1
           fi
 
       - name: Get should-create-release
@@ -119,7 +119,7 @@ jobs:
     secrets: inherit
     strategy:
       matrix:
-        version: [22.04]
+        version: [22.04, 24.04]
     with:
       version: ${{ matrix.version }}
       dry-run: ${{ inputs.dry-run || false }}
@@ -129,7 +129,7 @@ jobs:
   publish-to-pypi:
     needs: [build-test-publish, create-tag]
     runs-on: ubuntu-latest
-    if: ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/')) || inputs.dry-run }}
+    if: ${{ github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v') || inputs.dry-run }}
     environment:
       name: pypi
       url: https://pypi.org/project/ttnn/
@@ -138,7 +138,7 @@ jobs:
       contents: read
     steps:
       - name: Download ALL wheels (separate folders)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0
         with:
           pattern: eager-dist-*
           path: artifacts
@@ -220,7 +220,7 @@ jobs:
     # May accidentally create two releases without restricting to 1 job
     concurrency: create_upload_draft_release
     runs-on: ubuntu-latest
-    if: ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/')) || inputs.dry-run }}
+    if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v') || inputs.dry-run }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -297,39 +297,8 @@ jobs:
             tt-metalium.tar.gz
             debian-packages/*.deb
           fail_on_unmatched_files: true
-  create-docker-release-image:
-    needs: [
-      build-artifact,
-      create-tag,
-      create-and-upload-draft-release
-    ]
-    uses: ./.github/workflows/publish-release-image.yaml
-    secrets: inherit
-    if: github.ref != 'refs/heads/main'
-    with:
-      base-image: ${{ needs.build-artifact.outputs.dev-docker-image }}
-      version: ${{ needs.create-tag.outputs.version }}
-      is_major_version:  ${{ needs.get-params.outputs.is-release-candidate !='true' }}
-  release-docs:
-    needs: [
-      build-artifact,
-      get-params,
-      create-tag,
-      create-and-upload-draft-release
-    ]
-    if: ${{ needs.get-params.outputs.is-release-candidate !='true' }}
-    uses: ./.github/workflows/docs-latest-public.yaml
-    with:
-      version: ${{ needs.create-tag.outputs.version }}
-      docker-image: ${{ needs.build-artifact.outputs.dev-docker-image }}
-      build-artifact-name: ${{ needs.build-artifact.outputs.build-artifact-name }}
-      wheel-artifact-name: ${{ needs.build-artifact.outputs.wheel-artifact-name }}
-    secrets: inherit
-  #Do we need to publish every release candidate?
-  publish-to-pypi:
-    name: >-
-      Publish Python 🐍 distribution 📦 to PyPI
-    needs: [build-artifact]
+
+  check-stable-for-new-commits:
     runs-on: ubuntu-latest
     #Only run on schedule or main branch pushes
     if: ${{ github.event_name == 'schedule' || github.ref == 'refs/heads/main' }}

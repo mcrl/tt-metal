@@ -62,6 +62,7 @@ public:
     [[nodiscard]] bool empty() const noexcept;
     [[nodiscard]] size_t size() const noexcept;
     [[nodiscard]] const MeshShape& shape() const noexcept;
+    [[nodiscard]] tt::tt_fabric::MeshId mesh_id() const noexcept;
     [[nodiscard]] bool contains(const MeshCoordinate& coord) const noexcept;
 
     // Returns `IDevice*` instance for `coord`.
@@ -119,6 +120,7 @@ public:
 private:
     DistributedMeshContainer<IDevice*> devices_;
     MeshContainer<tt::tt_fabric::FabricNodeId> fabric_node_ids_;
+    tt::tt_fabric::MeshId mesh_id_;
 
     std::unordered_map<ChipId, MeshCoordinate> device_coordinates_;
 

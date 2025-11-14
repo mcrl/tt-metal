@@ -207,6 +207,7 @@ init_packages() {
                 "libc++abi-17-dev"
                 "wget"
                 "curl"
+                "xxd"
             )
             if [ "$distributed" -eq 1 ]; then
                 PACKAGES+=("openmpi-bin" "libopenmpi-dev")
@@ -234,6 +235,7 @@ init_packages() {
                 "capstone-devel"
                 "wget"
                 "curl"
+                "vim-common" # Includes xxd
             )
             if [ "$distributed" -eq 1 ]; then
                 PACKAGES+=("openmpi" "openmpi-devel")
@@ -405,7 +407,12 @@ install_mpi_ulfm() {
 }
 
 install_rust() {
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.89.0 -y
+    INSTALL_CMD="curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.89.0 --profile minimal -y"
+    if [ -n "$SUDO_USER" ]; then
+        sudo -u "$SUDO_USER" /bin/bash -c "$INSTALL_CMD"
+    else
+        /bin/bash -c "$INSTALL_CMD"
+    fi
 }
 
 # We don't really want to have hugepages dependency

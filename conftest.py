@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
 
 # SPDX-License-Identifier: Apache-2.0
-import os
+
 import pytest
 import torch
 import random
+import os
 import numpy as np
 from functools import partial
 from operator import contains, eq, getitem
