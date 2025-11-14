@@ -267,9 +267,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         with Profiler().trace_with_timer("all-to-all-combine", level=4):
             all_to_all_combine_output_tensors = ttnn.all_to_all_combine(
                 experts_output,
-                self.device_expert_mapping_legacy,
                 selected_experts,
-                axis=1,
+                self.device_expert_mapping_legacy,
+                cluster_axis=1,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1
             )
