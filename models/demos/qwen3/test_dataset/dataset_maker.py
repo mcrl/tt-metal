@@ -12,19 +12,20 @@ model_name = "Qwen/Qwen3-30B-A3B"
 
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-30B-A3B")
 
-dataset_name = "HuggingFaceFW/fineweb"
-# "HuggingFaceFW/fineweb", "wikitext", "cais/mmlu"
+dataset_name = "HuggingFaceFW/fineweb-edu"
+# "HuggingFaceFW/fineweb-edu", "wikitext", "cais/mmlu"
 
 # Dataset configurations
 dataset_configs = {
     "HuggingFaceFW/fineweb": {"config": None, "streaming": True, "split": "train", "has_subjects": False},
+    "HuggingFaceFW/fineweb-edu": {"config": None, "streaming": True, "split": "train", "has_subjects": False},
     "wikitext": {"config": "wikitext-103-v1", "streaming": False, "split": "train", "has_subjects": False},
     "cais/mmlu": {"config": "all", "streaming": False, "split": "auxiliary_train", "has_subjects": True}
 }
 
-token_lengths = [2**i for i in range(11)]  # [1, 2, ... , 512, 1024]
+token_lengths = [512, 1024]  # [1, 2, ... , 512, 1024]
 
-num_per_token_length = 128
+num_per_token_length = 1024
 
 #################################################
 
