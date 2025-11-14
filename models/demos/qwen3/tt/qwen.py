@@ -241,16 +241,17 @@ class Qwen3MoeModel(nn.Module):
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
-            hidden_states = ttnn.experimental.all_gather_async(
-                hidden_states,
-                3,
-                cluster_axis=0,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=1,
-            )
+            if self.mesh_device.shape[0] > 1:
+                hidden_states = ttnn.experimental.all_gather_async(
+                    hidden_states,
+                    3,
+                    cluster_axis=0,
+                    mesh_device=self.mesh_device,
+                    topology=ttnn.Topology.Linear,
+                    multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    num_links=1,
+                )
             hidden_states = ttnn.squeeze(hidden_states, 0)
 
         if mode == InferenceMode.PREFILL:
