@@ -8,7 +8,7 @@ import safetensors.torch
 import torch
 from loguru import logger
 
-from models.utility_functions import comp_pcc
+from models.common.utility_functions import comp_pcc
 
 
 def load_state_dict(model_path: Path, module_path: str):

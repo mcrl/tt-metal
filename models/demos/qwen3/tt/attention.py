@@ -239,7 +239,6 @@ class Qwen3MoeAttention(nn.Module):
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
         )
         self.cache_v = ttnn.as_tensor(
             cache_v,
@@ -248,7 +247,6 @@ class Qwen3MoeAttention(nn.Module):
             device=self.mesh_device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-            cache_file_name=ttnn_model_cache_path(f"kvcache_{self.cache_shape}")
         )
 
     def forward_prefill(

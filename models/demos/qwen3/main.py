@@ -46,9 +46,6 @@ def perftest_tt(
 
 
 def main(
-    ckpt_dir: str = "/mnt/nvme0/models/qwen3-235b",
-    tokenizer_path: str = "/mnt/nvme0/models/qwen3-235b/tokenizer.json",
-    config_path: Optional[str] = "/mnt/nvme0/models/qwen3-235b/config.json",
     batch_size: int = 128,
     prompt_len: int = 64,
     gen_tokens: int = 64

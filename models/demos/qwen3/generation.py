@@ -13,7 +13,7 @@ from models.demos.qwen3.tt.qwen import Qwen3MoeModel as Qwen3MoeModelTT
 from models.demos.qwen3.utils.timer import print_timer_all, reset_timer, profile_time, start_timer, stop_timer
 from models.demos.qwen3.utils.profiler import disable_profiler, enable_profiler
 from models.demos.qwen3.common.loader import load, materialize
-from models.utility_functions import enable_persistent_kernel_cache
+from models.common.utility_functions import enable_persistent_kernel_cache
 from utils.memory_state import print_memory_state
 
 from models.tt_transformers.tt.rope import RotarySetup

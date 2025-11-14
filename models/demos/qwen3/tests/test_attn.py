@@ -20,7 +20,8 @@ from models.demos.qwen3.tt.model_cache import get_model_path
 from models.tt_transformers.tt.rope import RotarySetup
 
 def create_test_config():
-    config_path = "/mnt/nvme0/models/qwen3-30b/config.json"
+    model_path = get_model_path()
+    config_path = os.path.join(model_path, "config.json")
 
     with open(config_path, "r") as f:
         data = json.load(f)
@@ -28,7 +29,8 @@ def create_test_config():
 
 
 def load_reference_layer(layer_idx=0, seq_len=32):
-    config = AutoConfig.from_pretrained("/mnt/nvme0/models/qwen3-30b/")
+    model_path = get_model_path()
+    config = AutoConfig.from_pretrained(model_path)
 
     config.max_batch_size = 32
     config.max_seq_len = seq_len
@@ -36,7 +38,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
 
     layer = Qwen3MoeDecoderLayer(config, layer_idx)
 
-    weight_path = f"/mnt/nvme0/models/qwen3-30b/layer_{layer_idx}.pt"
+    weight_path = os.path.join(model_path, f"layer_{layer_idx}.pt")
     if os.path.exists(weight_path):
         layer.load_state_dict(torch.load(weight_path))
     else:

@@ -8,8 +8,8 @@ $ cd tt-metal/
 $ git checkout qwen3_bringup
 $ ./build_metal.sh -c -p --release
 
-export TT_METAL_HOME=${pwd}
-export PYTHONPATH=${pwd}:${pwd}/ttnn
+export TT_METAL_HOME=$(pwd)
+export PYTHONPATH=$(pwd):$(pwd)/ttnn
 ```
 
 ## Run
@@ -42,7 +42,7 @@ $ ./run.sh moe_decode
 ```bash
 export TT_TRACE=1 # enable trace on decode
 export TT_ENABLE_MATERIALIZE=1 # dynamic load
-export TT_MESHDEVICE_SHAPE=4,2 # mesh device shape
+export TT_MESHDEVICE_SHAPE=4,8 # mesh device shape
 export QWEN3_MODEL="" # folder that contains the model files
 export QWEN3_MODEL_DIR="" # parent directory that contains the QWEN3_MODEL folder
 

@@ -529,6 +529,8 @@ target_link_libraries(
         TTNN::Ops::Experimental::Copy
         TTNN::Ops::Experimental::Dropout
         TTNN::Ops::Experimental::Matmul
+        TTNN::Ops::Experimental::PaddedSlice
+        TTNN::Ops::Experimental::MinimalMatmul
         TTNN::Ops::Experimental::Moe
         TTNN::Ops::Experimental::Attention
         TTNN::Ops::Experimental::PagedCache
@@ -702,6 +704,8 @@ add_subdirectory(cpp/ttnn/operations/experimental/conv3d)
 add_subdirectory(cpp/ttnn/operations/experimental/copy)
 add_subdirectory(cpp/ttnn/operations/experimental/dropout)
 add_subdirectory(cpp/ttnn/operations/experimental/matmul)
+add_subdirectory(cpp/ttnn/operations/experimental/minimal_matmul)
+add_subdirectory(cpp/ttnn/operations/experimental/padded_slice)
 add_subdirectory(cpp/ttnn/operations/experimental/moe)
 add_subdirectory(cpp/ttnn/operations/experimental/attention)
 add_subdirectory(cpp/ttnn/operations/experimental/paged_cache)

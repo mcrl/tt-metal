@@ -764,6 +764,7 @@ void py_module(py::module& module) {
             Returns:
                 Tensor: The combined tensor.
             )doc");
+    module.def("using_distributed_env", &tt::tt_metal::distributed::UsingDistributedEnvironment);
 }
 
 }  // namespace ttnn::distributed
