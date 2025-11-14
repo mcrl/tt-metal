@@ -231,13 +231,13 @@ class Qwen3MoeModel(nn.Module):
             hidden_states = ttnn.embedding(ids, self.embedding_weight, dtype=ttnn.bfloat16)
             hidden_states = ttnn.unsqueeze(hidden_states, 0)
 
-            hidden_states = self.ccl.ring_all_gather(
+            hidden_states = self.ccl.all_gather(
                 hidden_states,
                 dim=3,
                 cluster_axis=1,
             )
             if self.mesh_device.shape[0] > 1:
-                hidden_states = self.ccl.ring_all_gather(
+                hidden_states = self.ccl.all_gather(
                     hidden_states,
                     dim=3,
                     cluster_axis=0,
