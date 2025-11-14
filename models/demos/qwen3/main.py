@@ -26,7 +26,7 @@ def perftest_tt(
     config_path = os.path.join(model_path, "config.json")
 
     # Create device with trace region size for trace capture
-    device_params = {"trace_region_size": 128 * 1024 * 1024, "fabric_config": ttnn.FabricConfig.FABRIC_1D}  # 256MB
+    device_params = {"trace_region_size": 128 * 1024 * 1024, "fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}  # 256MB
     mesh_device = create_mesh_device(device_params)
     set_and_get_device_cache(mesh_device)
 
@@ -42,8 +42,6 @@ def perftest_tt(
     prompt_and_responses, iter_times = qwen3_moe.generate(prompts, max_gen_len=gen_tokens, temperature=0.7, top_p=0.8)
 
     return prompt_and_responses, iter_times
-
-
 
 def main(
     batch_size: int = 128,

@@ -18,6 +18,7 @@ from models.demos.qwen3.utils.timer import set_and_get_device_cache
 from models.demos.qwen3.tt.model_cache import get_model_path
 
 from models.tt_transformers.tt.rope import RotarySetup
+from models.demos.qwen3.tt.ccl import TT_CCL
 
 def create_test_config():
     model_path = get_model_path()
@@ -77,7 +78,8 @@ def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
 
     hidden_states = torch.randn(batch_size, seq_len, config.hidden_size, dtype=torch.bfloat16)
 
-    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device)
+    ccl = TT_CCL(mesh_device)
+    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device, ccl)
 
     tt_attention.q_proj.weight.data = ref_attention.q_proj.weight.data.clone()
     tt_attention.k_proj.weight.data = ref_attention.k_proj.weight.data.clone()
@@ -177,7 +179,8 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
 
     hidden_states = torch.randn(batch_size, 1, config.hidden_size, dtype=torch.bfloat16)
 
-    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device)
+    ccl = TT_CCL(mesh_device)
+    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device, ccl)
 
     tt_attention.q_proj.weight.data = ref_attention.q_proj.weight.data.clone()
     tt_attention.k_proj.weight.data = ref_attention.k_proj.weight.data.clone()

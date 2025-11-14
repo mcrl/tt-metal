@@ -11,8 +11,7 @@ from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, In
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_cache_prefix
-from models.demos.qwen3.tt.ccl_1d import CCL1D
-from models.tt_transformers.tt.ccl import TT_CCL
+from models.demos.qwen3.tt.ccl import TT_CCL
 
 from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
 from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
@@ -63,11 +62,12 @@ def save_activations(mesh_device, tensor: ttnn.Tensor, file_name: str, layer_nam
 
 class Qwen3MoeAttention(nn.Module):
     @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeAttention"})
-    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
+    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device, ccl: TT_CCL):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
         self.mesh_device = mesh_device
+        self.ccl = ccl
         self.num_devices = mesh_device.shape[0] * mesh_device.shape[1]
 
         self.dp = mesh_device.shape[0]
@@ -140,8 +140,6 @@ class Qwen3MoeAttention(nn.Module):
             load_parameter_for_module(self.q_norm, "weight", f"{param_prefix}.q_norm.weight")
         if is_meta_tensor(self.k_norm.weight):
             load_parameter_for_module(self.k_norm, "weight", f"{param_prefix}.k_norm.weight")
-
-        self.ccl = TT_CCL(self.mesh_device)
 
         weight_shape = (self.hidden_size, -1)
 
@@ -220,7 +218,7 @@ class Qwen3MoeAttention(nn.Module):
             fp32_dest_acc_en=False,
             packer_l1_acc=True,
         )
-
+    
         self.is_tt_setup = True
         
         if lazy_loader is not None:
@@ -344,41 +342,23 @@ class Qwen3MoeAttention(nn.Module):
             B, _, S, H = linear_output.shape
             linear_output = ttnn.view(linear_output, (1, 1, B * S, H))
 
-            linear_output = ttnn.experimental.reduce_scatter_minimal_async(
+            linear_output = self.ccl.reduce_scatter(
                 linear_output,
-                persistent_output_buffers=None,
                 dim=3,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
-                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(1),
                 cluster_axis=1,
-                num_links=self.num_links,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                topology=ttnn.Topology.Linear,
-                chunks_per_sync=10,
-                num_workers_per_link=2,
-                num_buffers_per_channel=2,
             )
-            linear_output = ttnn.experimental.all_gather_async(
+            linear_output = self.ccl.all_gather(
                 linear_output,
-                3,
+                dim=3,
                 cluster_axis=1,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=self.num_links,
             )
-            linear_output = ttnn.experimental.all_gather_async(
-                linear_output,
-                2,
-                cluster_axis=0,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=self.num_links,
-            )
+            if self.mesh_device.shape[0] > 1:
+                linear_output = self.ccl.all_gather(
+                    linear_output,
+                    dim=2,
+                    cluster_axis=0,
+                )
+
             linear_output = ttnn.view(linear_output, (-1, S, H))
             linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
 
@@ -470,41 +450,27 @@ class Qwen3MoeAttention(nn.Module):
             _, _, B, H = linear_output.shape
             linear_output = ttnn.view(linear_output, (1, 1, B, H))
 
-            linear_output = ttnn.experimental.reduce_scatter_minimal_async(
+            linear_output = self.ccl.reduce_scatter(
                 linear_output,
-                persistent_output_buffers=None,
                 dim=3,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
-                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(1),
                 cluster_axis=1,
-                num_links=self.num_links,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                topology=ttnn.Topology.Linear,
-                chunks_per_sync=10,
-                num_workers_per_link=2,
-                num_buffers_per_channel=2,
+                memory_config=mem_cfg
             )
-            linear_output = ttnn.experimental.all_gather_async(
+            linear_output = self.ccl.all_gather(
                 linear_output,
-                3,
+                dim=3,
                 cluster_axis=1,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=self.num_links,
+                memory_config=mem_cfg
             )
-            linear_output = ttnn.experimental.all_gather_async(
-                linear_output,
-                2,
-                cluster_axis=0,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=self.num_links,
-            )
+
+            if self.mesh_device.shape[0] > 1:
+                linear_output = self.ccl.all_gather(
+                    linear_output,
+                    dim=2,
+                    cluster_axis=0,
+                    memory_config=mem_cfg
+                )
+            
             linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))
             linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
 

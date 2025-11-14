@@ -16,6 +16,7 @@ from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 from models.demos.qwen3.utils.timer import set_and_get_device_cache
 from models.demos.qwen3.tt.model_cache import get_model_path
+from models.demos.qwen3.tt.ccl import TT_CCL
 
 from models.tt_transformers.tt.rope import RotarySetup
 
@@ -35,7 +36,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
     config.max_batch_size = 32
     config.max_seq_len = seq_len
     config._attn_implementation = "sdpa"
-
+    
     layer = Qwen3MoeDecoderLayer(config, layer_idx)
 
     weight_path = os.path.join(model_path, f"layer_{layer_idx}.pt")
@@ -56,7 +57,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
         (32, 128),
     ],
 )
-@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
+@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}], indirect=True)
 def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
     """Compare TT Attention implementation with PyTorch reference."""
     torch.manual_seed(0)
@@ -90,7 +91,8 @@ def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
         hidden_states, position_embeddings=ref_position_embeddings, attention_mask=attention_mask
     )[0]
 
-    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device)
+    ccl = TT_CCL(mesh_device)
+    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device, ccl)
 
     tt_attention.q_proj.weight.data = ref_attention.q_proj.weight.data.clone()
     tt_attention.k_proj.weight.data = ref_attention.k_proj.weight.data.clone()
@@ -163,7 +165,7 @@ def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
         (32, 1),
     ],
 )
-@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
+@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}], indirect=True)
 def test_attn_decode(bsz_per_device, seq_len, mesh_device):
     """Compare TT Attention implementation with PyTorch reference."""
     torch.manual_seed(0)
@@ -197,7 +199,8 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
         hidden_states, position_embeddings=ref_position_embeddings, attention_mask=attention_mask
     )[0]
 
-    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device)
+    ccl = TT_CCL(mesh_device)
+    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device, ccl)
 
     tt_attention.q_proj.weight.data = ref_attention.q_proj.weight.data.clone()
     tt_attention.k_proj.weight.data = ref_attention.k_proj.weight.data.clone()
@@ -273,7 +276,7 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
         (32, 128, 4),
     ],
 )
-@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
+@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}], indirect=True)
 def test_attn_prefill_and_decode(bsz_per_device, seq_len, num_decode_tokens, mesh_device):
     """Test prefill with paged cache followed by multiple decode steps."""
     torch.manual_seed(0)
@@ -292,8 +295,8 @@ def test_attn_prefill_and_decode(bsz_per_device, seq_len, num_decode_tokens, mes
     config.max_num_blocks = 1024
 
     layer_idx = 0
-
-    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device)
+    ccl = TT_CCL(mesh_device)
+    tt_attention = Qwen3MoeAttention(config, layer_idx, mesh_device, ccl)
     tt_attention.q_proj.weight.data = ref_attention.q_proj.weight.data.clone()
     tt_attention.k_proj.weight.data = ref_attention.k_proj.weight.data.clone()
     tt_attention.v_proj.weight.data = ref_attention.v_proj.weight.data.clone()
