@@ -10,11 +10,11 @@ from models.demos.qwen3.tt.attention import Qwen3MoeAttention
 from models.demos.qwen3.tt.moe import Qwen3MoeSparseMoeBlock
 from models.demos.qwen3.utils.profiler import Profiler, profile_trace
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_cache_prefix
-from models.tt_transformers.tt.ccl import TT_CCL
+from models.demos.qwen3.tt.ccl import TT_CCL
 
 class Qwen3MoeDecoderLayer(nn.Module):
     @profile_trace("create-layer", level=2, args={"class": "Qwen3MoeDecoderLayer"})
-    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
+    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device, ccl: TT_CCL):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -22,11 +22,11 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self.mesh_device = mesh_device
         self.is_tt_setup = False
 
-        self.self_attn = Qwen3MoeAttention(config, layer_idx, mesh_device)
+        self.self_attn = Qwen3MoeAttention(config, layer_idx, mesh_device, ccl)
 
         assert (config.mlp_only_layers is None) or (layer_idx not in config.mlp_only_layers)
         assert config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
-        self.mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device)
+        self.mlp = Qwen3MoeSparseMoeBlock(config, layer_idx, mesh_device, ccl)
 
         self.input_layernorm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
         self.post_attention_layernorm = Qwen3MoeRMSNorm(
@@ -140,6 +140,8 @@ class Qwen3MoeModel(nn.Module):
         super().__init__()
         self.config = config
         self.mesh_device = mesh_device
+        self.ccl = TT_CCL(self.mesh_device)
+
         self.is_tt_setup = False
 
         self.padding_idx = config.pad_token_id
@@ -147,7 +149,7 @@ class Qwen3MoeModel(nn.Module):
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [Qwen3MoeDecoderLayer(config, layer_idx, mesh_device) for layer_idx in range(config.num_hidden_layers)]
+            [Qwen3MoeDecoderLayer(config, layer_idx, mesh_device, self.ccl) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = Qwen3MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps, mesh_device=mesh_device)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -209,8 +211,6 @@ class Qwen3MoeModel(nn.Module):
             cache_file_name=ttnn_model_cache_path(f"{cache_prefix}lm_head_weight"),
         )
 
-        self.ccl = TT_CCL(self.mesh_device)
-
         self.is_tt_setup = True
         
         if lazy_loader is not None:
@@ -231,27 +231,17 @@ class Qwen3MoeModel(nn.Module):
             hidden_states = ttnn.embedding(ids, self.embedding_weight, dtype=ttnn.bfloat16)
             hidden_states = ttnn.unsqueeze(hidden_states, 0)
 
-            hidden_states = ttnn.experimental.all_gather_async(
+            hidden_states = self.ccl.ring_all_gather(
                 hidden_states,
-                3,
+                dim=3,
                 cluster_axis=1,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=1,
             )
             if self.mesh_device.shape[0] > 1:
-                hidden_states = ttnn.experimental.all_gather_async(
+                hidden_states = self.ccl.ring_all_gather(
                     hidden_states,
-                    3,
+                    dim=3,
                     cluster_axis=0,
-                    mesh_device=self.mesh_device,
-                    topology=ttnn.Topology.Linear,
-                    multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    num_links=1,
-                )
+                )       
             hidden_states = ttnn.squeeze(hidden_states, 0)
 
         if mode == InferenceMode.PREFILL:

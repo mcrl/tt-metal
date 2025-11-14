@@ -56,7 +56,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
         (32, 128),
     ],
 )
-@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
+@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}], indirect=True)
 def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
     """Compare TT Attention implementation with PyTorch reference."""
     torch.manual_seed(0)
@@ -163,7 +163,7 @@ def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
         (32, 1),
     ],
 )
-@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
+@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}], indirect=True)
 def test_attn_decode(bsz_per_device, seq_len, mesh_device):
     """Compare TT Attention implementation with PyTorch reference."""
     torch.manual_seed(0)
@@ -273,7 +273,7 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
         (32, 128, 4),
     ],
 )
-@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
+@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}], indirect=True)
 def test_attn_prefill_and_decode(bsz_per_device, seq_len, num_decode_tokens, mesh_device):
     """Test prefill with paged cache followed by multiple decode steps."""
     torch.manual_seed(0)

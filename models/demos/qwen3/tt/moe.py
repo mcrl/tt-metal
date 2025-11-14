@@ -4,8 +4,7 @@ import ttnn
 import os
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
-from models.demos.qwen3.tt.ccl_1d import CCL1D
-from models.tt_transformers.tt.ccl import TT_CCL
+from models.demos.qwen3.tt.ccl import TT_CCL
 
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_cache_prefix
@@ -36,10 +35,11 @@ class Qwen3MoeMLP(nn.Module):
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
     @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeSparseMoeBlock"})
-    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device):
+    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device, ccl: TT_CCL):
         super().__init__()
         self.config = config
         self.mesh_device = mesh_device
+        self.ccl = ccl
         self.num_experts = config.num_experts
         self.top_k = config.num_experts_per_tok
         self.norm_topk_prob = config.norm_topk_prob
@@ -82,9 +82,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     load_parameter_for_module(expert.up_proj, "weight", f"{expert_prefix}.up_proj.weight")
                 if is_meta_tensor(expert.down_proj.weight):
                     load_parameter_for_module(expert.down_proj, "weight", f"{expert_prefix}.down_proj.weight")
-
-        with Profiler().trace_with_timer("CCL", level=4):
-            self.ccl = TT_CCL(self.mesh_device)
 
         with Profiler().trace_with_timer("gate_weight_tt", level=4):
             self.gate_weight = ttnn.as_tensor(
@@ -410,56 +407,26 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             moe_output = ttnn.view(moe_output, shape=(1, 1, T, H))
             moe_output = ttnn.to_layout(moe_output, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
-            moe_output = ttnn.experimental.reduce_scatter_minimal_async(
+            moe_output = self.ccl.ring_reduce_scatter(
                 moe_output,
-                persistent_output_buffers=None,
                 dim=3,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
-                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(1),
                 cluster_axis=1,
-                num_links=self.num_links,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                topology=ttnn.Topology.Linear,
-                chunks_per_sync=10,
-                num_workers_per_link=2,
-                num_buffers_per_channel=2,
             )
             if self.mesh_device.shape[0] > 1:
-                moe_output = ttnn.experimental.reduce_scatter_minimal_async(
+                moe_output = self.ccl.ring_reduce_scatter(
                     moe_output,
-                    persistent_output_buffers=None,
                     dim=3,
-                    multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(0),
-                    barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(0),
                     cluster_axis=0,
-                    num_links=self.num_links,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    topology=ttnn.Topology.Linear,
-                    chunks_per_sync=10,
-                    num_workers_per_link=2,
-                    num_buffers_per_channel=2,
                 )
-                moe_output = ttnn.experimental.all_gather_async(
+                moe_output = self.ccl.ring_all_gather(
                     moe_output,
-                    3,
+                    dim=3,
                     cluster_axis=0,
-                    mesh_device=self.mesh_device,
-                    topology=ttnn.Topology.Linear,
-                    multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    num_links=self.num_links,
                 )
-            moe_output = ttnn.experimental.all_gather_async(
+            moe_output = self.ccl.ring_all_gather(
                 moe_output,
-                3,
+                dim=3,
                 cluster_axis=1,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=self.num_links,
             )
 
         with Profiler().trace_with_timer("reshape", level=4):

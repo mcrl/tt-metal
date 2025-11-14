@@ -50,7 +50,7 @@ def load_reference_layer(layer_idx=0, seq_len=32):
     ],
 )
 @pytest.mark.parametrize(
-    "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
+    "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}], indirect=True
 )
 def test_moe_prefill(batch_size, seq_len, mesh_device):
     """Compare TT Sparse MoE implementation with PyTorch reference."""
@@ -101,7 +101,7 @@ def test_moe_prefill(batch_size, seq_len, mesh_device):
     ],
 )
 @pytest.mark.parametrize(
-    "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
+    "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}], indirect=True
 )
 def test_moe_decode(batch_size, seq_len, mesh_device):
     """Compare TT Sparse MoE implementation with PyTorch reference."""
