@@ -28,7 +28,8 @@ void ScatterMoeInput::validate_with_output_tensors(
         "input_hidden_state must be 2D (T, H), got rank {}",
         input_shape.rank());
 
-    uint32_t num_tokens = input_shape[-2];
+    // Round up to the nearest multiple of 32 (TILE SIZE) to match the shape of hidden_dim (in TILE_LAYOUT)
+    uint32_t num_tokens = (input_shape[-2] + 31) / 32 * 32;
 
     // Validate num_routed_tokens: (E/D) 1D uint32, ROW_MAJOR
     TT_FATAL(

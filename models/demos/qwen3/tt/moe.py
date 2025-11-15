@@ -401,6 +401,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 num_routed,
                 memory_config=mem_cfg,
             )
+            # Resize back to unpadded shape
+            moe_output = moe_output[:batch_size * sequence_length, :]
 
         with Profiler().trace_with_timer("allreduce", level=4):
             T, H = moe_output.shape
@@ -435,7 +437,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("reshape", level=4):
             moe_output = ttnn.typecast(moe_output, ttnn.bfloat16)
-
             if mode == InferenceMode.PREFILL:
                 moe_output = ttnn.view(
                     moe_output,
