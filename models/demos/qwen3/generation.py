@@ -46,11 +46,12 @@ class Qwen3MoETT:
 
         self.config = Qwen3MoeConfig.from_dict(data)
 
-        self.config.max_batch_size = 32
-        self.config.max_seq_len = 512
+        self.config.unit_batch_size = 32
+        self.config.max_batch_size = 1024
+        self.config.max_seq_len = 64
 
-        self.config.block_size = 32
-        self.config.max_num_blocks = 512 # 1024 FIXME: reduce for memory
+        self.config.block_size = self.config.max_seq_len * 2
+        self.config.max_num_blocks = self.config.max_batch_size
 
         self.dp_degree = mesh_device.shape[0]
         self.bsz_per_device = batch_size // self.dp_degree
@@ -61,7 +62,7 @@ class Qwen3MoETT:
 
             self.rope = RotarySetup(
                 device=self.mesh_device,
-                batch_size=self.bsz_per_device,
+                batch_size=self.config.unit_batch_size,
                 head_dim=self.config.head_dim,
                 max_seq_len=self.config.max_seq_len,
                 rope_theta=self.config.rope_theta,
@@ -191,7 +192,7 @@ class Qwen3MoETT:
             layout=ttnn.ROW_MAJOR_LAYOUT,
         )
         
-        start_pos_host = torch.tensor([prev_pos for _ in range(bsz_per_device)])
+        start_pos_host = torch.tensor([prev_pos for _ in range(self.config.unit_batch_size)])
         self.trace_start_pos_persistent = ttnn.as_tensor(
             start_pos_host,
             dtype=ttnn.int32,
@@ -201,7 +202,7 @@ class Qwen3MoETT:
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
         )
         
-        position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+        position_idxs = torch.full((self.config.unit_batch_size,), prev_pos, dtype=torch.long)
         rot_mats_initial = self.rope.get_rot_mats(position_idxs)
         trans_mat = self.rope.transformation_mat
         
@@ -224,7 +225,7 @@ class Qwen3MoETT:
         
         # Warmup runs
         for i in range(3):
-            position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+            position_idxs = torch.full((self.config.unit_batch_size,), prev_pos, dtype=torch.long)
             rot_mats_warmup = self.rope.get_rot_mats(position_idxs)
             
             self.trace_rot_mats_persistent[0].deallocate()
@@ -242,7 +243,7 @@ class Qwen3MoETT:
             )
         ttnn.synchronize_device(self.mesh_device)
         
-        position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+        position_idxs = torch.full((self.config.unit_batch_size,), prev_pos, dtype=torch.long)
         rot_mats_capture = self.rope.get_rot_mats(position_idxs)
         
         self.trace_rot_mats_persistent[0].deallocate()
@@ -282,7 +283,7 @@ class Qwen3MoETT:
         )
         
         # Update persistent start_pos tensor with new position
-        start_pos_host = torch.tensor([prev_pos for _ in range(bsz_per_device)])
+        start_pos_host = torch.tensor([prev_pos for _ in range(self.config.unit_batch_size)])
         start_pos_to_copy = ttnn.from_torch(
             start_pos_host,
             dtype=ttnn.int32,
@@ -294,7 +295,7 @@ class Qwen3MoETT:
             cq_id=0
         )
         
-        position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+        position_idxs = torch.full((self.config.unit_batch_size,), prev_pos, dtype=torch.long)
         rot_mats_new = self.rope.get_rot_mats(position_idxs)
         
         assert rot_mats_new[0].shape == self.trace_rot_cos_spec, \
@@ -332,7 +333,10 @@ class Qwen3MoETT:
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(0, None))
         )
-
+        page_table_tt_list = []
+        for i in range(bsz_per_device // self.config.unit_batch_size):
+            page_table_tt_list.append(page_table_tt[i * self.config.unit_batch_size:(i + 1) * self.config.unit_batch_size, :])
+        
         min_prompt_len = min(len(t) for t in prompt_tokens)
         max_prompt_len = max(len(t) for t in prompt_tokens)
         assert max_prompt_len <= self.config.max_seq_len
@@ -393,25 +397,25 @@ class Qwen3MoETT:
                 layout=ttnn.ROW_MAJOR_LAYOUT,
             )
             start_pos_decode = ttnn.as_tensor(
-                torch.tensor([prev_pos for _ in range(bsz_per_device)]),
+                torch.tensor([prev_pos for _ in range(self.config.unit_batch_size)]),
                 dtype=ttnn.int32,
                 layout=ttnn.ROW_MAJOR_LAYOUT,
                 device=self.mesh_device,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
             )
-            position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+            position_idxs = torch.full((self.config.unit_batch_size,), prev_pos, dtype=torch.long)
             rot_mats_decode = self.rope.get_rot_mats(position_idxs)
             trans_mat_decode = self.rope.transformation_mat
             
             logits_tt = self.model(ids_decode, rot_mats=rot_mats_decode, trans_mat=trans_mat_decode, 
-                                 start_pos=start_pos_decode, mode="decode", page_table=page_table_tt)
+                                 start_pos=start_pos_decode, mode="decode", page_table=page_table_tt_list)
             ttnn.synchronize_device(self.mesh_device)
             logger.info("Warmup: Decode compilation complete")
             
             if use_trace:
                 logger.info("Capturing decode trace during warmup...")
-                self._capture_trace_decode(tokens, prev_pos, page_table_tt, bsz_per_device)
+                self._capture_trace_decode(tokens, prev_pos, page_table_tt_list, bsz_per_device)
                 logger.info("Decode trace captured")
 
         ttnn.synchronize_device(self.mesh_device)
@@ -449,7 +453,7 @@ class Qwen3MoETT:
                     logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
                 else:
                     if use_trace and self.trace_id_decode is not None:
-                        logits_tt = self._execute_trace_decode(tokens, prev_pos, page_table, bsz_per_device)
+                        logits_tt = self._execute_trace_decode(tokens, prev_pos, page_table_tt_list, bsz_per_device)
                     else:
                         ids = ttnn.from_torch(
                             tokens[:, prev_pos:curr_pos],
@@ -460,17 +464,17 @@ class Qwen3MoETT:
                             layout=ttnn.ROW_MAJOR_LAYOUT,
                         )
                         start_pos = ttnn.as_tensor(
-                            torch.tensor([prev_pos for _ in range(bsz_per_device)]),
+                            torch.tensor([prev_pos for _ in range(self.config.unit_batch_size)]),
                             dtype=ttnn.int32,
                             layout=ttnn.ROW_MAJOR_LAYOUT,
                             device=self.mesh_device,
                             memory_config=ttnn.DRAM_MEMORY_CONFIG,
                             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device)
                         )
-                        position_idxs = torch.full((bsz_per_device,), prev_pos, dtype=torch.long)
+                        position_idxs = torch.full((self.config.unit_batch_size,), prev_pos, dtype=torch.long)
                         rot_mats = self.rope.get_rot_mats(position_idxs)
                         trans_mat = self.rope.transformation_mat
-                        logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
+                        logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table_tt_list)
 
                 with Profiler().trace_with_timer("Sampling", level=2):        
                     _, next_tokens_tt = ttnn.topk(logits_tt[:, -1, :], k=1, dim=-1, largest=True)

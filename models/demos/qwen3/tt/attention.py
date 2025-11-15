@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List
 import math
 
 import torch
@@ -109,6 +109,8 @@ class Qwen3MoeAttention(nn.Module):
         )
 
         self.num_links = 3 if self.num_devices == 32 else 1
+
+        self.unit_batch_size = 32
 
         assert config._attn_implementation == "sdpa"
         assert config.num_attention_heads % config.num_key_value_heads == 0
@@ -225,7 +227,7 @@ class Qwen3MoeAttention(nn.Module):
             from models.demos.qwen3.common.lazy_loader import clear_module_weights
             clear_module_weights(self)
             print(f"Layer {self.layer_idx} attention weights cleared from CPU RAM")
-
+    
     def init_kv_cache(self):
         cache_k = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
         cache_v = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
@@ -365,7 +367,7 @@ class Qwen3MoeAttention(nn.Module):
         return linear_output
 
     def forward_decode(
-        self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor,
+        self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: List[ttnn.Tensor],
     ) -> ttnn.Tensor:
         mem_cfg = ttnn.L1_MEMORY_CONFIG
 
@@ -382,59 +384,78 @@ class Qwen3MoeAttention(nn.Module):
 
         with Profiler().trace_with_timer("qkv-proj-linear", level=4):
             qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
-
-        with Profiler().trace_with_timer("qkv-split", level=4):
-            query_states_pre_rot, key_states_pre_rot, value_states = ttnn.experimental.nlp_create_qkv_heads_decode(
-                qkv_states,
-                num_heads=self.q_heads_per_device,
-                num_kv_heads=self.kv_heads_per_device,
-                memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
-            )
-            ttnn.deallocate(qkv_states)
-
-        with Profiler().trace_with_timer("rmsnorm", level=4):
-            query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.DECODE)
-            key_states_pre_rot = self.k_norm(key_states_pre_rot, mode=InferenceMode.DECODE)
-
-        with Profiler().trace_with_timer("rope", level=4):
-            query_states = ttnn.experimental.rotary_embedding_llama(
-                query_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
-            )
-            ttnn.deallocate(query_states_pre_rot)
-
-            key_states = ttnn.experimental.rotary_embedding_llama(
-                key_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
-            )
-            ttnn.deallocate(key_states_pre_rot)
-
-        with Profiler().trace_with_timer("update-cache", level=4):
-            ttnn.experimental.paged_update_cache(self.cache_k, key_states, update_idxs_tensor=start_pos, page_table=page_table)
-            ttnn.experimental.paged_update_cache(self.cache_v, value_states, update_idxs_tensor=start_pos, page_table=page_table)
-
-            ttnn.deallocate(key_states)
-            ttnn.deallocate(value_states)
-
-        attn_output = tt_sdpa_forward(
-            query_states,
-            self.cache_k,
-            self.cache_v,
-            cur_pos=start_pos,
-            page_table=page_table,
-            dropout=0.0,
-            scaling=self.scaling,
-            mode=InferenceMode.DECODE,
-        )
-        ttnn.deallocate(query_states)
         
-        with Profiler().trace_with_timer("concat-heads", level=4):
-            attn_output_cat = ttnn.experimental.nlp_concat_heads_decode(
-                attn_output, 
-                num_heads=self.q_heads_per_device
+        qkv_states_list = []
+        is_unit_batch = qkv_states.shape[2] == self.unit_batch_size
+        if not is_unit_batch:
+            for i in range(qkv_states.shape[2] // self.unit_batch_size):
+                qkv_states_list.append(qkv_states[:, :, i * self.unit_batch_size:(i + 1) * self.unit_batch_size, :])
+            ttnn.deallocate(qkv_states)
+        else:
+            qkv_states_list.append(qkv_states)
+
+        for i in range(len(qkv_states_list)):
+            qkv_states = qkv_states_list[i]
+
+            with Profiler().trace_with_timer("qkv-split", level=4):
+                query_states_pre_rot, key_states_pre_rot, value_states = ttnn.experimental.nlp_create_qkv_heads_decode(
+                    qkv_states,
+                    num_heads=self.q_heads_per_device,
+                    num_kv_heads=self.kv_heads_per_device,
+                    memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
+                )
+                ttnn.deallocate(qkv_states)
+
+            with Profiler().trace_with_timer("rmsnorm", level=4):
+                query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.DECODE)
+                key_states_pre_rot = self.k_norm(key_states_pre_rot, mode=InferenceMode.DECODE)
+
+            with Profiler().trace_with_timer("rope", level=4):
+                query_states = ttnn.experimental.rotary_embedding_llama(
+                    query_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
+                )
+                ttnn.deallocate(query_states_pre_rot)
+
+                key_states = ttnn.experimental.rotary_embedding_llama(
+                    key_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
+                )
+                ttnn.deallocate(key_states_pre_rot)
+
+            with Profiler().trace_with_timer("update-cache", level=4):
+                ttnn.experimental.paged_update_cache(self.cache_k, key_states, update_idxs_tensor=start_pos, page_table=page_table[i])
+                ttnn.experimental.paged_update_cache(self.cache_v, value_states, update_idxs_tensor=start_pos, page_table=page_table[i])
+
+                ttnn.deallocate(key_states)
+                ttnn.deallocate(value_states)
+
+            attn_output = tt_sdpa_forward(
+                query_states,
+                self.cache_k,
+                self.cache_v,
+                cur_pos=start_pos,
+                page_table=page_table[i],
+                dropout=0.0,
+                scaling=self.scaling,
+                mode=InferenceMode.DECODE,
             )
-            ttnn.deallocate(attn_output)
+            ttnn.deallocate(query_states)
+            
+            with Profiler().trace_with_timer("concat-heads", level=4):
+                qkv_states_list[i] = ttnn.experimental.nlp_concat_heads_decode(
+                    attn_output, 
+                    num_heads=self.q_heads_per_device
+                )
+                ttnn.deallocate(attn_output)
+            
+            qkv_states_list[i] = ttnn.to_memory_config(qkv_states_list[i], mem_cfg, dtype=ttnn.bfloat8_b)
+
+        if not is_unit_batch:
+            attn_output_cat = ttnn.concat(qkv_states_list, dim=2)
+        else:
+            attn_output_cat = qkv_states_list[0]
+        del qkv_states_list
 
         with Profiler().trace_with_timer("output-proj", level=4):
-            attn_output_cat = typecast_reshard(attn_output_cat, ttnn.bfloat8_b)
             linear_output = ttnn.linear(
                 attn_output_cat,
                 self.o_proj_weight,

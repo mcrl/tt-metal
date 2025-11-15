@@ -51,7 +51,7 @@ def load_reference_layer(layer_idx=0):
 @pytest.mark.parametrize(
     "bsz_per_device,seq_len",
     [
-        (32, 128),
+        (128, 128),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -68,10 +68,11 @@ def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
     ref_attention = ref_layer.self_attn
     
     config = create_test_config()
+    config.unit_batch_size = 32
     config.max_batch_size = batch_size
-
-    config.block_size = 32
-    config.max_num_blocks = 1024
+    
+    config.block_size = seq_len * 2
+    config.max_num_blocks = config.max_batch_size
 
     layer_idx = 0
     start_pos = 0
@@ -91,7 +92,7 @@ def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=bsz_per_device,
+        batch_size=config.unit_batch_size,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
@@ -102,7 +103,7 @@ def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
 
     permutation = torch.randperm(config.max_num_blocks, device="cpu")
     reverse_permutation = torch.argsort(permutation)
-    page_table = reverse_permutation.reshape(config.max_batch_size, config.max_num_blocks // config.max_batch_size)
+    page_table = reverse_permutation.reshape(batch_size, config.max_num_blocks // batch_size)
     page_table_tt = ttnn.as_tensor(
         page_table,
         dtype=ttnn.int32,
@@ -153,7 +154,7 @@ def test_attn_prefill(bsz_per_device, seq_len, mesh_device):
 @pytest.mark.parametrize(
     "bsz_per_device,seq_len",
     [
-        (32, 128),
+        (128, 128),
     ],
 )
 @pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
@@ -170,9 +171,11 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
     ref_attention = ref_layer.self_attn
 
     config = create_test_config()
+    config.unit_batch_size = 32
     config.max_batch_size = batch_size
-    config.block_size = 32
-    config.max_num_blocks = 1024
+    
+    config.block_size = seq_len * 2
+    config.max_num_blocks = config.max_batch_size
     
     layer_idx = 0
     start_pos = seq_len
@@ -192,19 +195,19 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
 
     rope = RotarySetup(
         device=mesh_device,
-        batch_size=bsz_per_device,
+        batch_size=config.unit_batch_size,
         head_dim=config.head_dim,
         max_seq_len=config.max_seq_len,
         rope_theta=config.rope_theta,
     )
 
-    position_idxs = torch.full((bsz_per_device,), start_pos, dtype=torch.long)
+    position_idxs = torch.full((config.unit_batch_size,), start_pos, dtype=torch.long)
     rot_mats = rope.get_rot_mats(position_idxs)
     trans_mat = rope.transformation_mat
 
     permutation = torch.randperm(config.max_num_blocks, device="cpu")
     reverse_permutation = torch.argsort(permutation)
-    page_table = reverse_permutation.reshape(config.max_batch_size, config.max_num_blocks // config.max_batch_size)
+    page_table = reverse_permutation.reshape(batch_size, config.max_num_blocks // batch_size)
     page_table_tt = ttnn.as_tensor(
         page_table,
         dtype=ttnn.int32,
@@ -213,8 +216,12 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensor2dMesh(mesh_device, mesh_device.shape, dims=(0, None)),
     )
+    page_table_tt_list = []
+    for i in range(bsz_per_device // config.unit_batch_size):
+        page_table_tt_list.append(page_table_tt[i * config.unit_batch_size:(i + 1) * config.unit_batch_size, :])
+
     start_pos_tt = ttnn.as_tensor(
-        torch.full((bsz_per_device,), start_pos),
+        torch.full((config.unit_batch_size,), start_pos),
         dtype=ttnn.int32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=mesh_device,
@@ -233,13 +240,13 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
     )
 
     tracy.signpost("Warmup")
-    for _ in range(5):
+    for _ in range(1):
         output_tt = tt_attention(
             hidden_states=hidden_states_tt,
             rot_mats=rot_mats,
             trans_mat=trans_mat,
             start_pos=start_pos_tt,
-            page_table=page_table_tt,
+            page_table=page_table_tt_list,
             mode=InferenceMode.DECODE,
         )
     
@@ -249,7 +256,7 @@ def test_attn_decode(bsz_per_device, seq_len, mesh_device):
         rot_mats=rot_mats,
         trans_mat=trans_mat,
         start_pos=start_pos_tt,
-        page_table=page_table_tt,
+        page_table=page_table_tt_list,
         mode=InferenceMode.DECODE,
     )
 
