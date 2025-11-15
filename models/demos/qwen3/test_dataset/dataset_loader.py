@@ -31,8 +31,9 @@ def load_prompts(batch_size, prompt_len):
     prompts = data["results"][str(prompt_len)]
     num_available = len(prompts)
 
-    # Check if batch_size exceeds available data
+    # If batch_size exceeds available data, replicate prompts
     if batch_size > num_available:
-        raise ValueError(f"Batch size {batch_size} exceeds available data ({num_available}) for length {prompt_len}")
+        num_repeats = (batch_size + num_available - 1) // num_available  # Ceiling division
+        prompts = (prompts * num_repeats)
 
     return prompts[:batch_size]
