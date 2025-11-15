@@ -69,7 +69,8 @@ std::vector<TensorSpec> PrepareMoeRoutingTensors::compute_output_specs(
     }
 
     // Maximum tokens that can be routed to any single expert (worst case: all tokens choose that expert)
-    const uint32_t max_tokens_per_expert = num_tokens;
+    // Round up to the nearest multiple of 32 (TILE SIZE) to match the shape of hidden_dim (in TILE_LAYOUT)
+    const uint32_t max_tokens_per_expert = (num_tokens + 31) / 32 * 32;
 
     // Output 1: num_routed_tokens (E/D) - device-local expert count
     ttnn::Shape num_routed_shape({num_local_experts});
