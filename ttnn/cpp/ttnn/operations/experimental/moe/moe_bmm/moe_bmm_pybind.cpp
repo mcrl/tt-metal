@@ -8,7 +8,7 @@ namespace py = pybind11;
 
 void bind_moe_bmm(py::module& module) {
     const auto doc = R"doc(
-moe_bmm(input: ttnn.Tensor, weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None, mode: str = "optimized") -> ttnn.Tensor
+moe_bmm(input: ttnn.Tensor, weights: ttnn.Tensor, num_routed_tokens: ttnn.Tensor, *, memory_config: ttnn.MemoryConfig = None) -> ttnn.Tensor
 
 Performs batched matrix multiplication for Mixture-of-Experts (MoE) processing.
 
@@ -28,14 +28,13 @@ Args:
 
 Keyword Args:
     * :attr:`memory_config`: Memory configuration for output tensor
-    * :attr:`mode`: Implementation mode - "single_core", "multi_core", or "optimized" (default)
 
 Returns:
     (E/D, T, H_out) bfloat16 tensor containing batched matmul outputs (zero-padded after active tokens)
 
 Notes:
-    - Multi-core implementation using output-stationary parallelization
-    - Work distributed manually in kernel based on core ID
+    - Multi-core optimized implementation using block-based computation
+    - Work distributed across 8x8 core grid with blocking and pipelining
     - Each device processes E/D experts in parallel (expert parallelism)
     - Output rows beyond num_routed_tokens[e, 0] are zero for each expert
 
@@ -51,7 +50,6 @@ Example:
     ...     expert_weights,
     ...     num_routed,
     ...     memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    ...     mode="optimized",
     >>> )
     >>> # output shape: (E/D, T, H_out) TILE_LAYOUT
 
@@ -67,16 +65,14 @@ Example:
                const ttnn::Tensor& input,
                const ttnn::Tensor& weights,
                const ttnn::Tensor& num_routed_tokens,
-               const std::optional<MemoryConfig>& memory_config,
-               const std::string& mode) {
-                return self(input, weights, num_routed_tokens, memory_config, mode);
+               const std::optional<MemoryConfig>& memory_config) {
+                return self(input, weights, num_routed_tokens, memory_config);
             },
             py::arg("input").noconvert(),
             py::arg("weights").noconvert(),
             py::arg("num_routed_tokens").noconvert(),
             py::kw_only(),
             py::arg("memory_config") = std::nullopt,
-            py::arg("mode") = "optimized",
         });
 }
 

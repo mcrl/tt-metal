@@ -36,8 +36,7 @@ struct MoEBMMOperation {
         const Tensor& input,
         const Tensor& weights,
         const Tensor& num_routed_tokens,
-        const std::optional<MemoryConfig>& memory_config = std::nullopt,
-        const std::string& mode = "optimized");
+        const std::optional<MemoryConfig>& memory_config = std::nullopt);
 };
 
 }  // namespace operations::experimental

@@ -121,40 +121,15 @@ operation::ProgramWithCallbacks MoEBMM::create_program(
     const uint32_t h_in = input_shape[2];
     const uint32_t h_out = weights_shape[2];
 
-    // Select implementation based on mode parameter
-    // std::cout << "[MoE BMM] Using implementation: " << mode << std::endl;
-
-    if (mode == "single_core") {
-        return moe_bmm_single_core(
-            input,
-            weights,
-            num_routed_tokens,
-            output,
-            num_experts,
-            max_tokens,
-            h_in,
-            h_out);
-    } else if (mode == "multi_core") {
-        return moe_bmm_multi_core(
-            input,
-            weights,
-            num_routed_tokens,
-            output,
-            num_experts,
-            max_tokens,
-            h_in,
-            h_out);
-    } else {
-        return moe_bmm_multi_core_optimized(
-            input,
-            weights,
-            num_routed_tokens,
-            output,
-            num_experts,
-            max_tokens,
-            h_in,
-            h_out);
-    }
+    return moe_bmm_multi_core_optimized(
+        input,
+        weights,
+        num_routed_tokens,
+        output,
+        num_experts,
+        max_tokens,
+        h_in,
+        h_out);
 }
 
 }
