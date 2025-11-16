@@ -7,6 +7,7 @@
 #include "paged_update_cache_program_factory.hpp"
 #include "paged_fused_update_cache_program_factory.hpp"
 #include "paged_fill_cache_program_factory.hpp"
+#include "batched_paged_fill_cache_program_factory.hpp"
 
 using namespace tt::tt_metal;
 
@@ -25,6 +26,9 @@ void PagedUpdateCacheDeviceOperation::validate(
                 break;
             case PagedUpdateCacheOpType::FILL:
                 TT_FATAL(num_input_tensors == 3, "Expect 3 input tensors for fill_cache");
+                break;
+            case PagedUpdateCacheOpType::BATCHED_FILL:
+                TT_FATAL(num_input_tensors == 3, "Expect 3 input tensors for batched_fill_cache");
                 break;
             default: TT_FATAL(false, "Invalid op type");
         }
@@ -302,6 +306,19 @@ void PagedUpdateCacheDeviceOperation::validate(
                 "Batch idx tensor must be an integer type");
             // Add any other necessary validation for the tensor itself
         }
+    } else if (this->op_type == PagedUpdateCacheOpType::BATCHED_FILL) {
+        // Validate based on batch_size for batched fill
+        const auto& cache_tensor = input_tensors.at(0);
+        const auto& input_tensor = input_tensors.at(1);
+        const auto& page_table_tensor = input_tensors.at(2);
+        
+        TT_FATAL(this->batch_size > 0, "Batch size must be greater than 0 for batched_fill_cache");
+        TT_FATAL(
+            page_table_tensor.padded_shape()[0] >= this->batch_size,
+            "Page table batch dimension must be >= batch_size");
+        
+        // Validate each batch (using 0 as representative)
+        validateFillOperation(cache_tensor, input_tensor, page_table_tensor, 0);
     }
 }
 
@@ -384,12 +401,18 @@ operation::ProgramWithCallbacks PagedUpdateCacheDeviceOperation::create_program_
                     this->batch_offset,
                     this->compute_kernel_config,
                     this->share_cache);
-            } else {
+            } else if (this->op_type == PagedUpdateCacheOpType::FILL) {
                 const auto& cache_tensor = input_tensors.at(0);
                 const auto& input_tensor = input_tensors.at(1);
                 const auto& page_table = input_tensors.at(2);
                 return detail::paged_fill_cache_multi_core(
                     cache_tensor, input_tensor, page_table, this->batch_idx_tensor_opt, this->batch_idx_fallback);
+            } else {  // BATCHED_FILL
+                const auto& cache_tensor = input_tensors.at(0);
+                const auto& input_tensor = input_tensors.at(1);
+                const auto& page_table = input_tensors.at(2);
+                return detail::batched_paged_fill_cache_multi_core(
+                    cache_tensor, input_tensor, page_table, this->batch_size);
             }
     };
 }

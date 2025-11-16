@@ -49,7 +49,13 @@
 #include "ttnn/operations/experimental/padded_slice/padded_slice_pybind.hpp"
 #include "ttnn/operations/experimental/where/where_pybind.hpp"
 #include "ttnn/operations/experimental/test/hang_device/hang_device_operation_pybind.hpp"
+#include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors_pybind.hpp"
 #include "ttnn/operations/experimental/minimal_matmul/minimal_matmul_pybind.hpp"
+#include "ttnn/operations/experimental/moe/prepare_moe_routing_tensors/prepare_moe_routing_tensors_pybind.hpp"
+#include "ttnn/operations/experimental/moe/scatter_moe_input/scatter_moe_input_pybind.hpp"
+#include "ttnn/operations/experimental/moe/local_reduce_moe_output/local_reduce_moe_output_pybind.hpp"
+#include "ttnn/operations/experimental/moe/moe_bmm/moe_bmm_pybind.hpp"
+#include "ttnn/operations/experimental/attention/extract_attention_input/extract_attention_input_pybind.hpp"
 
 namespace py = pybind11;
 
@@ -118,6 +124,13 @@ void py_module(py::module& module) {
     operations::experimental::ternary::detail::bind_where(module);
 
     minimal_matmul::detail::py_bind_minimal_matmul(module);
+
+    moe::detail::bind_prepare_moe_routing_tensors(module);
+    scatter_moe_input::detail::bind_scatter_moe_input(module);
+    detail::bind_local_reduce_moe_output(module);
+    moe_bmm::detail::bind_moe_bmm(module);
+
+    extract_attention_input::detail::bind_extract_attention_input(module);
 }
 
 }  // namespace ttnn::operations::experimental

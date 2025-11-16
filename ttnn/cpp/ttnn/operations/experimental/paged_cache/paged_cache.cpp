@@ -28,6 +28,7 @@ ttnn::Tensor PagedUpdateCacheOperation::invoke(
         PagedUpdateCacheDeviceOperation{
             0,                               // .batch_idx_fallback (not used by UPDATE op type)
             std::nullopt,                    // .batch_idx_tensor_opt (not used by UPDATE op type)
+            0,                               // .batch_size (not used by UPDATE op type)
             update_idxs,                     // .update_idxs
             batch_offset,                    // .batch_offset
             PagedUpdateCacheOpType::UPDATE,  // .op_type
@@ -59,6 +60,7 @@ std::tuple<ttnn::Tensor, ttnn::Tensor> PagedFusedUpdateCacheOperation::invoke(
         PagedUpdateCacheDeviceOperation{
             0,                                     // .batch_idx_fallback (not used by FUSED_UPDATE op type)
             std::nullopt,                          // .batch_idx_tensor_opt (not used by FUSED_UPDATE op type)
+            0,                                     // .batch_size (not used by FUSED_UPDATE op type)
             update_idxs,                           // .update_idxs
             batch_offset,                          // .batch_offset
             PagedUpdateCacheOpType::FUSED_UPDATE,  // .op_type
@@ -87,6 +89,7 @@ ttnn::Tensor PagedFillCacheOperation::invoke(
         PagedUpdateCacheDeviceOperation{
             batch_idx_fallback,            // .batch_idx_fallback (used by FILL if tensor not present)
             batch_idx_tensor,              // .batch_idx_tensor_opt (used by FILL if present)
+            0,                             // .batch_size (not used by FILL)
             {},                            // .update_idxs (empty for fill)
             0,                             // .batch_offset (0 for fill)
             PagedUpdateCacheOpType::FILL,  // .op_type
@@ -95,6 +98,34 @@ ttnn::Tensor PagedFillCacheOperation::invoke(
             mesh_coords,  // .mesh_coords (optional, can be used to restrict operation to specific mesh coordinates)
         },
         {cache_tensor, input_tensor, page_table},  // Mandatory inputs for FILL
+        {std::nullopt, std::nullopt});
+
+    return cache_tensor;  // Updated cache tensor in-place
+}
+
+ttnn::Tensor BatchedPagedFillCacheOperation::invoke(
+    const Tensor& cache_tensor,
+    const Tensor& input_tensor,
+    const Tensor& page_table,
+    const uint32_t batch_size,
+    std::optional<const ttnn::DeviceComputeKernelConfig> compute_kernel_config = std::nullopt,
+    std::optional<const std::set<ttnn::MeshCoordinate>> mesh_coords = std::nullopt) {
+    
+    auto kernel_config_val = init_device_compute_kernel_config(input_tensor.device()->arch(), compute_kernel_config);
+    
+    tt::tt_metal::operation::run(
+        PagedUpdateCacheDeviceOperation{
+            0,                                   // .batch_idx_fallback (not used by BATCHED_FILL)
+            std::nullopt,                        // .batch_idx_tensor_opt (not used by BATCHED_FILL)
+            batch_size,                          // .batch_size (used by BATCHED_FILL)
+            {},                                  // .update_idxs (empty for batched fill)
+            0,                                   // .batch_offset (0 for batched fill)
+            PagedUpdateCacheOpType::BATCHED_FILL,  // .op_type
+            kernel_config_val,                   // .compute_kernel_config
+            false,                               // .share_cache
+            mesh_coords,                         // .mesh_coords
+        },
+        {cache_tensor, input_tensor, page_table},  // Mandatory inputs for BATCHED_FILL
         {std::nullopt, std::nullopt});
 
     return cache_tensor;  // Updated cache tensor in-place
