@@ -2,6 +2,8 @@ import ttnn
 import pytest
 import torch
 import time
+import csv
+import os
 from models.demos.qwen3.utils.test_utils import compare_tensor_pcc
 
 def reference_moe_bmm(input_tensor, weights, num_routed_tokens):
@@ -46,10 +48,20 @@ def pad_to_tile_size(size, tile_size=32):
 
 
 @pytest.mark.parametrize("config", [
-    {"num_experts": 128, "max_tokens": 2048, "h_in": 2048, "h_out": 768},
-    {"num_experts": 128, "max_tokens": 64, "h_in": 2048, "h_out": 768},
-    {"num_experts": 32, "max_tokens": 2048, "h_in": 4096, "h_out": 1536},
-    {"num_experts": 32, "max_tokens": 1024, "h_in": 4096, "h_out": 1536},
+    # {"num_experts": 128, "max_tokens": 2048, "h_in": 2048, "h_out": 768},
+    # {"num_experts": 128, "max_tokens": 64, "h_in": 2048, "h_out": 768},
+    # {"num_experts": 128, "max_tokens": 64, "h_in": 2048, "h_out": 768},
+    # {"num_experts": 128, "max_tokens": 64, "h_in": 2048, "h_out": 768},
+    # {"num_experts": 32, "max_tokens": 2048, "h_in": 4096, "h_out": 1536},
+    # {"num_experts": 32, "max_tokens": 1024, "h_in": 4096, "h_out": 1536},
+    {"num_experts": 8, "max_tokens": 64, "h_in": 2880, "h_out": 2880},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 4096, "h_out": 1536},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 1536, "h_out": 4096},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 2048, "h_out": 768},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 768, "h_out": 2048},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 2880, "h_out": 2880},
+    {"num_experts": 64, "max_tokens": 64, "h_in": 7168, "h_out": 2048},
+    {"num_experts": 64, "max_tokens": 64, "h_in": 2048, "h_out": 7168},
 ])
 @pytest.mark.parametrize(
     "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
@@ -87,6 +99,7 @@ def test_moe_bmm(mesh_device, config):
     reference_output = reference_moe_bmm(input_torch, weights_torch, num_routed_2d)
 
     num_devices = mesh_device.get_num_devices()
+    print(f"Number of devices: {num_devices}")
     experts_per_device = num_experts // num_devices
 
     input_tt = ttnn.from_torch(
@@ -161,7 +174,14 @@ def test_moe_bmm(mesh_device, config):
 
 
 @pytest.mark.parametrize("config", [
-    {"num_experts": 32, "max_tokens": 1024, "h_in": 2880, "h_out": 2880},
+    {"num_experts": 8, "max_tokens": 64, "h_in": 2880, "h_out": 2880},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 4096, "h_out": 1536},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 1536, "h_out": 4096},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 2048, "h_out": 768},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 768, "h_out": 2048},
+    {"num_experts": 32, "max_tokens": 64, "h_in": 2880, "h_out": 2880},
+    {"num_experts": 64, "max_tokens": 64, "h_in": 7168, "h_out": 2048},
+    {"num_experts": 64, "max_tokens": 64, "h_in": 2048, "h_out": 7168},
 ])
 @pytest.mark.parametrize(
     "device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True
@@ -263,9 +283,38 @@ def test_moe_bmm_perf(mesh_device, config):
     end_time = time.time()
     elapsed_time = end_time - start_time
     flops = OPS_PER_ITERATION * num_iters / elapsed_time
-    print(f"Average time per iteration: {elapsed_time / num_iters:.6f} seconds")
-    print(f"FLOPS: {flops / 1e12:.2f} TFLOPS")
-    print(f"FLOPS per chip: {flops / num_devices / 1e12:.2f} TFLOPS")
+    avg_time_per_iter = elapsed_time / num_iters
+    total_tflops = flops / 1e12
+    tflops_per_chip = flops / num_devices / 1e12
+
+    print(f"Average time per iteration: {avg_time_per_iter:.6f} seconds")
+    print(f"FLOPS: {total_tflops:.2f} TFLOPS")
+    print(f"FLOPS per chip: {tflops_per_chip:.2f} TFLOPS")
+
+    # Export results to CSV
+    csv_path = "/tmp/moebmm_results.csv"
+    file_exists = os.path.isfile(csv_path)
+
+    with open(csv_path, 'a', newline='') as csvfile:
+        fieldnames = [
+            'num_experts', 'max_tokens', 'h_in', 'h_out',
+            'total_tflops', 'tflops_per_chip'
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow({
+            'num_experts': num_experts,
+            'max_tokens': max_tokens,
+            'h_in': h_in,
+            'h_out': h_out,
+            'total_tflops': round(total_tflops, 2),
+            'tflops_per_chip': round(tflops_per_chip, 2)
+        })
+
+    print(f"Results exported to {csv_path}")
 
 
 if __name__ == "__main__":

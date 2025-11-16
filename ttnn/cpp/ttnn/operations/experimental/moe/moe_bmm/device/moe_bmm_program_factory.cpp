@@ -115,34 +115,35 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
     auto weight_master_semaphore = tt_metal::CreateSemaphore(program, all_cores, 0);
     auto weight_slave_semaphore = tt_metal::CreateSemaphore(program, all_cores, INVALID);
 
-    std::vector<uint32_t> reader_compile_time_args = {};
-    TensorAccessorArgs(*input.buffer()).append_to(reader_compile_time_args);
-    TensorAccessorArgs(*weights.buffer()).append_to(reader_compile_time_args);
-    TensorAccessorArgs(*num_routed_tokens.buffer()).append_to(reader_compile_time_args);
-
-    std::vector<uint32_t> writer_compile_time_args = {};
-    TensorAccessorArgs(*output.buffer()).append_to(writer_compile_time_args);
+    // Unified compile-time args for both AreadCwrite and Bread kernels
+    std::vector<uint32_t> unified_compile_time_args = {};
+    TensorAccessorArgs(*input.buffer()).append_to(unified_compile_time_args);
+    TensorAccessorArgs(*weights.buffer()).append_to(unified_compile_time_args);
+    TensorAccessorArgs(*num_routed_tokens.buffer()).append_to(unified_compile_time_args);
+    TensorAccessorArgs(*output.buffer()).append_to(unified_compile_time_args);
 
     std::vector<uint32_t> compute_compile_time_args = {
     };
 
-    auto reader_id = CreateKernel(
+    auto AreadCwrite_id = CreateKernel(
         program,
-        "ttnn/cpp/ttnn/operations/experimental/moe/moe_bmm/device/kernels/dataflow/reader_moe_bmm_multi_core_optimized.cpp",
+        "ttnn/cpp/ttnn/operations/experimental/moe/moe_bmm/device/kernels/dataflow/AreadCwrite.cpp",
         all_cores,
         DataMovementConfig{
             .processor = DataMovementProcessor::RISCV_0,
             .noc = NOC::RISCV_0_default,
-            .compile_args = reader_compile_time_args});
+            .noc_mode = NOC_MODE::DM_DYNAMIC_NOC,
+            .compile_args = unified_compile_time_args});
 
-    auto writer_id = CreateKernel(
+    auto Bread_id = CreateKernel(
         program,
-        "ttnn/cpp/ttnn/operations/experimental/moe/moe_bmm/device/kernels/dataflow/writer_moe_bmm_multi_core_optimized.cpp",
+        "ttnn/cpp/ttnn/operations/experimental/moe/moe_bmm/device/kernels/dataflow/Bread.cpp",
         all_cores,
         DataMovementConfig{
             .processor = DataMovementProcessor::RISCV_1,
             .noc = NOC::RISCV_1_default,
-            .compile_args = writer_compile_time_args});
+            .noc_mode = NOC_MODE::DM_DYNAMIC_NOC,
+            .compile_args = unified_compile_time_args});
 
     auto compute_id = CreateKernel(
         program,
@@ -157,53 +158,42 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
     for (uint32_t x = 0; x < PH; x++) {
         for (uint32_t y = 0; y < PW; y++) {
             CoreCoord core_coord = {x, y};
-            std::vector<uint32_t> reader_runtime_args = {
-                input.buffer()->address(),
-                weights.buffer()->address(),
-                num_routed_tokens.buffer()->address(),
-                num_experts,
-                ph,
-                pw,
-                Mt_max,
-                Nt,
-                Kt,
-                BMt,
-                BNt,
-                BKt,
-                (uint32_t) sender_semaphore,
-                (uint32_t) receiver_semaphore,
-                (uint32_t) input_master_semaphore,
-                (uint32_t) input_slave_semaphore,
-                (uint32_t) weight_master_semaphore,
-                (uint32_t) weight_slave_semaphore,
-            };
-
-            std::vector<uint32_t> writer_runtime_args = {
-                output.buffer()->address(),
-                num_experts,
-                ph,
-                pw,
-                Mt_max,
-                Nt,
-                Kt,
-                BMt,
-                BNt,
-                BKt,
-                SBMt,
-                SBNt,
+            // Unified runtime args for both AreadCwrite and Bread kernels
+            std::vector<uint32_t> unified_runtime_args = {
+                input.buffer()->address(),           // 0
+                weights.buffer()->address(),         // 1
+                num_routed_tokens.buffer()->address(), // 2
+                output.buffer()->address(),          // 3
+                num_experts,                         // 4
+                ph,                                  // 5
+                pw,                                  // 6
+                Mt_max,                              // 7
+                Nt,                                  // 8
+                Kt,                                  // 9
+                BMt,                                 // 10
+                BNt,                                 // 11
+                BKt,                                 // 12
+                SBMt,                                // 13
+                SBNt,                                // 14
+                (uint32_t) sender_semaphore,         // 15
+                (uint32_t) receiver_semaphore,       // 16
+                (uint32_t) input_master_semaphore,   // 17
+                (uint32_t) input_slave_semaphore,    // 18
+                (uint32_t) weight_master_semaphore,  // 19
+                (uint32_t) weight_slave_semaphore,   // 20
             };
 
             std::vector<uint32_t> compute_runtime_args = {
                 Mt_max, Nt, Kt, BMt, BNt, BKt, SBMt, SBNt,
             };
 
-            SetRuntimeArgs(program, reader_id, core_coord, reader_runtime_args);
-            SetRuntimeArgs(program, writer_id, core_coord, writer_runtime_args);
+            SetRuntimeArgs(program, AreadCwrite_id, core_coord, unified_runtime_args);
+            SetRuntimeArgs(program, Bread_id, core_coord, unified_runtime_args);
             SetRuntimeArgs(program, compute_id, core_coord, compute_runtime_args);
         }
     }
 
-    auto override_runtime_arguments_callback = [reader_id, writer_id, compute_id, all_cores](
+    auto override_runtime_arguments_callback = [AreadCwrite_id, Bread_id, compute_id, all_cores](
         const void* operation,
         Program& program,
         const std::vector<Tensor>& input_tensors,
@@ -217,13 +207,17 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
 
         for (const auto& range : all_cores.ranges()) {
             for (const auto& core : range) {
-                auto& reader_runtime_args = GetRuntimeArgs(program, reader_id, core);
-                reader_runtime_args[0] = input_buffer->address();
-                reader_runtime_args[1] = weights_buffer->address();
-                reader_runtime_args[2] = num_routed_buffer->address();
+                auto& AreadCwrite_runtime_args = GetRuntimeArgs(program, AreadCwrite_id, core);
+                AreadCwrite_runtime_args[0] = input_buffer->address();
+                AreadCwrite_runtime_args[1] = weights_buffer->address();
+                AreadCwrite_runtime_args[2] = num_routed_buffer->address();
+                AreadCwrite_runtime_args[3] = output_buffer->address();
 
-                auto& writer_runtime_args = GetRuntimeArgs(program, writer_id, core);
-                writer_runtime_args[0] = output_buffer->address();
+                auto& Bread_runtime_args = GetRuntimeArgs(program, Bread_id, core);
+                Bread_runtime_args[0] = input_buffer->address();
+                Bread_runtime_args[1] = weights_buffer->address();
+                Bread_runtime_args[2] = num_routed_buffer->address();
+                Bread_runtime_args[3] = output_buffer->address();
             }
         }
     };
