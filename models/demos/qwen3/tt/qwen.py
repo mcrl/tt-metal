@@ -1,3 +1,4 @@
+import os
 import torch
 from torch import nn
 from typing import Tuple
@@ -21,6 +22,8 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.mesh_device = mesh_device
         self.is_tt_setup = False
+
+        self.moe_impl = os.environ.get("MOE_IMPL", "snu")
 
         self.self_attn = Qwen3MoeAttention(config, layer_idx, mesh_device, ccl)
 
@@ -83,7 +86,12 @@ class Qwen3MoeDecoderLayer(nn.Module):
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             mlp_input = self.post_attention_layernorm(hidden_states_1, mode=InferenceMode.PREFILL)
 
-        mlp_result = self.mlp(mlp_input, mode=InferenceMode.PREFILL)
+        if self.moe_impl == "snu":
+            mlp_result = self.mlp(mlp_input, mode=InferenceMode.PREFILL)
+        elif self.moe_impl == "tt":
+            mlp_result = self.mlp.forward_tt(mlp_input, mode=InferenceMode.PREFILL)
+        else:
+            raise ValueError(f"Unsupported MOE_IMPL: {self.moe_impl}")
 
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             output = ttnn.add(hidden_states_1, mlp_result)
@@ -104,14 +112,19 @@ class Qwen3MoeDecoderLayer(nn.Module):
             page_table=page_table,
             mode=InferenceMode.DECODE
         )
-        
+
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             hidden_states = ttnn.add(attn_result, hidden_states)
 
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             mlp_input = self.post_attention_layernorm(hidden_states, mode=InferenceMode.DECODE)
 
-        mlp_result = self.mlp(mlp_input, mode=InferenceMode.DECODE)
+        if self.moe_impl == "snu":
+            mlp_result = self.mlp(mlp_input, mode=InferenceMode.DECODE)
+        elif self.moe_impl == "tt":
+            mlp_result = self.mlp.forward_tt(mlp_input, mode=InferenceMode.DECODE)
+        else:
+            raise ValueError(f"Unsupported MOE_IMPL: {self.moe_impl}")
 
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             output = ttnn.add(hidden_states, mlp_result)

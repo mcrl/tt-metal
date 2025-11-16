@@ -5,6 +5,7 @@ import os
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
 from models.demos.qwen3.tt.ccl import TT_CCL
+from models.tt_transformers.tt.ccl import TT_CCL as BASE_TT_CCL
 
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_cache_prefix
@@ -40,9 +41,13 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.config = config
         self.mesh_device = mesh_device
         self.ccl = ccl
+        self.base_tt_ccl = BASE_TT_CCL(mesh_device)
         self.num_experts = config.num_experts
         self.top_k = config.num_experts_per_tok
         self.norm_topk_prob = config.norm_topk_prob
+        self.matmul_impl = os.environ.get("MOE_MATMUL_IMPL", "moe_bmm")
+        if self.matmul_impl not in ["moe_bmm", "ttnn.matmul"]:
+            raise ValueError(f"Unsupported MOE_MATMUL_IMPL: {self.matmul_impl}")
 
         self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
         self.experts = nn.ModuleList(
@@ -53,6 +58,14 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         )
 
         self.layer_idx = layer_idx
+
+        self.compute_config = ttnn.WormholeComputeKernelConfig(
+            math_fidelity=ttnn.MathFidelity.HiFi2,
+            math_approx_mode=False,
+            fp32_dest_acc_en=False,
+            packer_l1_acc=True,
+        )
+
         self.is_tt_setup = False
 
     @profile_trace("setup-tt", level=3, args={"class": "Qwen3MoeSparseMoeBlock"})
@@ -196,7 +209,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             mem_cfg = ttnn.DRAM_MEMORY_CONFIG
         elif mode == InferenceMode.DECODE:
             _, sequence_length, batch_size, hidden_dim = hidden_states.shape
-            mem_cfg = ttnn.L1_MEMORY_CONFIG
+            mem_cfg = ttnn.L1_MEMORY_CONFIG if batch_size <= 256 else ttnn.DRAM_MEMORY_CONFIG
 
         with Profiler().trace_with_timer("reshape", level=4):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
@@ -277,7 +290,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 cluster_axis=1,
                 mesh_device=self.mesh_device,
                 topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
+                multi_device_global_semaphore=self.base_tt_ccl.get_and_cycle_ag_semaphore_handles(1),
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1,
             )
@@ -375,21 +388,33 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             down_proj = ttnn.squeeze(self.down_proj, dim=0)
 
         with Profiler().trace_with_timer("gate-projection", level=4):
-            gate_output = ttnn.experimental.moe_bmm(scattered_hidden_states, gate_proj, num_routed, mode="optimized")
+            if self.matmul_impl == "moe_bmm":
+                gate_output = ttnn.experimental.moe_bmm(scattered_hidden_states, gate_proj, num_routed, mode="optimized")
+            else:
+                gate_output = ttnn.matmul(scattered_hidden_states, gate_proj, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("up-projection", level=4):
-            up_output = ttnn.experimental.moe_bmm(scattered_hidden_states, up_proj, num_routed, mode="optimized")
+            if self.matmul_impl == "moe_bmm":
+                up_output = ttnn.experimental.moe_bmm(scattered_hidden_states, up_proj, num_routed, mode="optimized")
+            else:
+                up_output = ttnn.matmul(scattered_hidden_states, up_proj, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("silu-multiply", level=4):
-            gate_silu = ttnn.silu(gate_output, memory_config=mem_cfg)
+            combined_activations = ttnn.mul(
+                gate_output,
+                up_output,
+                memory_config=mem_cfg,
+                input_tensor_a_activations=[ttnn.UnaryOpType.SILU],
+                dtype=ttnn.bfloat8_b,
+            )
             ttnn.deallocate(gate_output)
-
-            combined_activations = ttnn.multiply(gate_silu, up_output, memory_config=mem_cfg)
-            ttnn.deallocate(gate_silu)
             ttnn.deallocate(up_output)
 
         with Profiler().trace_with_timer("down-projection", level=4):
-            moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed, mode="optimized")
+            if self.matmul_impl == "moe_bmm":
+                moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed, mode="optimized")
+            else:
+                moe_output = ttnn.matmul(combined_activations, down_proj, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
             ttnn.deallocate(combined_activations)
 
         with Profiler().trace_with_timer("local reduce", level=4):

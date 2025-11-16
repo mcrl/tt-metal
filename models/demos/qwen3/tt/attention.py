@@ -371,9 +371,15 @@ class Qwen3MoeAttention(nn.Module):
     def forward_decode(
         self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: List[ttnn.Tensor],
     ) -> ttnn.Tensor:
-        mem_cfg = ttnn.L1_MEMORY_CONFIG
-
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
+
+        moe_impl = os.environ.get("MOE_IMPL", "snu")
+        if moe_impl == "snu":
+            mem_cfg = ttnn.L1_MEMORY_CONFIG
+        elif moe_impl == "tt":
+            mem_cfg = ttnn.L1_MEMORY_CONFIG if batch_size <= 256 else ttnn.DRAM_MEMORY_CONFIG
+        else:
+            raise ValueError(f"Unsupported MOE_IMPL: {moe_impl}")
 
         with Profiler().trace_with_timer("extract-attention-input", level=4):
             hidden_states = ttnn.extract_attention_input(
@@ -451,11 +457,12 @@ class Qwen3MoeAttention(nn.Module):
             
             qkv_states_list[i] = ttnn.to_memory_config(qkv_states_list[i], mem_cfg, dtype=ttnn.bfloat8_b)
 
-        if not is_unit_batch:
-            attn_output_cat = ttnn.concat(qkv_states_list, dim=2)
-        else:
-            attn_output_cat = qkv_states_list[0]
-        del qkv_states_list
+        with Profiler().trace_with_timer("concat-unit-batches", level=4):
+            if not is_unit_batch:
+                attn_output_cat = ttnn.concat(qkv_states_list, dim=2)
+            else:
+                attn_output_cat = qkv_states_list[0]
+            del qkv_states_list
 
         with Profiler().trace_with_timer("output-proj", level=4):
             linear_output = ttnn.linear(
