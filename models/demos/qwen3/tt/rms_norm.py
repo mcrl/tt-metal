@@ -60,7 +60,22 @@ class Qwen3MoeRMSNorm(nn.Module):
             mem_cfg = hidden_states.memory_config()
             hidden_states = ttnn.to_memory_config(hidden_states, ttnn.L1_MEMORY_CONFIG, dtype=hidden_states.dtype)
         
-        hidden_states = ttnn.rms_norm(hidden_states, epsilon=self.variance_epsilon, weight=self.weight_tensor)
+        if mode == InferenceMode.PREFILL and hidden_states.shape[0] > 128:
+            mem_cfg = hidden_states.memory_config()
+
+            hidden_states = ttnn.to_memory_config(hidden_states, ttnn.DRAM_MEMORY_CONFIG, dtype=hidden_states.dtype)
+
+            hidden_states_list = []
+            for i in range(hidden_states.shape[0] // 128):
+                hidden_states_chunk = hidden_states[i * 128:(i + 1) * 128, :, :]
+                hidden_states_chunk = ttnn.rms_norm(hidden_states_chunk, epsilon=self.variance_epsilon, weight=self.weight_tensor)
+                hidden_states_list.append(hidden_states_chunk)
+            hidden_states = ttnn.concat(hidden_states_list, dim=0)
+            del hidden_states_list
+
+            hidden_states = ttnn.to_memory_config(hidden_states, mem_cfg, dtype=hidden_states.dtype)
+        else:
+            hidden_states = ttnn.rms_norm(hidden_states, epsilon=self.variance_epsilon, weight=self.weight_tensor)
 
         if mode == InferenceMode.DECODE:
             hidden_states = ttnn.to_memory_config(hidden_states, mem_cfg, dtype=hidden_states.dtype)

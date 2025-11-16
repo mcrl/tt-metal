@@ -82,6 +82,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
 
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             mlp_input = self.post_attention_layernorm(hidden_states_1, mode=InferenceMode.PREFILL)
+
         mlp_result = self.mlp(mlp_input, mode=InferenceMode.PREFILL)
 
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
@@ -109,6 +110,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
 
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             mlp_input = self.post_attention_layernorm(hidden_states, mode=InferenceMode.DECODE)
+
         mlp_result = self.mlp(mlp_input, mode=InferenceMode.DECODE)
 
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):

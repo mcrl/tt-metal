@@ -45,8 +45,8 @@ def perftest_tt(
     return prompt_and_responses, iter_times
 
 def main(
-    batch_size: int = 32,
-    prompt_len: int = 64,
+    batch_size: int = 256,
+    prompt_len: int = 32,
     gen_tokens: int = 128
 ):
     init_trace_file()

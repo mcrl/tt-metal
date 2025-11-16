@@ -450,7 +450,15 @@ class Qwen3MoETT:
                     )
                     rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
                     trans_mat = self.rope.transformation_mat_prefill
-                    logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
+
+                    prefill_times = []
+                    for _ in range(7):
+                        prefill_start = time.time()
+                        logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
+                        prefill_end = time.time()
+                        prefill_times.append(prefill_end - prefill_start)
+                    prefill_time = sum(prefill_times[2:5]) / 3
+
                 else:
                     if use_trace and self.trace_id_decode is not None:
                         logits_tt = self._execute_trace_decode(tokens, prev_pos, page_table_tt_list, bsz_per_device)
@@ -476,14 +484,19 @@ class Qwen3MoETT:
                         trans_mat = self.rope.transformation_mat
                         logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table_tt_list)
 
-                with Profiler().trace_with_timer("Sampling", level=2):        
+                with Profiler().trace_with_timer("Sampling", level=2):
+                    sampling_time_start = time.time()
                     _, next_tokens_tt = ttnn.topk(logits_tt[:, -1, :], k=1, dim=-1, largest=True)
                     next_tokens = ttnn.to_torch(
                         next_tokens_tt,
                         dtype=torch.int32,
                         mesh_composer=ttnn.ConcatMeshToTensor(self.mesh_device, dim=1),
                     )[:, 0]
-                    iter_times.append(time.time() - iter_start_time)
+                    sampling_time_end = time.time()
+                    if mode == "prefill":
+                        iter_times.append(prefill_time + (sampling_time_end - sampling_time_start))
+                    else:
+                        iter_times.append(time.time() - iter_start_time)
 
                     next_tokens = torch.where(
                         condition=input_text_mask[:, curr_pos], input=tokens[:, curr_pos], other=next_tokens
