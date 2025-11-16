@@ -48,21 +48,21 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_multi_core(
     uint32_t row_size_bytes = hidden_dim * input_element_size;
     uint32_t aligned_row_size_bytes = round_up_to_mul32(row_size_bytes);
 
-    // CB 0: Input buffer for reading rows
-    uint32_t cb_id_input = tt::CBIndex::c_0;
-    CircularBufferConfig cb_input_config =
-        CircularBufferConfig(aligned_row_size_bytes * 2, {{cb_id_input, input_cb_data_format}})
-            .set_page_size(cb_id_input, aligned_row_size_bytes);
-    CreateCircularBuffer(program, all_cores, cb_input_config);
+    // Configuration
+    constexpr uint32_t BMt = 16;  // Batch size (tokens per batch)
+    constexpr uint32_t pipeline_factor = 2;  // Double buffering
 
-    // CB 1: Output buffer for zero-padding
-    uint32_t cb_id_output = tt::CBIndex::c_1;
-    CircularBufferConfig cb_output_config =
-        CircularBufferConfig(aligned_row_size_bytes, {{cb_id_output, input_cb_data_format}})
-            .set_page_size(cb_id_output, aligned_row_size_bytes);
-    CreateCircularBuffer(program, all_cores, cb_output_config);
+    // CB 1: Routed tokens (reader only)
+    uint32_t cb_id_routed = tt::CBIndex::c_1;
+    uint32_t routed_size = num_tokens * sizeof(uint32_t);
+    uint32_t aligned_routed_size = round_up_to_mul32(routed_size);
+    DataFormat routed_data_format = datatype_to_dataformat_converter(DataType::UINT32);
+    CircularBufferConfig cb_routed_config =
+        CircularBufferConfig(aligned_routed_size, {{cb_id_routed, routed_data_format}})
+            .set_page_size(cb_id_routed, aligned_routed_size);
+    CreateCircularBuffer(program, all_cores, cb_routed_config);
 
-    // CB 2: Buffer for num_routed_tokens
+    // CB 2: Buffer for num_routed_tokens (shared read-only)
     uint32_t cb_id_num_routed = tt::CBIndex::c_2;
     uint32_t num_routed_bytes = num_local_experts * sizeof(uint32_t);
     uint32_t aligned_num_routed_bytes = round_up_to_mul32(num_routed_bytes);
@@ -72,26 +72,71 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_multi_core(
             .set_page_size(cb_id_num_routed, aligned_num_routed_bytes);
     CreateCircularBuffer(program, all_cores, cb_num_routed_config);
 
-    std::vector<uint32_t> compile_time_args = {
-        cb_id_input,
-        cb_id_output,
+    // CB 3: Metadata (reader → writer)
+    uint32_t cb_id_metadata = tt::CBIndex::c_3;
+    uint32_t metadata_size = 16 * sizeof(uint32_t);  // 64 bytes
+    CircularBufferConfig cb_metadata_config =
+        CircularBufferConfig(metadata_size, {{cb_id_metadata, num_routed_data_format}})
+            .set_page_size(cb_id_metadata, metadata_size);
+    CreateCircularBuffer(program, all_cores, cb_metadata_config);
+
+    // CB 4: Gathered tokens (reader → writer)
+    uint32_t cb_id_gathered = tt::CBIndex::c_4;
+    uint32_t gathered_cb_size = pipeline_factor * BMt * aligned_row_size_bytes;
+    CircularBufferConfig cb_gathered_config =
+        CircularBufferConfig(gathered_cb_size, {{cb_id_gathered, input_cb_data_format}})
+            .set_page_size(cb_id_gathered, aligned_row_size_bytes);
+    CreateCircularBuffer(program, all_cores, cb_gathered_config);
+
+    // Reader kernel (RISCV_0)
+    std::vector<uint32_t> reader_compile_time_args = {
+        cb_id_routed,
         cb_id_num_routed,
+        cb_id_metadata,
+        cb_id_gathered,
         (uint32_t)input_is_dram,
         (uint32_t)num_routed_is_dram,
         (uint32_t)routed_tokens_is_dram,
-        (uint32_t)output_is_dram,
         hidden_dim,
         num_tokens,
         num_local_experts,
         row_size_bytes,
+        BMt,
     };
 
-    KernelHandle reader_writer_kernel_id = CreateKernel(
+    KernelHandle reader_kernel_id = CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/experimental/moe/scatter_moe_input/device/kernels/dataflow/"
-        "reader_writer_scatter_moe_input.cpp",
+        "reader_scatter_moe_input.cpp",
         all_cores,
-        ReaderDataMovementConfig(compile_time_args));
+        DataMovementConfig{
+            .processor = DataMovementProcessor::RISCV_0,
+            .noc = NOC::RISCV_0_default,
+            .compile_args = reader_compile_time_args
+        });
+
+    // Writer kernel (RISCV_1)
+    std::vector<uint32_t> writer_compile_time_args = {
+        cb_id_num_routed,
+        cb_id_metadata,
+        cb_id_gathered,
+        (uint32_t)output_is_dram,
+        num_tokens,
+        num_local_experts,
+        row_size_bytes,
+        BMt,
+    };
+
+    KernelHandle writer_kernel_id = CreateKernel(
+        program,
+        "ttnn/cpp/ttnn/operations/experimental/moe/scatter_moe_input/device/kernels/dataflow/"
+        "writer_scatter_moe_input.cpp",
+        all_cores,
+        DataMovementConfig{
+            .processor = DataMovementProcessor::RISCV_1,
+            .noc = NOC::RISCV_1_default,
+            .compile_args = writer_compile_time_args
+        });
 
     auto cores = corerange_to_cores(all_cores, std::nullopt, true);
     uint32_t experts_per_core = (num_local_experts + num_cores - 1) / num_cores;
@@ -102,20 +147,26 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_multi_core(
         uint32_t end_expert_idx = std::min(start_expert_idx + experts_per_core, num_local_experts);
         uint32_t num_experts_for_this_core = end_expert_idx - start_expert_idx;
 
-        std::vector<uint32_t> runtime_args = {
+        std::vector<uint32_t> reader_runtime_args = {
             input_buffer->address(),
             num_routed_buffer->address(),
             routed_tokens_buffer->address(),
+            start_expert_idx,
+            num_experts_for_this_core,
+        };
+
+        std::vector<uint32_t> writer_runtime_args = {
             output_buffer->address(),
             start_expert_idx,
             num_experts_for_this_core,
         };
 
-        SetRuntimeArgs(program, reader_writer_kernel_id, core, runtime_args);
+        SetRuntimeArgs(program, reader_kernel_id, core, reader_runtime_args);
+        SetRuntimeArgs(program, writer_kernel_id, core, writer_runtime_args);
     }
 
     auto override_runtime_args_callback =
-        [reader_writer_kernel_id, cores](
+        [reader_kernel_id, writer_kernel_id, cores](
             const void* operation,
             Program& program,
             const std::vector<Tensor>& input_tensors,
@@ -127,11 +178,13 @@ tt::tt_metal::operation::ProgramWithCallbacks scatter_moe_input_multi_core(
             auto output_buffer = output_tensors.at(0).buffer();
 
             for (const auto& core : cores) {
-                auto& runtime_args = GetRuntimeArgs(program, reader_writer_kernel_id, core);
-                runtime_args[0] = input_buffer->address();
-                runtime_args[1] = num_routed_buffer->address();
-                runtime_args[2] = routed_tokens_buffer->address();
-                runtime_args[3] = output_buffer->address();
+                auto& reader_runtime_args = GetRuntimeArgs(program, reader_kernel_id, core);
+                reader_runtime_args[0] = input_buffer->address();
+                reader_runtime_args[1] = num_routed_buffer->address();
+                reader_runtime_args[2] = routed_tokens_buffer->address();
+
+                auto& writer_runtime_args = GetRuntimeArgs(program, writer_kernel_id, core);
+                writer_runtime_args[0] = output_buffer->address();
             }
         };
 
