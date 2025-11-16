@@ -109,6 +109,12 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
     auto sender_semaphore = tt_metal::CreateSemaphore(program, all_cores, 0);
     auto receiver_semaphore = tt_metal::CreateSemaphore(program, all_cores, INVALID);
 
+    auto input_master_semaphore = tt_metal::CreateSemaphore(program, all_cores, 0);
+    auto input_slave_semaphore = tt_metal::CreateSemaphore(program, all_cores, INVALID);
+
+    auto weight_master_semaphore = tt_metal::CreateSemaphore(program, all_cores, 0);
+    auto weight_slave_semaphore = tt_metal::CreateSemaphore(program, all_cores, INVALID);
+
     std::vector<uint32_t> reader_compile_time_args = {};
     TensorAccessorArgs(*input.buffer()).append_to(reader_compile_time_args);
     TensorAccessorArgs(*weights.buffer()).append_to(reader_compile_time_args);
@@ -166,6 +172,10 @@ operation::ProgramWithCallbacks moe_bmm_multi_core_optimized(
                 BKt,
                 (uint32_t) sender_semaphore,
                 (uint32_t) receiver_semaphore,
+                (uint32_t) input_master_semaphore,
+                (uint32_t) input_slave_semaphore,
+                (uint32_t) weight_master_semaphore,
+                (uint32_t) weight_slave_semaphore,
             };
 
             std::vector<uint32_t> writer_runtime_args = {

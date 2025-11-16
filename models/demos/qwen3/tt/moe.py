@@ -175,7 +175,10 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 layout=ttnn.TILE_LAYOUT,
                 cache_file_name=ttnn_model_cache_path(f"{cache_prefix}down_proj_{self.layer_idx}"),
             )
-            
+            self.gate_proj = ttnn.squeeze(self.gate_proj, dim=0)
+            self.up_proj = ttnn.squeeze(self.up_proj, dim=0)
+            self.down_proj = ttnn.squeeze(self.down_proj, dim=0)
+
             del gate_proj, up_proj, down_proj
         
         self.num_links = 3 if self.num_devices == 32 else 1
@@ -369,16 +372,15 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         with Profiler().trace_with_timer("to-layout", level=4):
             scattered_hidden_states = ttnn.to_layout(scattered_hidden_states, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
-        with Profiler().trace_with_timer("prepare-expert-weights", level=4):
-            gate_proj = ttnn.squeeze(self.gate_proj, dim=0)
-            up_proj = ttnn.squeeze(self.up_proj, dim=0)
-            down_proj = ttnn.squeeze(self.down_proj, dim=0)
-
         with Profiler().trace_with_timer("gate-projection", level=4):
-            gate_output = ttnn.experimental.moe_bmm(scattered_hidden_states, gate_proj, num_routed)
+            # print(f"gate_proj shape: {gate_proj.shape}")
+            # print(f"scattered_hidden_states shape: {scattered_hidden_states.shape}")
+            # gate_output = ttnn.matmul(scattered_hidden_states, self.gate_proj, memory_config=mem_cfg)
+            gate_output = ttnn.experimental.moe_bmm(scattered_hidden_states, self.gate_proj, num_routed)
 
         with Profiler().trace_with_timer("up-projection", level=4):
-            up_output = ttnn.experimental.moe_bmm(scattered_hidden_states, up_proj, num_routed)
+            # up_output = ttnn.matmul(scattered_hidden_states, self.up_proj, memory_config=mem_cfg)
+            up_output = ttnn.experimental.moe_bmm(scattered_hidden_states, self.up_proj, num_routed)
 
         with Profiler().trace_with_timer("silu-multiply", level=4):
             gate_silu = ttnn.silu(gate_output, memory_config=mem_cfg)
@@ -389,7 +391,8 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             ttnn.deallocate(up_output)
 
         with Profiler().trace_with_timer("down-projection", level=4):
-            moe_output = ttnn.experimental.moe_bmm(combined_activations, down_proj, num_routed)
+            # moe_output = ttnn.matmul(combined_activations, self.down_proj, memory_config=mem_cfg)
+            moe_output = ttnn.experimental.moe_bmm(combined_activations, self.down_proj, num_routed)
             ttnn.deallocate(combined_activations)
 
         with Profiler().trace_with_timer("local reduce", level=4):
