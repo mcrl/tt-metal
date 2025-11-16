@@ -966,8 +966,9 @@ operation::ProgramWithCallbacks untilize_multi_core(
         // Have compute core untilize the entire shard at once
         input_cb_num_tiles = num_tiles_per_input_block * num_input_blocks_per_full_core;
     } else {
-        if (num_input_blocks_per_full_core == 1) {
+        if (num_input_blocks_per_full_core == 1 || num_tiles_per_input_block > 180) {
             // No need to double buffer if the core is only processing a single block
+            // FIXME: When num_tiles_per_input_block exceeds 180, double buffering is temporarily disabled.
             input_cb_num_tiles = num_tiles_per_input_block;
         } else {
             // Double buffer if the core is processing 2+ blocks
@@ -985,8 +986,9 @@ operation::ProgramWithCallbacks untilize_multi_core(
 
     // Output CB
     uint32_t output_cb_num_tiles;
-    if (num_input_blocks_per_full_core == 1) {
+    if (num_input_blocks_per_full_core == 1 || num_tiles_per_input_block > 180) {
         // No need to double buffer if the core is only processing a single block
+        // FIXME: When num_tiles_per_input_block exceeds 180, double buffering is temporarily disabled.
         output_cb_num_tiles = num_tiles_per_input_block;
     } else {
         // Double buffer if the core is processing 2+ blocks

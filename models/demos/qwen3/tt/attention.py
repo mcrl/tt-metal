@@ -1,0 +1,518 @@
+from typing import Tuple, List
+import math
+
+import torch
+from torch import nn
+
+import os
+import ttnn
+
+from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
+from models.demos.qwen3.utils.profiler import profile_trace, Profiler
+
+from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_cache_prefix
+from models.demos.qwen3.tt.ccl import TT_CCL
+
+from models.demos.qwen3.tt.sdpa import sdpa_forward as tt_sdpa_forward
+from models.demos.qwen3.tt.rms_norm import Qwen3MoeRMSNorm
+from models.tt_transformers.tt.rope import RotarySetup
+
+def reshape_to_interleaved(x: torch.Tensor) -> torch.Tensor:
+    x_half1, x_half2 = x.chunk(2, dim=-1)
+    stacked = torch.stack([x_half1, x_half2], dim=-1)
+    return stacked.flatten(start_dim=-2)
+
+def reshape_weight(x, head_dim, repeats):
+    x = x.transpose(0, 1)
+    hidden_size, _ = x.shape
+    x = x.view(hidden_size, -1, head_dim)
+    x = x.repeat_interleave(repeats=repeats, dim=1)
+    x = x.view(hidden_size, -1)
+    return x.contiguous()
+
+def typecast_reshard(x, dtype=ttnn.bfloat8_b):
+    mem_cfg = x.memory_config()
+
+    x = ttnn.to_memory_config(x, ttnn.L1_MEMORY_CONFIG)
+    x = ttnn.typecast(x, dtype)
+    x = ttnn.to_memory_config(x, mem_cfg)
+
+    return x
+
+def save_activations(mesh_device, tensor: ttnn.Tensor, file_name: str, layer_name: str):
+    if file_name == None:
+        return
+
+    sharded = False
+    if ttnn.is_sharded(tensor):
+        mem_cfg = tensor.memory_config()
+        tensor = ttnn.to_memory_config(tensor, ttnn.L1_MEMORY_CONFIG)
+        sharded = True
+
+    tt_tensor = ttnn.clone(tensor)
+    torch_tensor = ttnn.to_torch(
+        tt_tensor,
+        dtype=torch.bfloat16,
+        mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
+    )
+    torch.save(torch_tensor, f"activations/{file_name}_{layer_name}.pt")
+
+    if sharded:
+        tensor = ttnn.to_memory_config(tensor, mem_cfg)
+
+class Qwen3MoeAttention(nn.Module):
+    @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeAttention"})
+    def __init__(self, config: Qwen3MoeConfig, layer_idx: int, mesh_device: ttnn.Device, ccl: TT_CCL):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+        self.mesh_device = mesh_device
+        self.ccl = ccl
+        self.num_devices = mesh_device.shape[0] * mesh_device.shape[1]
+
+        self.dp = mesh_device.shape[0]
+        self.tp = mesh_device.shape[1]
+
+        self.is_tt_setup = False
+        self.hidden_size = config.hidden_size
+        self.head_dim = config.head_dim
+        self.num_attention_heads = config.num_attention_heads
+        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+        self.scaling = pow(self.head_dim, -0.5)
+        self.attention_dropout = config.attention_dropout
+
+        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+
+        self.q_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device, interleaved=True)
+        self.k_norm = Qwen3MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps, mesh_device=mesh_device, interleaved=True)
+
+        self.sliding_window = None
+
+        self.q_heads_per_device = self.num_attention_heads // self.tp
+
+        self.KV_REPEAT_COEF = 1
+        while self.num_key_value_heads * self.KV_REPEAT_COEF % self.tp != 0:
+            self.KV_REPEAT_COEF += 1
+            if self.KV_REPEAT_COEF > 100:
+                raise ValueError(f"KV_REPEAT_COEF is too large for this mesh configuration: {self.num_key_value_heads=} {self.tp=}")
+        self.kv_heads_per_device = self.num_key_value_heads * self.KV_REPEAT_COEF // self.tp
+
+        self.cache_shape = (
+            config.max_num_blocks,
+            self.num_key_value_heads * self.KV_REPEAT_COEF // self.tp,
+            config.block_size,
+            self.head_dim,
+        )
+
+        self.num_links = 3 if self.num_devices == 32 else 1
+
+        self.unit_batch_size = 32
+
+        assert config._attn_implementation == "sdpa"
+        assert config.num_attention_heads % config.num_key_value_heads == 0
+        assert config.sliding_window is None
+
+    @profile_trace("setup-tt", level=3, args={"class": "Qwen3MoeAttention"})
+    def setup_tt(self):
+        if self.is_tt_setup:
+            return
+
+        cache_prefix = get_model_cache_prefix(self.mesh_device)
+
+        from models.demos.qwen3.common.lazy_loader import get_lazy_loader, load_parameter_for_module, is_meta_tensor
+        lazy_loader = get_lazy_loader()
+
+        param_prefix = f"layers.{self.layer_idx}.self_attn"
+        if lazy_loader is not None and os.environ.get("GENERATE_MODEL_CACHE", "0") == "1":
+            # Load weights on-demand if still in meta state
+            if is_meta_tensor(self.q_proj.weight):
+                load_parameter_for_module(self.q_proj, "weight", f"{param_prefix}.q_proj.weight")
+            if is_meta_tensor(self.k_proj.weight):
+                load_parameter_for_module(self.k_proj, "weight", f"{param_prefix}.k_proj.weight")
+            if is_meta_tensor(self.v_proj.weight):
+                load_parameter_for_module(self.v_proj, "weight", f"{param_prefix}.v_proj.weight")
+            if is_meta_tensor(self.o_proj.weight):
+                load_parameter_for_module(self.o_proj, "weight", f"{param_prefix}.o_proj.weight")
+
+        if is_meta_tensor(self.q_norm.weight):
+            load_parameter_for_module(self.q_norm, "weight", f"{param_prefix}.q_norm.weight")
+        if is_meta_tensor(self.k_norm.weight):
+            load_parameter_for_module(self.k_norm, "weight", f"{param_prefix}.k_norm.weight")
+
+        weight_shape = (self.hidden_size, -1)
+
+        q_weight = self.q_proj.weight.transpose(0, 1)
+        q_weight = q_weight.reshape(self.hidden_size, -1, self.head_dim)
+        q_weight = reshape_to_interleaved(q_weight).reshape(weight_shape)
+
+        k_weight = reshape_weight(self.k_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF)
+        k_weight = k_weight.reshape(self.hidden_size, -1, self.head_dim)
+        k_weight = reshape_to_interleaved(k_weight).reshape(weight_shape)
+
+        v_weight = reshape_weight(self.v_proj.weight, head_dim=self.head_dim, repeats=self.KV_REPEAT_COEF).reshape(weight_shape)
+        v_weight = v_weight.reshape(self.hidden_size, -1, self.head_dim)
+        v_weight = reshape_to_interleaved(v_weight).reshape(weight_shape)
+
+        qkv_list = []
+        wq = torch.chunk(q_weight, self.tp, dim=1)
+        wk = torch.chunk(k_weight, self.tp, dim=1)
+        wv = torch.chunk(v_weight, self.tp, dim=1)
+
+        for i in range(self.tp):
+            qkv_list.append(torch.cat([wq[i], wk[i], wv[i]], dim=1))
+
+        self.qkv_proj_weight = ttnn.as_tensor(
+            torch.cat(qkv_list, dim=1),
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(None, 1)),
+            dtype=ttnn.bfloat8_b,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
+            cache_file_name=ttnn_model_cache_path(f"{cache_prefix}decoder_{self.layer_idx}_qkv_proj"),
+        )
+        del q_weight, k_weight, v_weight, qkv_list, wq, wk, wv
+
+        self.q_norm.setup_tt()
+        self.k_norm.setup_tt()
+
+        o_weight = self.o_proj.weight
+        o_weight = o_weight.reshape(self.hidden_size, -1, self.head_dim)
+        o_weight = reshape_to_interleaved(o_weight).reshape(weight_shape)
+
+        self.o_proj_weight = ttnn.as_tensor(
+            o_weight,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, self.mesh_device.shape, dims=(None, 1)),
+            dtype=ttnn.bfloat8_b,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.TILE_LAYOUT,
+            cache_file_name=ttnn_model_cache_path(f"{cache_prefix}decoder_{self.layer_idx}_o_proj"),
+        )
+        
+        del o_weight
+
+        self.init_kv_cache()
+
+        # Create dp_degree tensor for extract_attention_input API
+        dp_degree_host = torch.tensor(
+            [row for row in range(self.dp) for _ in range(self.tp)],
+            dtype=torch.int32
+        )
+        self.dp_degree = ttnn.from_torch(
+            dp_degree_host,
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.mesh_device,
+            mesh_mapper=ttnn.ShardTensor2dMesh(
+                self.mesh_device,
+                dims=(0, None),
+                mesh_shape=(self.num_devices, 1)
+            ),
+        )
+
+        self.compute_config = ttnn.WormholeComputeKernelConfig(
+            math_fidelity=ttnn.MathFidelity.HiFi2,
+            math_approx_mode=False,
+            fp32_dest_acc_en=False,
+            packer_l1_acc=True,
+        )
+    
+        self.is_tt_setup = True
+        
+        if lazy_loader is not None:
+            from models.demos.qwen3.common.lazy_loader import clear_module_weights
+            clear_module_weights(self)
+            print(f"Layer {self.layer_idx} attention weights cleared from CPU RAM")
+    
+    def init_kv_cache(self):
+        cache_k = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
+        cache_v = torch.zeros(self.cache_shape, dtype=torch.bfloat16)
+
+        self.cache_k = ttnn.as_tensor(
+            cache_k,
+            dtype=ttnn.bfloat8_b,
+            layout=ttnn.TILE_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
+        self.cache_v = ttnn.as_tensor(
+            cache_v,
+            dtype=ttnn.bfloat8_b,
+            layout=ttnn.TILE_LAYOUT,
+            device=self.mesh_device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
+
+    def forward_prefill(
+        self, hidden_states: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
+    ) -> ttnn.Tensor:
+        batch_size, sequence_length, hidden_size = hidden_states.shape
+        mem_cfg = ttnn.L1_MEMORY_CONFIG if sequence_length == 1 else ttnn.DRAM_MEMORY_CONFIG
+        hidden_shape = (batch_size // self.dp, 1, sequence_length, -1)
+
+        # Extract attention input for this device using new multi-core API
+        hidden_states = ttnn.extract_attention_input(
+            hidden_states,
+            self.dp_degree,
+            mesh_device=self.mesh_device,
+            output_dtype=ttnn.bfloat8_b,
+            memory_config=mem_cfg
+        )
+
+        with Profiler().trace_with_timer("qkv-proj-linear", level=4):
+            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat8_b, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+            qkv_states = ttnn.view(qkv_states, hidden_shape)
+
+        with Profiler().trace_with_timer("qkv-split", level=4):
+            query_states_pre_rot, key_states_pre_rot, value_states = ttnn.experimental.nlp_create_qkv_heads(
+                qkv_states,
+                num_heads=self.q_heads_per_device,
+                num_kv_heads=self.kv_heads_per_device,
+                transpose_k_heads=False,
+                memory_config=mem_cfg
+            )
+            ttnn.deallocate(qkv_states)
+
+        with Profiler().trace_with_timer("rmsnorm", level=4):
+            query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.PREFILL)
+            key_states_pre_rot = self.k_norm(key_states_pre_rot, mode=InferenceMode.PREFILL)
+
+        with Profiler().trace_with_timer("rope", level=4):
+            query_states_pre_rot = ttnn.typecast(query_states_pre_rot, ttnn.bfloat16)
+            query_states = ttnn.experimental.rotary_embedding_llama(
+                query_states_pre_rot,
+                rot_mats[0],
+                rot_mats[1],
+                trans_mat,
+                is_decode_mode=False
+            )
+            ttnn.deallocate(query_states_pre_rot)
+
+            key_states_pre_rot = ttnn.typecast(key_states_pre_rot, ttnn.bfloat16)
+            key_states = ttnn.experimental.rotary_embedding_llama(
+                key_states_pre_rot,
+                rot_mats[0],
+                rot_mats[1],
+                trans_mat,
+                is_decode_mode=False
+            )
+            ttnn.deallocate(key_states_pre_rot)
+
+        with Profiler().trace_with_timer("typecast", level=4):
+            query_states = ttnn.typecast(query_states, ttnn.bfloat8_b)
+            key_states = ttnn.typecast(key_states, ttnn.bfloat8_b)
+
+        with Profiler().trace_with_timer("fill-cache", level=4):
+            ttnn.experimental.batched_paged_fill_cache(self.cache_k, key_states, page_table, batch_size // self.dp)
+            ttnn.experimental.batched_paged_fill_cache(self.cache_v, value_states, page_table, batch_size // self.dp)
+
+        attn_out = tt_sdpa_forward(
+            query_states,
+            key_states,
+            value_states,
+            dropout=0.0,
+            scaling=self.scaling,
+            mode=InferenceMode.PREFILL,
+        )
+        ttnn.deallocate(query_states)
+        ttnn.deallocate(key_states)
+        ttnn.deallocate(value_states)
+
+        with Profiler().trace_with_timer("reshape", level=4):
+            attn_out_cat = ttnn.experimental.nlp_concat_heads(attn_out, memory_config=mem_cfg)
+            ttnn.deallocate(attn_out)
+
+        with Profiler().trace_with_timer("output-proj", level=4):
+            linear_output = ttnn.linear(
+                attn_out_cat,
+                self.o_proj_weight,
+                transpose_a=False,
+                transpose_b=True,
+                dtype=ttnn.bfloat8_b,
+                compute_kernel_config=self.compute_config, 
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            )
+            ttnn.deallocate(attn_out_cat)
+
+        with Profiler().trace_with_timer("all-reduce", level=4):
+            B, _, S, H = linear_output.shape
+            linear_output = ttnn.view(linear_output, (1, 1, B * S, H))
+
+            linear_output = self.ccl.reduce_scatter(
+                linear_output,
+                dim=3,
+                cluster_axis=1,
+            )
+            linear_output = self.ccl.all_gather(
+                linear_output,
+                dim=3,
+                cluster_axis=1,
+            )
+            if self.mesh_device.shape[0] > 1:
+                linear_output = self.ccl.all_gather(
+                    linear_output,
+                    dim=2,
+                    cluster_axis=0,
+                )
+
+            linear_output = ttnn.view(linear_output, (-1, S, H))
+            linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
+
+        return linear_output
+
+    def forward_decode(
+        self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: List[ttnn.Tensor],
+    ) -> ttnn.Tensor:
+        mem_cfg = ttnn.L1_MEMORY_CONFIG
+
+        _, sequence_length, batch_size, hidden_size = hidden_states.shape
+
+        with Profiler().trace_with_timer("extract-attention-input", level=4):
+            hidden_states = ttnn.extract_attention_input(
+                hidden_states,
+                self.dp_degree,
+                mesh_device=self.mesh_device,
+                output_dtype=ttnn.bfloat8_b,
+                memory_config=mem_cfg,
+            )
+
+        with Profiler().trace_with_timer("qkv-proj-linear", level=4):
+            qkv_states = ttnn.linear(hidden_states, self.qkv_proj_weight, dtype=ttnn.bfloat16, compute_kernel_config=self.compute_config, memory_config=mem_cfg)
+        
+        qkv_states_list = []
+        is_unit_batch = qkv_states.shape[2] == self.unit_batch_size
+        if not is_unit_batch:
+            for i in range(qkv_states.shape[2] // self.unit_batch_size):
+                qkv_states_list.append(qkv_states[:, :, i * self.unit_batch_size:(i + 1) * self.unit_batch_size, :])
+            ttnn.deallocate(qkv_states)
+        else:
+            qkv_states_list.append(qkv_states)
+
+        for i in range(len(qkv_states_list)):
+            qkv_states = qkv_states_list[i]
+
+            with Profiler().trace_with_timer("qkv-split", level=4):
+                query_states_pre_rot, key_states_pre_rot, value_states = ttnn.experimental.nlp_create_qkv_heads_decode(
+                    qkv_states,
+                    num_heads=self.q_heads_per_device,
+                    num_kv_heads=self.kv_heads_per_device,
+                    memory_config=ttnn.L1_HEIGHT_SHARDED_MEMORY_CONFIG
+                )
+                ttnn.deallocate(qkv_states)
+
+            with Profiler().trace_with_timer("rmsnorm", level=4):
+                query_states_pre_rot = self.q_norm(query_states_pre_rot, mode=InferenceMode.DECODE)
+                key_states_pre_rot = self.k_norm(key_states_pre_rot, mode=InferenceMode.DECODE)
+
+            with Profiler().trace_with_timer("rope", level=4):
+                query_states = ttnn.experimental.rotary_embedding_llama(
+                    query_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
+                )
+                ttnn.deallocate(query_states_pre_rot)
+
+                key_states = ttnn.experimental.rotary_embedding_llama(
+                    key_states_pre_rot, rot_mats[0], rot_mats[1], trans_mat, is_decode_mode=True
+                )
+                ttnn.deallocate(key_states_pre_rot)
+
+            with Profiler().trace_with_timer("update-cache", level=4):
+                ttnn.experimental.paged_update_cache(self.cache_k, key_states, update_idxs_tensor=start_pos, page_table=page_table[i])
+                ttnn.experimental.paged_update_cache(self.cache_v, value_states, update_idxs_tensor=start_pos, page_table=page_table[i])
+
+                ttnn.deallocate(key_states)
+                ttnn.deallocate(value_states)
+
+            attn_output = tt_sdpa_forward(
+                query_states,
+                self.cache_k,
+                self.cache_v,
+                cur_pos=start_pos,
+                page_table=page_table[i],
+                dropout=0.0,
+                scaling=self.scaling,
+                mode=InferenceMode.DECODE,
+            )
+            ttnn.deallocate(query_states)
+            
+            with Profiler().trace_with_timer("concat-heads", level=4):
+                qkv_states_list[i] = ttnn.experimental.nlp_concat_heads_decode(
+                    attn_output, 
+                    num_heads=self.q_heads_per_device
+                )
+                ttnn.deallocate(attn_output)
+            
+            qkv_states_list[i] = ttnn.to_memory_config(qkv_states_list[i], mem_cfg, dtype=ttnn.bfloat8_b)
+
+        if not is_unit_batch:
+            attn_output_cat = ttnn.concat(qkv_states_list, dim=2)
+        else:
+            attn_output_cat = qkv_states_list[0]
+        del qkv_states_list
+
+        with Profiler().trace_with_timer("output-proj", level=4):
+            linear_output = ttnn.linear(
+                attn_output_cat,
+                self.o_proj_weight,
+                transpose_a=False,
+                transpose_b=True,
+                dtype=ttnn.bfloat8_b,
+                compute_kernel_config=self.compute_config, 
+                memory_config=mem_cfg,
+            )
+            ttnn.deallocate(attn_output_cat)
+
+        with Profiler().trace_with_timer("all-reduce", level=4):
+            _, _, B, H = linear_output.shape
+            linear_output = ttnn.view(linear_output, (1, 1, B, H))
+
+            linear_output = self.ccl.reduce_scatter(
+                linear_output,
+                dim=3,
+                cluster_axis=1,
+                memory_config=mem_cfg
+            )
+            linear_output = self.ccl.all_gather(
+                linear_output,
+                dim=3,
+                cluster_axis=1,
+                memory_config=mem_cfg
+            )
+
+            if self.mesh_device.shape[0] > 1:
+                linear_output = self.ccl.all_gather(
+                    linear_output,
+                    dim=2,
+                    cluster_axis=0,
+                    memory_config=mem_cfg
+                )
+            
+            linear_output = ttnn.view(linear_output, shape=(1, 1, -1, H))
+            linear_output = ttnn.typecast(linear_output, ttnn.bfloat16)
+
+        return linear_output
+
+    @profile_trace("Qwen3MoeAttention", level=3)
+    def forward(
+        self,
+        hidden_states: ttnn.Tensor,
+        rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor],
+        trans_mat: ttnn.Tensor,
+        start_pos: ttnn.Tensor,
+        page_table: ttnn.Tensor,
+        mode: InferenceMode = InferenceMode.PREFILL,
+    ) -> ttnn.Tensor:
+
+        if mode == InferenceMode.PREFILL:
+            return self.forward_prefill(hidden_states, rot_mats, trans_mat, page_table)
+        elif mode == InferenceMode.DECODE:
+            return self.forward_decode(hidden_states, start_pos, rot_mats, trans_mat, page_table)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+
+__all__ = ["Qwen3MoeAttention"]

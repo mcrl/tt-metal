@@ -1,0 +1,87 @@
+#include <stdint.h>
+#include "dataflow_api.h"
+
+// Define the sentinel value for a page table entry that indicates a skip.
+constexpr uint32_t SKIP_PAGE_TABLE_ENTRY = (uint32_t)-1;
+
+template <uint32_t num_heads, uint32_t block_size_t, uint32_t Wt>
+uint32_t virtual_seq_tile_id_to_physical_tile_id(
+    uint32_t seq_tile_idx, uint32_t cur_head, volatile tt_l1_ptr const uint32_t* const page_table_ptr) {
+    // Given some index in the sequence tiles in range [0, max_seq_len_t]
+    // Return the physical tile id for that tile row, or SKIP_PAGE_TABLE_ENTRY if block is skipped
+    constexpr uint32_t block_stride = num_heads * block_size_t * Wt;
+    const uint32_t head_offset = cur_head * block_size_t * Wt;
+
+    const uint32_t virtual_block = seq_tile_idx / block_size_t;
+    const uint32_t physical_block = page_table_ptr[virtual_block];
+
+    if (physical_block == SKIP_PAGE_TABLE_ENTRY) {
+        return SKIP_PAGE_TABLE_ENTRY;  // Return sentinel to indicate skip
+    }
+
+    const uint32_t block_row_offset = seq_tile_idx % block_size_t;
+    const uint32_t block_offset = block_row_offset * Wt;
+    return physical_block * block_stride + head_offset + block_offset;
+}
+
+void kernel_main() {
+    uint32_t dst_addr = get_arg_val<uint32_t>(0);
+    uint32_t page_table_addr = get_arg_val<uint32_t>(1);
+    uint32_t start_row_num = get_arg_val<uint32_t>(2);
+    uint32_t num_rows = get_arg_val<uint32_t>(3);
+    uint32_t batch_size = get_arg_val<uint32_t>(4);
+
+    constexpr uint32_t cb_id_in = get_compile_time_arg_val(0);
+    constexpr uint32_t cb_id_page_table = get_compile_time_arg_val(1);
+    constexpr uint32_t num_heads = get_compile_time_arg_val(2);
+    constexpr uint32_t num_blocks_of_work_per_head = get_compile_time_arg_val(3);
+    constexpr uint32_t block_size_t = get_compile_time_arg_val(4);
+    constexpr uint32_t Wt = get_compile_time_arg_val(5);
+    constexpr uint32_t log2_page_table_stick_size = get_compile_time_arg_val(6);
+    constexpr uint32_t page_table_stick_size = get_compile_time_arg_val(7);
+
+    constexpr auto s0_args = TensorAccessorArgs<8>();
+    constexpr auto page_table_args = TensorAccessorArgs<s0_args.next_compile_time_args_offset()>();
+
+    const uint32_t tile_bytes = get_tile_size(cb_id_in);
+    const DataFormat data_format = get_dataformat(cb_id_in);
+
+    const auto out_gen = TensorAccessor(s0_args, dst_addr, tile_bytes);
+    const auto page_table_gen = TensorAccessor(page_table_args, page_table_addr, page_table_stick_size);
+
+    for (uint32_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
+        // Read page table for current batch
+        cb_reserve_back(cb_id_page_table, 1);
+        uint32_t page_table_cb_wr_ptr = get_write_ptr(cb_id_page_table);
+        uint64_t page_table_noc_addr = page_table_gen.get_noc_addr(batch_idx);
+        noc_async_read(page_table_noc_addr, page_table_cb_wr_ptr, page_table_stick_size);
+        noc_async_read_barrier();
+
+        volatile tt_l1_ptr uint32_t* page_table_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(page_table_cb_wr_ptr);
+
+        // Process rows for current batch (same logic as single batch paged_fill_cache)
+        for (uint32_t row_id = start_row_num; row_id < start_row_num + num_rows; ++row_id) {
+            uint32_t cur_head = row_id / num_blocks_of_work_per_head;
+            uint32_t seq_tile_id = row_id % num_blocks_of_work_per_head;
+            uint32_t physical_tile_id =
+                virtual_seq_tile_id_to_physical_tile_id<num_heads, block_size_t, Wt>(seq_tile_id, cur_head, page_table_ptr);
+
+            if (physical_tile_id == SKIP_PAGE_TABLE_ENTRY) {
+                cb_wait_front(cb_id_in, Wt);
+                cb_pop_front(cb_id_in, Wt);
+            } else {
+                cb_wait_front(cb_id_in, Wt);
+                uint32_t l1_read_addr = get_read_ptr(cb_id_in);
+                for (uint32_t w = 0; w < Wt; ++w) {
+                    noc_async_write_tile(physical_tile_id, out_gen, l1_read_addr);
+                    l1_read_addr += tile_bytes;
+                    physical_tile_id += 1;
+                }
+                noc_async_write_barrier();
+                cb_pop_front(cb_id_in, Wt);
+            }
+        }
+
+        cb_pop_front(cb_id_page_table, 1);
+    }
+}
