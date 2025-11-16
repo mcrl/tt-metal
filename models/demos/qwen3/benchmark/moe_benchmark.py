@@ -2,14 +2,20 @@ import torch
 from torch import nn
 import ttnn
 import os
+from loguru import logger
 
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig
-from models.demos.qwen3.tt.ccl_1d import CCL1D
-from models.tt_transformers.tt.ccl import TT_CCL
+from models.demos.qwen3.tt.ccl import TT_CCL
 
 from models.demos.qwen3.utils.profiler import profile_trace, Profiler
 from models.demos.qwen3.tt.model_cache import ttnn_model_cache_path, get_model_cache_prefix
 from models.demos.qwen3.common.configuration_qwen3_moe import InferenceMode
+
+def print_sync_print(tag, device):
+    if False:
+        logger.info(f'{tag} - BEFORE SYNC')
+        ttnn.synchronize_device(device)
+        logger.info(f'{tag} - AFTER SYNC')
 
 class Qwen3MoeMLP(nn.Module):
     def __init__(self, intermediate_size: int, mesh_device: ttnn.Device, hidden_size):
@@ -34,10 +40,11 @@ class Qwen3MoeMLP(nn.Module):
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
     @profile_trace("create-layer", level=3, args={"class": "Qwen3MoeSparseMoeBlock"})
-    def __init__(self, layer_idx: int, mesh_device: ttnn.Device,
+    def __init__(self, layer_idx: int, mesh_device: ttnn.Device, ccl,
                  num_experts, num_experts_per_tok, norm_topk_prob, hidden_size, moe_intermediate_size):
         super().__init__()
         self.mesh_device = mesh_device
+        self.ccl = ccl
         self.num_experts = num_experts
         self.top_k = num_experts_per_tok
         self.norm_topk_prob = norm_topk_prob
@@ -90,7 +97,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 self.gate.weight.transpose(0, 1),
                 device=self.mesh_device,
                 mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
-                dtype=ttnn.bfloat16,
+                dtype=ttnn.bfloat8_b,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 layout=ttnn.TILE_LAYOUT,
             )
@@ -209,7 +216,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("moe-router", level=4):
-            router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat16, memory_config=mem_cfg)
+            router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
         with Profiler().trace_with_timer("softmax-topk-div", level=4):
             routing_weights = ttnn.softmax(router_logits, memory_config=mem_cfg)
@@ -271,9 +278,9 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         with Profiler().trace_with_timer("all-to-all-combine", level=4):
             all_to_all_combine_output_tensors = ttnn.all_to_all_combine(
                 experts_output,
-                self.device_expert_mapping_legacy,
                 selected_experts,
-                axis=1,
+                self.device_expert_mapping_legacy,
+                cluster_axis=1,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 num_links=1
             )
@@ -333,18 +340,29 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         with Profiler().trace_with_timer("reshape", level=4):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)
-            hidden_states = ttnn.typecast(hidden_states, ttnn.bfloat8_b)
 
         with Profiler().trace_with_timer("moe-router", level=4):
-            router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
+            compute_config = ttnn.init_device_compute_kernel_config(
+                hidden_states.device().arch(),
+                math_fidelity=ttnn.MathFidelity.HiFi2,
+                math_approx_mode=False,
+                fp32_dest_acc_en=True,
+                packer_l1_acc=False,
+            )
+            router_logits = ttnn.linear(hidden_states, self.gate_weight, dtype=ttnn.bfloat8_b, memory_config=mem_cfg,
+                                        compute_kernel_config=compute_config)
 
         with Profiler().trace_with_timer("softmax-topk-div", level=4):
             routing_weights = ttnn.softmax(router_logits, memory_config=mem_cfg)
             ttnn.deallocate(router_logits)
 
+            # When k is not multiple of 8, bfloat8_b gets asserted at padding step inside topk. So use bfloat16 instead.
+            if routing_weights.dtype != ttnn.bfloat16:
+                routing_weights = ttnn.typecast(routing_weights, ttnn.bfloat16, memory_config=mem_cfg)
             routing_weights, selected_experts = ttnn.topk(
                 routing_weights, self.top_k, largest=True, memory_config=mem_cfg,
             )
+            routing_weights = ttnn.typecast(routing_weights, ttnn.bfloat8_b)
             if self.bs is not None:
                 selected_experts = self.selected_experts_rr
             if self.norm_topk_prob:
@@ -353,7 +371,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     ttnn.sum(routing_weights, dim=-1, keepdim=True, memory_config=mem_cfg),
                     memory_config=mem_cfg,
                 )
-            routing_weights = ttnn.typecast(routing_weights, ttnn.bfloat8_b)
 
         with Profiler().trace_with_timer("typecast-selected-experts", level=4):
             selected_experts = ttnn.typecast(selected_experts, ttnn.uint32, memory_config=mem_cfg)
@@ -408,67 +425,40 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 num_routed,
                 memory_config=mem_cfg,
             )
+            moe_output = moe_output[:batch_size * sequence_length, :]
 
         with Profiler().trace_with_timer("allreduce", level=4):
             T, H = moe_output.shape
             moe_output = ttnn.view(moe_output, shape=(1, 1, T, H))
             moe_output = ttnn.to_layout(moe_output, ttnn.TILE_LAYOUT, dtype=ttnn.bfloat8_b, memory_config=mem_cfg)
 
-            moe_output = ttnn.experimental.reduce_scatter_minimal_async(
+            moe_output = self.ccl.reduce_scatter(
                 moe_output,
-                persistent_output_buffers=None,
                 dim=3,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(1),
-                barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(1),
                 cluster_axis=1,
-                num_links=self.num_links,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                topology=ttnn.Topology.Linear,
-                chunks_per_sync=10,
-                num_workers_per_link=2,
-                num_buffers_per_channel=2,
+                memory_config=mem_cfg,
             )
             if self.mesh_device.shape[0] > 1:
-                moe_output = ttnn.experimental.reduce_scatter_minimal_async(
+                moe_output = self.ccl.reduce_scatter(
                     moe_output,
-                    persistent_output_buffers=None,
                     dim=3,
-                    multi_device_global_semaphore=self.ccl.get_and_cycle_rs_semaphore_handles(0),
-                    barrier_semaphore=self.ccl.get_and_cycle_barrier_semaphore_handle(0),
                     cluster_axis=0,
-                    num_links=self.num_links,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    intermediate_memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    topology=ttnn.Topology.Linear,
-                    chunks_per_sync=10,
-                    num_workers_per_link=2,
-                    num_buffers_per_channel=2,
+                    memory_config=mem_cfg,
                 )
-                moe_output = ttnn.experimental.all_gather_async(
+                moe_output = self.ccl.all_gather(
                     moe_output,
-                    3,
+                    dim=3,
                     cluster_axis=0,
-                    mesh_device=self.mesh_device,
-                    topology=ttnn.Topology.Linear,
-                    multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(0),
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    num_links=self.num_links,
+                    memory_config=mem_cfg,
                 )
-            moe_output = ttnn.experimental.all_gather_async(
+            moe_output = self.ccl.all_gather(
                 moe_output,
-                3,
+                dim=3,
                 cluster_axis=1,
-                mesh_device=self.mesh_device,
-                topology=ttnn.Topology.Linear,
-                multi_device_global_semaphore=self.ccl.get_and_cycle_ag_semaphore_handles(1),
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                num_links=self.num_links,
+                memory_config=mem_cfg,
             )
 
         with Profiler().trace_with_timer("reshape", level=4):
-            moe_output = ttnn.typecast(moe_output, ttnn.bfloat16)
-
             if mode == InferenceMode.PREFILL:
                 moe_output = ttnn.view(
                     moe_output,

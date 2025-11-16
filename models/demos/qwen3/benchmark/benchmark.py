@@ -1,9 +1,11 @@
 import ttnn
 import torch
+import traceback
 from loguru import logger
 from transformers import AutoConfig
 import os
 import json
+from models.demos.qwen3.tt.ccl import TT_CCL
 from models.demos.qwen3.reference.modeling_qwen3_moe import Qwen3MoeDecoderLayer
 from models.demos.qwen3.common.configuration_qwen3_moe import Qwen3MoeConfig, InferenceMode
 from models.demos.qwen3.benchmark.moe_benchmark import Qwen3MoeSparseMoeBlock
@@ -23,8 +25,12 @@ class Impl(Enum):
   MOE_TT_BY_SNU = 2
   MOE_GPT_OSS = 3
 
+witers, niters = 3, 10
+#witers, niters = 1, 1
+  
+
 def open_device():
-  ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D)
+  ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D_RING)
   device = ttnn.open_mesh_device(mesh_shape = ttnn.MeshShape(4, 8),
                                  trace_region_size = 128 * 1024 * 1024)
   logger.info(f"multidevice with {device.get_num_devices()} devices is created with shape {device.shape}")
@@ -37,19 +43,26 @@ def close_device(device):
 def bench_single_case(num_experts, num_experts_per_tok, norm_topk_prob, hidden_size, moe_intermediate_size,
                       batch_size, seq_len, mode, impl, device, memory_config, use_trace=False):
   if mode == Mode.PREFILL:
+    assert seq_len > 1
     infer_mode = InferenceMode.PREFILL
     hidden_states_shape = (batch_size, seq_len, hidden_size)
   elif mode == Mode.DECODE:
+    assert seq_len == 1
     infer_mode = InferenceMode.DECODE
-    hidden_states_shape = (1, seq_len, batch_size, hidden_size)
+    if impl == Impl.MOE_GPT_OSS:
+      hidden_states_shape = (batch_size, seq_len, hidden_size)
+    else:
+      hidden_states_shape = (1, seq_len, batch_size, hidden_size)
   else:
     raise ValueError(f'Unknown mode {mode}')
 
   torch.manual_seed(0) 
 
+  logger.info('Running Init(setup_tt, ...)')
   if impl == Impl.MOE_SNU:
     layer_idx = 0
-    tt_mlp = Qwen3MoeSparseMoeBlock(layer_idx, device,
+    ccl = TT_CCL(device)
+    tt_mlp = Qwen3MoeSparseMoeBlock(layer_idx, device, ccl,
                                     num_experts, num_experts_per_tok,
                                   norm_topk_prob, hidden_size, moe_intermediate_size)
     forward_impl = tt_mlp.forward
@@ -57,7 +70,8 @@ def bench_single_case(num_experts, num_experts_per_tok, norm_topk_prob, hidden_s
     forward_kwargs = {'mem_cfg': memory_config, 'mode': infer_mode}
   elif impl == Impl.MOE_TT_BY_SNU:
     layer_idx = 0
-    tt_mlp = Qwen3MoeSparseMoeBlock(layer_idx, device,
+    ccl = TT_CCL(device)
+    tt_mlp = Qwen3MoeSparseMoeBlock(layer_idx, device, ccl,
                                     num_experts, num_experts_per_tok,
                                   norm_topk_prob, hidden_size, moe_intermediate_size)
     forward_impl = tt_mlp.forward_tt
@@ -73,7 +87,7 @@ def bench_single_case(num_experts, num_experts_per_tok, norm_topk_prob, hidden_s
   hidden_states = torch.randn(hidden_states_shape, dtype=torch.bfloat16)
   hidden_states_tt = ttnn.from_torch(
       hidden_states,
-      dtype=ttnn.bfloat16,
+      dtype=ttnn.bfloat8_b,
       layout=ttnn.TILE_LAYOUT,
       device=device,
       mesh_mapper=ttnn.ReplicateTensorToMesh(device),
@@ -82,8 +96,6 @@ def bench_single_case(num_experts, num_experts_per_tok, norm_topk_prob, hidden_s
 
   logger.info('Running tt_mlp')
 
-  witers, niters = 3, 10
-  
   if use_trace:
     tracy.signpost("Trace Warmup")
     ttnn.synchronize_device(device)
@@ -158,15 +170,18 @@ def bench_single_case(num_experts, num_experts_per_tok, norm_topk_prob, hidden_s
     return [elapsed / niters]
 
 #MODELS = ['Qwen3-235B-A22B', 'Qwen3-30B-A3B', 'DeepSeek-V3', 'GPT-OSS-120B', 'GPT-OSS-20B']
-MODELS = ['GPT-OSS-20B']
+MODELS = ['DeepSeek-V3']
 #PREFILL_BS_PAIR = [(32, 32), (32, 64), (32, 128), (32, 256), (32, 512), (32, 1024)]
-PREFILL_BS_PAIR = [(32, 32)]
+#PREFILL_BS_PAIR = [(1, 1024), (1, 2048), (1, 4096), (1, 8192), (1, 16384), (1, 32768)]
+#PREFILL_BS_PAIR = [(1, 128), (1, 256), (1, 512), (1, 1024), (1, 2048), (1, 4096), (1, 8192), (1, 16384), (1, 32768)]
+PREFILL_BS_PAIR = [(1, 128)]
 #DECODE_BS_PAIR = [(32, 1), (64, 1), (128, 1), (256, 1), (512, 1), (1024, 1), (2048, 1)]
-DECODE_BS_PAIR = [(1, 32), (1, 64), (1, 128), (1, 256), (1, 512), (1, 1024), (1, 2048)]
+#DECODE_BS_PAIR = [(1, 1), (32, 1), (64, 1), (128, 1), (256, 1), (512, 1), (1024, 1), (2048, 1)]
+DECODE_BS_PAIR = [(512, 1)]
 #MODES = [Mode.PREFILL, Mode.DECODE]
 MODES = [Mode.DECODE]
-#IMPLS = [Impl.MOE_SNU, Impl.MOE_TT_BY_SNU]
-IMPLS = [Impl.MOE_GPT_OSS]
+#IMPLS = [Impl.MOE_SNU, Impl.MOE_TT_BY_SNU, Impl.MOE_GPT_OSS]
+IMPLS = [Impl.MOE_SNU]
 
 def bench_all_cases(mesh_device):
   for model in MODELS:
@@ -206,6 +221,7 @@ def bench_all_cases(mesh_device):
             row.extend(data)
           except Exception as e:
             logger.error(f'Error occurred: {e}')
+            traceback.print_exc()
             if memory_config == ttnn.L1_MEMORY_CONFIG:
               logger.info('Retrying with DRAM')
               memory_config = ttnn.DRAM_MEMORY_CONFIG
@@ -217,6 +233,7 @@ def bench_all_cases(mesh_device):
                 row.extend(data)
               except Exception as e2:
                 logger.error(f'Error occurred again: {e2}')
+                traceback.print_exc()
                 row.extend(['err'])
             else:
               row.extend(['err'])

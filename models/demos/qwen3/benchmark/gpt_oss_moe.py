@@ -6,28 +6,26 @@ from models.demos.gpt_oss.tt.ccl import CCLManager
 from loguru import logger
 
 def print_sync_print(tag, device):
-    logger.info(f'{tag} - BEFORE SYNC')
-    ttnn.synchronize_device(device)
-    logger.info(f'{tag} - AFTER SYNC')
+    if False:
+        logger.info(f'{tag} - BEFORE SYNC')
+        ttnn.synchronize_device(device)
+        logger.info(f'{tag} - AFTER SYNC')
 
-def topk_router(g, experts_per_token):
-    typecast_needed = False
+def topk_router(g, experts_per_token, mesh_device):
+    print_sync_print('topkrouter before topk', mesh_device)
     if g.dtype != ttnn.bfloat16:
-        g_og = g
-        typecast_needed = True
-        g = ttnn.typecast(g, dtype=ttnn.bfloat16)
-
-    expert_weights, expert_indices = ttnn.topk(g, k=experts_per_token, dim=-1, sorted=True)
-    if typecast_needed:
-        g.deallocate(True)
-        g = g_og
+        expert_weights, expert_indices = ttnn.topk(ttnn.typecast(g, dtype=ttnn.bfloat16), k=experts_per_token, dim=-1, sorted=True)
+        expert_weights = ttnn.typecast(expert_weights, dtype=g.dtype)
+    else:
+        expert_weights, expert_indices = ttnn.topk(g, k=experts_per_token, dim=-1, sorted=True)
     compute_config = ttnn.init_device_compute_kernel_config(
         g.device().arch(),
-        math_fidelity=ttnn.MathFidelity.HiFi4,
+        math_fidelity=ttnn.MathFidelity.HiFi2,
         math_approx_mode=False,
         fp32_dest_acc_en=True,
         packer_l1_acc=False,
     )
+    print_sync_print('topkrouter before softmax', mesh_device)
     expert_weights = ttnn.softmax(expert_weights, dim=1, numeric_stable=True, compute_kernel_config=compute_config)
     router_scores = ttnn.scatter(ttnn.zeros_like(g), dim=1, index=expert_indices, src=expert_weights)
     return router_scores, expert_weights, expert_indices
@@ -52,13 +50,21 @@ class TopKRouter:
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         self.compute_config = None
+        self.mesh_device = mesh_device
 
     def __call__(self, hidden_states):
+        print_sync_print('topkrouter before reshape', self.mesh_device)
         hidden_states = ttnn.reshape(hidden_states, (-1, self.hidden_dim))
+        print_sync_print('topkrouter before linear', self.mesh_device)
+        print_sync_print('topkrouter before typecast', self.mesh_device)
+        hidden_states = ttnn.typecast(hidden_states, ttnn.bfloat16)
+        print_sync_print('topkrouter after typecast', self.mesh_device)
         router_logits = ttnn.linear(
             hidden_states, self.weight, bias=self.bias, compute_kernel_config=self.compute_config
         )
-        router_scores, _expert_weights, router_indices = topk_router(router_logits, self.top_k)
+        print_sync_print('topkrouter after linear', self.mesh_device)
+        router_logits = ttnn.typecast(router_logits, ttnn.bfloat8_b)
+        router_scores, _expert_weights, router_indices = topk_router(router_logits, self.top_k, self.mesh_device)
         return router_scores, router_indices, router_logits
 
 class Experts:
@@ -70,7 +76,7 @@ class Experts:
         hidden_size,
         num_experts_per_tok,
         ccl_manager,
-        dtype=ttnn.bfloat16,
+        dtype=ttnn.bfloat8_b,
         tensor_cache_path=None,
         mesh_config=None,
     ):
@@ -105,7 +111,6 @@ class Experts:
         # Clean mesh mapping using MeshConfig (use decode config for weights)
         col_mesh_mapper = self.mesh_config.column_parallel(mesh_device)
         row_mesh_mapper = self.mesh_config.row_parallel(mesh_device)
-        dtype = ttnn.bfloat4_b
         self.gate_proj = ttnn.as_tensor(
             gate_proj,
             device=mesh_device,
@@ -230,7 +235,7 @@ class Experts:
         if sp > 1:
             hidden_states_torch = ttnn.to_torch(ttnn.get_device_tensors(hidden_states)[0])
             routing_weights_torch = ttnn.to_torch(ttnn.get_device_tensors(routing_weights)[0])
-            hidden_states.deallocate(True)
+            #hidden_states.deallocate(False)
             routing_weights.deallocate(True)
             routing_weights = ttnn.from_torch(
                 routing_weights_torch,
@@ -254,7 +259,7 @@ class Experts:
 
         if hidden_states.shape[1] > CHUNK_SIZE:
             hidden_states_chunks_list = ttnn.split(hidden_states, CHUNK_SIZE, dim=1)
-            hidden_states.deallocate(True)
+            #hidden_states.deallocate(False)
             routing_weights_chunks_list = ttnn.split(routing_weights, CHUNK_SIZE, dim=0)
             routing_weights.deallocate(True)
 
@@ -332,7 +337,7 @@ class Experts:
                 dtype=ttnn.bfloat8_b,
             )
 
-            hidden_states_4D.deallocate(True)
+            hidden_states_4D.deallocate(False)
 
             if seq_len > 1:
                 up_transposed = ttnn.transpose(up, 1, 3)
@@ -426,24 +431,15 @@ class Experts:
             print_sync_print('TP comm', self.mesh_device)
             # TP communication (tensor parallel allreduce)
             if tp > 1:
-                if next_states.dtype != ttnn.bfloat16:
-                    next_states_16 = ttnn.typecast(next_states, ttnn.bfloat16)
-                    ttnn.deallocate(next_states)
-                else:
-                    next_states_16 = next_states
                 if seq_len > 1:
                     ttnn.synchronize_device(self.mesh_device)
                 next_states = self.mesh_config.allreduce(
-                    next_states_16,
+                    ttnn.typecast(next_states, ttnn.bfloat16),
                     self.ccl_manager,
                     pad_size=192 if tp == 8 else 0,
                     axis=self.mesh_config.tp_axis,
                 )
-                next_states_16.deallocate(True)
-                if next_states.dtype == ttnn.bfloat16:
-                    next_states_bf8 = ttnn.typecast(next_states, ttnn.bfloat8_b)
-                    next_states.deallocate(True)
-                    next_states = next_states_bf8
+                next_states = ttnn.typecast(next_states, ttnn.bfloat8_b)
 
             next_states_list.append(next_states)
 
@@ -458,13 +454,16 @@ class Experts:
             next_states_allgathered = self.mesh_config.allgather(
                 next_states, self.ccl_manager, axis=self.mesh_config.sp_axis, dim=-2
             )
+            print_sync_print('Before allgather - deallocate', self.mesh_device)
             next_states.deallocate(True)
             next_states = next_states_allgathered
+        print_sync_print('Before allgather - reshape', self.mesh_device)
         next_states = ttnn.reshape(
             next_states,
             (batch_size, seq_len_global, self.hidden_size),
             (batch_size, max(32, seq_len_global), self.hidden_size),
         )
+        print_sync_print('Before allgather - return', self.mesh_device)
 
         return next_states
 
@@ -476,7 +475,7 @@ class MLP:
         num_local_experts,
         hidden_size,
         intermediate_size,
-        dtype=ttnn.bfloat16,
+        dtype=ttnn.bfloat8_b,
         tensor_cache_path=None,
         mesh_config=None,
     ):
