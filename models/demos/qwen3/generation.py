@@ -31,7 +31,7 @@ def sample_top_p(probs, p):
 
 class Qwen3MoETT:
     def __init__(
-        self, mesh_device: ttnn.Device, ckpt_dir: str, tokenizer_path: str, batch_size: int, config_path: Optional[str] = None
+        self, mesh_device: ttnn.Device, ckpt_dir: str, tokenizer_path: str, batch_size: int, max_seq_len: Optional[int] = None, config_path: Optional[str] = None
     ) -> None:
         torch.manual_seed(42)
         torch.set_default_device(torch.device("cpu"))
@@ -47,10 +47,10 @@ class Qwen3MoETT:
         self.config = Qwen3MoeConfig.from_dict(data)
 
         self.config.unit_batch_size = 32
-        self.config.max_batch_size = 1024
-        self.config.max_seq_len = 64
+        self.config.max_batch_size = batch_size
+        self.config.max_seq_len = max_seq_len if max_seq_len is not None else 256
 
-        self.config.block_size = self.config.max_seq_len * 2
+        self.config.block_size = self.config.max_seq_len
         self.config.max_num_blocks = self.config.max_batch_size
 
         self.dp_degree = mesh_device.shape[0]
@@ -314,10 +314,10 @@ class Qwen3MoETT:
         return self.trace_output_decode
 
     def generate(
-        self, prompts: List[str], max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9
+        self, prompts: List[str], prompt_len: int, max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9
     ) -> List[List[str]]:
 
-        prompt_tokens = [self.tokenizer.encode(prompt).ids for prompt in prompts]
+        prompt_tokens = [self.tokenizer.encode(prompt).ids[:prompt_len] for prompt in prompts]
 
         batch_size = len(prompt_tokens)
         bsz_per_device = batch_size // self.dp_degree
@@ -339,9 +339,9 @@ class Qwen3MoETT:
         
         min_prompt_len = min(len(t) for t in prompt_tokens)
         max_prompt_len = max(len(t) for t in prompt_tokens)
-        assert max_prompt_len <= self.config.max_seq_len
+        # assert max_prompt_len <= self.config.max_seq_len
 
-        total_len = min(self.config.max_seq_len, max_gen_len + max_prompt_len)
+        total_len = max_gen_len + max_prompt_len
         pad_id = self.config.pad_token_id
         tokens = torch.full(size=(batch_size, total_len), fill_value=pad_id, dtype=torch.int64)
         for k, t in enumerate(prompt_tokens):

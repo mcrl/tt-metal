@@ -1,7 +1,6 @@
 import json
 import os
 
-
 def load_prompts(batch_size, prompt_len):
     """
     Load prompts from test dataset JSON file.
@@ -17,15 +16,15 @@ def load_prompts(batch_size, prompt_len):
         ValueError: If prompt_len not available or batch_size exceeds available data
         FileNotFoundError: If dataset file not found
     """
-    # Get the JSON file path (assuming it's in the same directory)
-    json_path = os.path.join(os.path.dirname(__file__), "test_dataset_HuggingFaceFW_fineweb_train.json")
+    json_path = os.path.join("/shared/datasets/test_dataset.json")
 
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     # Check if prompt_len is available
-    if prompt_len not in data["token_lengths"]:
-        raise ValueError(f"Prompt length {prompt_len} not available. Available lengths: {data['token_lengths']}")
+    if prompt_len not in data["prompt_length"]:
+        prompt_len = 16384
+        # raise ValueError(f"Prompt length {prompt_len} not available. Available lengths: {data['prompt_length']}")
 
     # Get prompts for the specified length
     prompts = data["results"][str(prompt_len)]

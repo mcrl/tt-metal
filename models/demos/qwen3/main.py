@@ -35,18 +35,19 @@ def perftest_tt(
         ckpt_dir=ckpt_dir,
         tokenizer_path=tokenizer_path,
         batch_size=batch_size,
+        max_seq_len=prompt_len + gen_tokens,
         config_path=config_path,
     )
 
     prompts = load_prompts(batch_size, prompt_len)
-    prompt_and_responses, iter_times = qwen3_moe.generate(prompts, max_gen_len=gen_tokens, temperature=0.7, top_p=0.8)
+    prompt_and_responses, iter_times = qwen3_moe.generate(prompts, prompt_len, max_gen_len=gen_tokens, temperature=0.7, top_p=0.8)
 
     return prompt_and_responses, iter_times
 
 def main(
-    batch_size: int = 128,
+    batch_size: int = 32,
     prompt_len: int = 64,
-    gen_tokens: int = 64
+    gen_tokens: int = 128
 ):
     init_trace_file()
 
