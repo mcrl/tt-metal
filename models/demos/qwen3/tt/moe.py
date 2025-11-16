@@ -324,7 +324,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             mem_cfg = ttnn.DRAM_MEMORY_CONFIG
         elif mode == InferenceMode.DECODE:
             _, sequence_length, batch_size, hidden_dim = hidden_states.shape
-            mem_cfg = ttnn.L1_MEMORY_CONFIG if batch_size <= 128 else ttnn.DRAM_MEMORY_CONFIG
+            mem_cfg = ttnn.L1_MEMORY_CONFIG
 
         with Profiler().trace_with_timer("reshape", level=4):
             hidden_states = ttnn.reshape(hidden_states, (-1, hidden_dim), memory_config=mem_cfg)

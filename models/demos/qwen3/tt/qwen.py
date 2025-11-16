@@ -104,7 +104,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             page_table=page_table,
             mode=InferenceMode.DECODE
         )
-
+        
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
             hidden_states = ttnn.add(attn_result, hidden_states)
 
@@ -270,9 +270,11 @@ class Qwen3MoeModel(nn.Module):
             hidden_states = self.norm(hidden_states, mode=InferenceMode.PREFILL)
 
         with Profiler().trace_with_timer("LMhead", level=4, args={"class": "Qwen3MoeModel"}):
-            logits = ttnn.linear(hidden_states, self.lm_head_weight, dtype=ttnn.bfloat16)
+            logits = ttnn.linear(hidden_states[:, -1, :], self.lm_head_weight, dtype=ttnn.bfloat16)
+        
+        with Profiler().trace_with_timer("topk", level=4, args={"class": "Qwen3MoeModel"}):
+            next_tokens = ttnn.topk(logits, 1, dim=-1, largest=True)[1]
 
-        return logits
-
+        return next_tokens
 
 __all__ = ["Qwen3MoeModel"]

@@ -212,7 +212,7 @@ class Qwen3MoETT:
         self.trace_rot_mats_persistent = rot_mats_initial
         
         # Compile run
-        logits_tt = self.model(
+        next_tokens_tt = self.model(
             self.trace_ids_persistent, 
             rot_mats=self.trace_rot_mats_persistent, 
             trans_mat=trans_mat, 
@@ -233,7 +233,7 @@ class Qwen3MoETT:
             
             self.trace_rot_mats_persistent = rot_mats_warmup
             
-            logits_tt = self.model(
+            next_tokens_tt = self.model(
                 self.trace_ids_persistent, 
                 rot_mats=self.trace_rot_mats_persistent, 
                 trans_mat=trans_mat, 
@@ -381,7 +381,7 @@ class Qwen3MoETT:
             rot_mats = self.rope.cos_matrix, self.rope.sin_matrix
             trans_mat = self.rope.transformation_mat_prefill
             
-            logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode="prefill", page_table=page_table_tt)
+            next_tokens_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode="prefill", page_table=page_table_tt)
             ttnn.synchronize_device(self.mesh_device)
             logger.info("Warmup: Prefill complete")
             
@@ -408,7 +408,7 @@ class Qwen3MoETT:
             rot_mats_decode = self.rope.get_rot_mats(position_idxs)
             trans_mat_decode = self.rope.transformation_mat
             
-            logits_tt = self.model(ids_decode, rot_mats=rot_mats_decode, trans_mat=trans_mat_decode, 
+            next_tokens_tt = self.model(ids_decode, rot_mats=rot_mats_decode, trans_mat=trans_mat_decode, 
                                  start_pos=start_pos_decode, mode="decode", page_table=page_table_tt_list)
             ttnn.synchronize_device(self.mesh_device)
             logger.info("Warmup: Decode compilation complete")
@@ -454,14 +454,14 @@ class Qwen3MoETT:
                     prefill_times = []
                     for _ in range(7):
                         prefill_start = time.time()
-                        logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
+                        next_tokens_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table)
                         prefill_end = time.time()
                         prefill_times.append(prefill_end - prefill_start)
                     prefill_time = sum(prefill_times[2:5]) / 3
 
                 else:
                     if use_trace and self.trace_id_decode is not None:
-                        logits_tt = self._execute_trace_decode(tokens, prev_pos, page_table_tt_list, bsz_per_device)
+                        next_tokens_tt = self._execute_trace_decode(tokens, prev_pos, page_table_tt_list, bsz_per_device)
                     else:
                         ids = ttnn.from_torch(
                             tokens[:, prev_pos:curr_pos],
@@ -482,11 +482,10 @@ class Qwen3MoETT:
                         position_idxs = torch.full((self.config.unit_batch_size,), prev_pos, dtype=torch.long)
                         rot_mats = self.rope.get_rot_mats(position_idxs)
                         trans_mat = self.rope.transformation_mat
-                        logits_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table_tt_list)
+                        next_tokens_tt = self.model(ids, rot_mats=rot_mats, trans_mat=trans_mat, start_pos=start_pos, mode=mode, page_table=page_table_tt_list)
 
                 with Profiler().trace_with_timer("Sampling", level=2):
                     sampling_time_start = time.time()
-                    _, next_tokens_tt = ttnn.topk(logits_tt[:, -1, :], k=1, dim=-1, largest=True)
                     next_tokens = ttnn.to_torch(
                         next_tokens_tt,
                         dtype=torch.int32,

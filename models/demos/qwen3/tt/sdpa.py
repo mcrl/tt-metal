@@ -58,7 +58,7 @@ def sdpa_forward_prefill(
             attn_output,
             slice_start=start_index,
             slice_end=end_index,
-            memory_config=ttnn.L1_MEMORY_CONFIG,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
     return attn_output
