@@ -99,7 +99,6 @@ void kernel_main() {
         // Read selected experts for this token
         uint64_t experts_noc_addr = get_noc_addr(token_idx, experts_accessor);
         noc_async_read(experts_noc_addr, l1_experts_addr, top_k * sizeof(uint32_t));
-        noc_async_read_barrier();
 
         // Read routing weights for this token
         uint64_t weights_noc_addr = get_noc_addr(token_idx, weights_accessor);
@@ -154,11 +153,12 @@ void kernel_main() {
             routed_tokens_row[i] = scratch_tokens[i];
             routed_weights_row[i] = scratch_weights[i];
             tokenidx_map_row[i] = scratch_tokens[i];  // The global token index is the same as what we stored in scratch_tokens
-        } else {
-            routed_tokens_row[i] = 0xFFFFFFFF;  // Invalid token index
-            routed_weights_row[i] = 0;          // Zero weight for padding
-            tokenidx_map_row[i] = 0xFFFFFFFF;   // Invalid mapping for padding
         }
+        // else {
+        //     routed_tokens_row[i] = 0xFFFFFFFF;  // Invalid token index
+        //     routed_weights_row[i] = 0;          // Zero weight for padding
+        //     tokenidx_map_row[i] = 0xFFFFFFFF;   // Invalid mapping for padding
+        // }
     }
 
     uint64_t routed_tokens_noc_addr = get_noc_addr(local_expert_id, routed_tokens_accessor);
@@ -171,13 +171,4 @@ void kernel_main() {
     noc_async_write(l1_tokenidx_map_addr, tokenidx_map_noc_addr, max_tokens_per_expert * sizeof(uint32_t));
 
     noc_async_write_barrier();
-
-    cb_push_back(cb_experts, 1);
-    cb_push_back(cb_weights, 1);
-    cb_push_back(cb_device_mapping, 1);
-    cb_push_back(cb_num_routed, 1);
-    cb_push_back(cb_routed_tokens, 1);
-    cb_push_back(cb_routed_weights, 1);
-    cb_push_back(cb_tokenidx_map, 1);
-    cb_push_back(cb_scratch, 1);
 }

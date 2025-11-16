@@ -200,16 +200,3 @@ def test_prepare_moe_routing_tensors(mesh_device, num_tokens, top_k, num_experts
                                 assert torch.allclose(weight.unsqueeze(0), expected_weight.unsqueeze(0), atol=1e-2), \
                                     f"Device {device_idx}, Weight mismatch for local expert {local_expert_idx} (global {global_expert_idx}), token {token_idx}"
                                 break
-
-            if count < num_tokens:
-                padding_tokens = routed_tokens_torch_device[local_expert_idx, count:]
-                assert torch.all((padding_tokens == -1) | (padding_tokens == 0xFFFFFFFF)), \
-                    f"Device {device_idx}, Local expert {local_expert_idx} padding not properly set"
-
-                padding_weights = routed_weights_torch_device[local_expert_idx, count:]
-                assert torch.all(padding_weights == 0), \
-                    f"Device {device_idx}, Local expert {local_expert_idx} padding weights not zero"
-
-                padding_tokenidx = tokenidx_map_torch_device[local_expert_idx, count:]
-                assert torch.all((padding_tokenidx == -1) | (padding_tokenidx == 0xFFFFFFFF)), \
-                    f"Device {device_idx}, Local expert {local_expert_idx} tokenidx mapping padding not properly set"
