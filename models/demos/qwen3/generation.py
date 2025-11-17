@@ -316,8 +316,19 @@ class Qwen3MoETT:
     def generate(
         self, prompts: List[str], prompt_len: int, max_gen_len: int, temperature: float = 0.6, top_p: float = 0.9
     ) -> List[List[str]]:
+        bsz = len(prompts)
+        print(f"bsz: {bsz}")
+        prompt_cache_fname = f"/tmp/prompt_tokens_{bsz}_{prompt_len}.pkl"
 
-        prompt_tokens = [self.tokenizer.encode(prompt).ids[:prompt_len] for prompt in prompts]
+        import os, pickle
+        with Profiler().trace_with_timer("Tokenize-Prompts", level=4):
+            if os.path.exists(prompt_cache_fname):
+                with open(prompt_cache_fname, "rb") as f:
+                    prompt_tokens = pickle.load(f)
+            else:
+                prompt_tokens = [self.tokenizer.encode(prompt).ids[:prompt_len] for prompt in prompts]
+                with open(prompt_cache_fname, "wb") as f:
+                    pickle.dump(prompt_tokens, f)
 
         batch_size = len(prompt_tokens)
         bsz_per_device = batch_size // self.dp_degree
