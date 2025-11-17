@@ -66,10 +66,8 @@ class Qwen3MoeDecoderLayer(nn.Module):
     def forward_prefill(
         self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor
     ) -> ttnn.Tensor:
-        hidden_states_0 = hidden_states
-
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
-            attn_input = self.input_layernorm(hidden_states_0, mode=InferenceMode.PREFILL)
+            attn_input = self.input_layernorm(hidden_states, mode=InferenceMode.PREFILL)
 
         attn_result = self.self_attn(
             hidden_states=attn_input,
@@ -79,24 +77,40 @@ class Qwen3MoeDecoderLayer(nn.Module):
             page_table=page_table,
             mode=InferenceMode.PREFILL
         )
+        ttnn.deallocate(attn_input)
 
         with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
-            hidden_states_1 = ttnn.add(attn_result, hidden_states_0)
+            hidden_states = ttnn.add(attn_result, hidden_states)
+            ttnn.deallocate(attn_result)
 
         with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
-            mlp_input = self.post_attention_layernorm(hidden_states_1, mode=InferenceMode.PREFILL)
+            mlp_input = self.post_attention_layernorm(hidden_states, mode=InferenceMode.PREFILL)
 
         if self.moe_impl == "snu":
-            mlp_result = self.mlp(mlp_input, mode=InferenceMode.PREFILL)
+            batch_size, seq_len, hidden_dim = mlp_input.shape
+            if batch_size * seq_len > 8192:
+                mlp_input_list = []
+                unit_size = 8192 // seq_len
+                for i in range(batch_size // unit_size):
+                    mlp_input_chunk = mlp_input[i * unit_size:(i + 1) * unit_size, :, :]
+                    mlp_input_chunk = self.mlp(mlp_input_chunk, mode=InferenceMode.PREFILL)
+                    mlp_input_list.append(mlp_input_chunk)
+                mlp_result = ttnn.concat(mlp_input_list, dim=0)
+                del mlp_input_list
+            else:
+                mlp_result = self.mlp(mlp_input, mode=InferenceMode.PREFILL)
         elif self.moe_impl == "tt":
             mlp_result = self.mlp.forward_tt(mlp_input, mode=InferenceMode.PREFILL)
         else:
             raise ValueError(f"Unsupported MOE_IMPL: {self.moe_impl}")
 
-        with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
-            output = ttnn.add(hidden_states_1, mlp_result)
+        ttnn.deallocate(mlp_input)
 
-        return output
+        with Profiler().trace_with_timer("add", level=4, args={"class": "Qwen3MoeDecoderLayer"}):
+            mlp_result = ttnn.add(hidden_states, mlp_result)
+            ttnn.deallocate(hidden_states)
+
+        return mlp_result
 
     def forward_decode(
         self, hidden_states: ttnn.Tensor, start_pos: ttnn.Tensor, rot_mats: Tuple[ttnn.Tensor, ttnn.Tensor], trans_mat: ttnn.Tensor, page_table: ttnn.Tensor

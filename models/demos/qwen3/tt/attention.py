@@ -373,13 +373,7 @@ class Qwen3MoeAttention(nn.Module):
     ) -> ttnn.Tensor:
         _, sequence_length, batch_size, hidden_size = hidden_states.shape
 
-        moe_impl = os.environ.get("MOE_IMPL", "snu")
-        if moe_impl == "snu":
-            mem_cfg = ttnn.L1_MEMORY_CONFIG
-        elif moe_impl == "tt":
-            mem_cfg = ttnn.L1_MEMORY_CONFIG if batch_size <= 256 else ttnn.DRAM_MEMORY_CONFIG
-        else:
-            raise ValueError(f"Unsupported MOE_IMPL: {moe_impl}")
+        mem_cfg = ttnn.L1_MEMORY_CONFIG if batch_size <= 256 else ttnn.DRAM_MEMORY_CONFIG
 
         with Profiler().trace_with_timer("extract-attention-input", level=4):
             hidden_states = ttnn.extract_attention_input(
