@@ -26,7 +26,7 @@ def perftest_tt(
     config_path = os.path.join(model_path, "config.json")
 
     # Create device with trace region size for trace capture
-    device_params = {"trace_region_size": batch_size * 256 * 1024, "fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}
+    device_params = {"trace_region_size": 296574976, "fabric_config": ttnn.FabricConfig.FABRIC_1D_RING}
     mesh_device = create_mesh_device(device_params)
     set_and_get_device_cache(mesh_device)
 

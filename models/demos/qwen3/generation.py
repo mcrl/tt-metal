@@ -182,7 +182,7 @@ class Qwen3MoETT:
         logger.info("Capturing decode trace...")
         
         # Allocate persistent input tensors for trace
-        ids_host = tokens[:, prev_pos:prev_pos+1]
+        ids_host = tokens[:, prev_pos-1:prev_pos]
         self.trace_ids_persistent = ttnn.from_torch(
             ids_host,
             device=self.mesh_device,
@@ -270,7 +270,7 @@ class Qwen3MoETT:
 
         """
         # Update persistent input token tensor with new data
-        ids_host = tokens[:, prev_pos:prev_pos+1]
+        ids_host = tokens[:, prev_pos-1:prev_pos]
         ids_to_copy = ttnn.from_torch(
             ids_host,
             dtype=ttnn.uint32,
@@ -389,7 +389,7 @@ class Qwen3MoETT:
             prev_pos = min_prompt_len
             
             ids_decode = ttnn.from_torch(
-                tokens[:, prev_pos:prev_pos+1],
+                tokens[:, prev_pos-1:prev_pos],
                 device=self.mesh_device,
                 mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
                 dtype=ttnn.uint32,

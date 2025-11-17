@@ -288,13 +288,13 @@ class Qwen3MoeModel(nn.Module):
                 page_table=page_table,
             )
 
+        with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeModel"}):
+            hidden_states = self.norm(hidden_states, mode=InferenceMode.PREFILL)
+            
         if mode == InferenceMode.PREFILL:
             pass
         elif mode == InferenceMode.DECODE:
             hidden_states = ttnn.reshape(hidden_states, (batch_size, sequence_length, self.config.hidden_size))
-
-        with Profiler().trace_with_timer("rmsnorm", level=4, args={"class": "Qwen3MoeModel"}):
-            hidden_states = self.norm(hidden_states, mode=InferenceMode.PREFILL)
 
         with Profiler().trace_with_timer("LMhead", level=4, args={"class": "Qwen3MoeModel"}):
             logits = ttnn.linear(hidden_states[:, -1, :], self.lm_head_weight, dtype=ttnn.bfloat16)
